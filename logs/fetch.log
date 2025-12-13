@@ -1,4 +1,202 @@
-NC_002134.1: fetching from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
-NC_002134.1: fetched and saved FASTA (95695 bytes)
-NC_002134.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
-NC_002134.1: fetched and saved GenBank (265993 bytes)
+L09137.2: fetching from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+L09137.2: fetched and saved FASTA (2777 bytes)
+AP025680.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+AP025680.1: fetched and saved GenBank (80604 bytes)
+NZ_CP139461.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP139461.1: fetched and saved GenBank (182614 bytes)
+MG197498.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+MG197498.1: fetched and saved GenBank (300390 bytes)
+NZ_CP087831.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP087831.1: fetched and saved GenBank (306900 bytes)
+CP063842.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP063842.1: fetched and saved GenBank (114774 bytes)
+CP075382.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP075382.1: fetched and saved GenBank (75799 bytes)
+AP017631.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+AP017631.1: fetched and saved GenBank (60676 bytes)
+NC_015592.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NC_015592.1: fetched and saved GenBank (190419 bytes)
+NZ_MZ054178.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_MZ054178.1: fetched and saved GenBank (421056 bytes)
+CP174740.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP174740.1: fetched and saved GenBank (17392 bytes)
+NZ_CP050735.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP050735.1: fetched and saved GenBank (398305 bytes)
+CP053238.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP053238.1: fetched and saved GenBank (23463 bytes)
+CP146662.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP146662.1: fetched and saved GenBank (289946 bytes)
+NZ_AP018801.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_AP018801.1: fetched and saved GenBank (197158 bytes)
+CP111056.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP111056.1: fetched and saved GenBank (382064 bytes)
+NZ_CP037815.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP037815.1: fetched and saved GenBank (132927 bytes)
+NZ_CP045264.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP045264.1: fetched and saved GenBank (361471 bytes)
+NZ_CP127859.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP127859.1: fetched and saved GenBank (305373 bytes)
+CP067383.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP067383.1: fetched and saved GenBank (43923 bytes)
+NZ_CP186929.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP186929.1: fetched and saved GenBank (328841 bytes)
+NC_017657.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NC_017657.1: fetched and saved GenBank (182939 bytes)
+CP194259.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP194259.1: fetched and saved GenBank (167866 bytes)
+AP026086.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+AP026086.1: fetched and saved GenBank (190535 bytes)
+CP185229.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP185229.1: fetched and saved GenBank (79194 bytes)
+AP022039.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+AP022039.1: fetched and saved GenBank (40370 bytes)
+NZ_CP131624.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP131624.1: fetched and saved GenBank (18814 bytes)
+OR436916.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+OR436916.1: fetched and saved GenBank (24022 bytes)
+BX816518.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+BX816518.1: fetched and saved GenBank (4996 bytes)
+NZ_CP096020.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP096020.1: fetched and saved GenBank (1319182 bytes)
+NZ_CP177935.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP177935.1: fetched and saved GenBank (184419 bytes)
+NZ_CP032124.2: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP032124.2: fetched and saved GenBank (20272 bytes)
+CP112886.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP112886.1: fetched and saved GenBank (210975 bytes)
+NZ_CP082960.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP082960.1: fetched and saved GenBank (15345 bytes)
+DQ831140.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+DQ831140.1: fetched and saved GenBank (30221 bytes)
+BX831781.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+BX831781.1: fetched and saved GenBank (4324 bytes)
+CP030080.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP030080.1: fetched and saved GenBank (673230 bytes)
+NZ_CP066852.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP066852.1: fetched and saved GenBank (103972 bytes)
+JX101644.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+JX101644.1: fetched and saved GenBank (16143 bytes)
+CP166175.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP166175.1: fetched and saved GenBank (793507 bytes)
+NZ_AP021947.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_AP021947.1: fetched and saved GenBank (542240 bytes)
+BX817063.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+BX817063.1: fetched and saved GenBank (4434 bytes)
+CP031568.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP031568.1: fetched and saved GenBank (327851 bytes)
+NZ_CP155660.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP155660.1: fetched and saved GenBank (465216 bytes)
+AY452662.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+AY452662.1: fetched and saved GenBank (3441 bytes)
+NZ_CP039949.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP039949.1: fetched and saved GenBank (154199 bytes)
+NZ_MH208235.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_MH208235.1: fetched and saved GenBank (570177 bytes)
+NZ_CP074903.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP074903.1: fetched and saved GenBank (22026 bytes)
+NZ_CP014650.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP014650.1: fetched and saved GenBank (301110 bytes)
+CP090664.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP090664.1: fetched and saved GenBank (458785 bytes)
+CP018001.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP018001.1: fetched and saved GenBank (1088200 bytes)
+PV023072.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+PV023072.1: fetched and saved GenBank (381113 bytes)
+CP123200.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP123200.1: fetched and saved GenBank (22536 bytes)
+CP068978.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP068978.1: fetched and saved GenBank (61290 bytes)
+CP010168.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP010168.1: fetched and saved GenBank (113331 bytes)
+EF641265.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+EF641265.1: fetched and saved GenBank (5650 bytes)
+CP047287.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP047287.1: fetched and saved GenBank (128074 bytes)
+NZ_CP170174.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP170174.1: fetched and saved GenBank (473475 bytes)
+NZ_OR786483.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_OR786483.1: fetched and saved GenBank (91830 bytes)
+NZ_MT039216.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_MT039216.1: fetched and saved GenBank (245728 bytes)
+NZ_KX753678.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_KX753678.1: fetched and saved GenBank (25201 bytes)
+CP130902.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP130902.1: fetched and saved GenBank (365090 bytes)
+KC980924.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+KC980924.1: fetched and saved GenBank (66702 bytes)
+NC_024994.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NC_024994.1: fetched and saved GenBank (22668 bytes)
+NZ_CP150068.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP150068.1: fetched and saved GenBank (50042 bytes)
+CP175593.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP175593.1: fetched and saved GenBank (142379 bytes)
+AP031458.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+AP031458.1: fetched and saved GenBank (174207 bytes)
+CP000902.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP000902.1: fetched and saved GenBank (162169 bytes)
+NZ_CP120157.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP120157.1: fetched and saved GenBank (47208 bytes)
+BX842446.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+BX842446.1: fetched and saved GenBank (5258 bytes)
+NZ_CP193915.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP193915.1: fetched and saved GenBank (326187 bytes)
+CP149902.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP149902.1: fetched and saved GenBank (11266 bytes)
+NZ_CP178458.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP178458.1: fetched and saved GenBank (92659 bytes)
+NZ_CP074752.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP074752.1: fetched and saved GenBank (100658 bytes)
+NZ_CP041376.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP041376.1: fetched and saved GenBank (226916 bytes)
+AB001897.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+AB001897.1: fetched and saved GenBank (6940 bytes)
+CP060836.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP060836.1: fetched and saved GenBank (12899 bytes)
+CP103394.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP103394.1: fetched and saved GenBank (78576 bytes)
+NC_017120.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NC_017120.1: fetched and saved GenBank (11409 bytes)
+NZ_CP140812.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP140812.1: fetched and saved GenBank (773111 bytes)
+NZ_CP191629.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP191629.1: fetched and saved GenBank (17872 bytes)
+CP009069.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP009069.1: fetched and saved GenBank (69174 bytes)
+CP131088.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP131088.1: fetched and saved GenBank (42855 bytes)
+NZ_CP168216.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP168216.1: fetched and saved GenBank (15299 bytes)
+CP158029.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP158029.1: fetched and saved GenBank (22989 bytes)
+NZ_CP177875.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP177875.1: fetched and saved GenBank (25681 bytes)
+NZ_CP027581.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP027581.1: fetched and saved GenBank (292497 bytes)
+CM014776.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CM014776.1: fetched and saved GenBank (65755 bytes)
+CP101569.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP101569.1: fetched and saved GenBank (347155 bytes)
+CP168452.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP168452.1: fetched and saved GenBank (526509 bytes)
+NZ_CP014000.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP014000.1: fetched and saved GenBank (38452 bytes)
+CP148637.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP148637.1: fetched and saved GenBank (30024 bytes)
+CP019900.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP019900.1: fetched and saved GenBank (259996 bytes)
+NZ_OZ186896.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_OZ186896.1: fetched and saved GenBank (17539 bytes)
+BX827300.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+BX827300.1: fetched and saved GenBank (4534 bytes)
+CP146594.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP146594.1: fetched and saved GenBank (323367 bytes)
+NZ_CP192767.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP192767.1: fetched and saved GenBank (384728 bytes)
+CP099025.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP099025.1: fetched and saved GenBank (296741 bytes)
+CP107591.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+CP107591.1: fetched and saved GenBank (170909 bytes)
+NZ_CP083363.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NZ_CP083363.1: fetched and saved GenBank (324512 bytes)
+NC_004966.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NC_004966.1: fetched and saved GenBank (52433 bytes)

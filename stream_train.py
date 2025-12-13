@@ -2,12 +2,12 @@
 """
 Thin wrapper to keep your existing CLI usage:
 
-  python3 stream_train.py ...
+  perceptrome (or python -m perceptrome.cli_main) ...
 
-delegates to genostream.cli.main().
+delegates to perceptrome.cli_main.main().
 """
 
-from genostream.cli import main
+from perceptrome.cli_main import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -134,8 +134,8 @@ for size in $SIZES; do
       rm -f model/checkpoints/latest.pt
       rm -f state/progress.json
       rm -rf cache/fasta cache/encoded
-      rm -f logs/training.log logs/fetch.log
-      python3 stream_train.py init > /dev/null
+      rm -f logs/training.log logs/fetch.log logs/encode.log logs/scope.log
+      python3 stream_train.py --config config/stream_config.yaml init > /dev/null
     fi
 
     # Start GPU sampling in background (optional)
@@ -157,7 +157,7 @@ for size in $SIZES; do
     fi
 
     time_txt="$run_dir/time.txt"
-    cmd=(python3 stream_train.py stream
+    cmd=(python3 stream_train.py --config config/stream_config.yaml stream
       --catalog "$catalog"
       --max-epochs "$MAX_EPOCHS"
       --steps-per-plasmid "$steps"
