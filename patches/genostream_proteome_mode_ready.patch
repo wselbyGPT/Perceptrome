@@ -1,0 +1,138 @@
+diff -ruN /mnt/data/genostream_old/VALIDATE_PROTEOME_MODE.md /mnt/data/genostream_src/VALIDATE_PROTEOME_MODE.md
+--- /mnt/data/genostream_old/VALIDATE_PROTEOME_MODE.md	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/genostream_src/VALIDATE_PROTEOME_MODE.md	2025-12-13 04:10:16.196949923 +0000
+@@ -0,0 +1,74 @@
++# Genostream — Proteome (AA) mode quick validation
++
++This repo supports `--tokenizer aa`, which:
++
++1. Fetches a plasmid FASTA
++2. Finds ORFs in all 6 frames (simple ATG→STOP scan)
++3. Translates ORFs to proteins (AA strings)
++4. Windows proteins into fixed AA windows
++5. Trains the same VAE on AA one-hot windows
++
++## 0) One-time notes
++
++- **Checkpoint incompatibility**: `model/checkpoints/latest.pt` is shared across tokenizers. If you previously trained `base` or `codon`, delete the checkpoint before training AA:
++
++```bash
++rm -f model/checkpoints/latest.pt
++```
++
++- AA mode uses **`--window-size` and `--stride` in amino-acid units**.
++
++## 1) Validate on 1 accession
++
++Pick a plasmid accession you know works (example uses `NC_002134.1` — replace if needed).
++
++```bash
++cd ~/genostream
++source venv/bin/activate
++
++python3 stream_train.py fetch-one NC_002134.1
++
++# Train AA-VAE on ORF-derived protein windows
++python3 stream_train.py train-one NC_002134.1 \
++  --tokenizer aa \
++  --min-orf-aa 90 \
++  --window-size 256 \
++  --stride 128 \
++  --steps 50 \
++  --batch-size 16
++
++# Visualize reconstruction error + side metric (hydrophobic fraction in AA mode)
++python3 stream_train.py scope-one NC_002134.1 \
++  --tokenizer aa \
++  --min-orf-aa 90 \
++  --window-size 256 \
++  --stride 128
++```
++
++## 2) Minimal stream pass (10 plasmids)
++
++```bash
++head -n 10 plasmid_accessions.txt > config/plasmids_10.txt
++
++python3 stream_train.py stream \
++  --catalog config/plasmids_10.txt \
++  --tokenizer aa \
++  --min-orf-aa 90 \
++  --window-size 256 \
++  --stride 128 \
++  --steps-per-plasmid 5 \
++  --batch-size 16 \
++  --max-epochs 1 \
++  --delete-cache
++```
++
++## 3) Generate a novel protein
++
++```bash
++python3 stream_train.py generate-protein \
++  --length-aa 600 \
++  --window-aa 256 \
++  --temperature 1.0 \
++  --latent-scale 1.0 \
++  --output generated/novel_protein.faa
++```
+Binary files /mnt/data/genostream_old/genostream/__pycache__/__init__.cpython-311.pyc and /mnt/data/genostream_src/genostream/__pycache__/__init__.cpython-311.pyc differ
+Binary files /mnt/data/genostream_old/genostream/__pycache__/config.cpython-311.pyc and /mnt/data/genostream_src/genostream/__pycache__/config.cpython-311.pyc differ
+Binary files /mnt/data/genostream_old/genostream/__pycache__/encoding.cpython-311.pyc and /mnt/data/genostream_src/genostream/__pycache__/encoding.cpython-311.pyc differ
+diff -ruN /mnt/data/genostream_old/genostream/scope.py /mnt/data/genostream_src/genostream/scope.py
+--- /mnt/data/genostream_old/genostream/scope.py	2025-12-12 10:24:04.000000000 +0000
++++ /mnt/data/genostream_src/genostream/scope.py	2025-12-13 04:09:42.535038657 +0000
+@@ -28,7 +28,8 @@
+     """
+     Curses-based genome scope:
+       - Top strip: per-window reconstruction error
+-      - Second strip: per-window GC fraction
++      - Second strip: per-window side metric (GC fraction in base/codon mode,
++        hydrophobic fraction in AA mode)
+     """
+     curses.curs_set(0)
+     stdscr.nodelay(True)
+@@ -82,7 +83,7 @@
+             stdscr.addstr(1, 0, info_err[: w - 1])
+ 
+         if h > 2:
+-            info_gc = f"GC     min={min_gc:.3f} max={max_gc:.3f}"
++            info_gc = f"METRIC min={min_gc:.3f} max={max_gc:.3f}"
+             stdscr.addstr(2, 0, info_gc[: w - 1])
+ 
+         if h > 3:
+@@ -257,7 +258,7 @@
+         if h > 2:
+             info2 = (
+                 f"ERROR  min={min_e:.3g} max={max_e:.3g}  "
+-                f"GC min={min_gc:.3f} max={max_gc:.3f}"
++                f"METRIC min={min_gc:.3f} max={max_gc:.3f}"
+             )
+             stdscr.addstr(2, 0, info2[: w - 1])
+ 
+diff -ruN /mnt/data/genostream_old/manifest.txt /mnt/data/genostream_src/manifest.txt
+--- /mnt/data/genostream_old/manifest.txt	2025-12-13 04:03:37.000000000 +0000
++++ /mnt/data/genostream_src/manifest.txt	2025-12-13 04:04:09.000000000 +0000
+@@ -1,5 +1,5 @@
+ Project: genostream
+-Packed:  2025-12-12T21:03:36-07:00
++Packed:  2025-12-12T21:04:09-07:00
+ Root:    /home/wselby/genostream
+ Git:     nogit (clean)
+ 
+@@ -52,6 +52,9 @@
+ ├── bacteria_accessions.txt
+ ├── bench_minimal.sh
+ ├── build.sh
++├── cache
++│   ├── encoded
++│   └── fasta
+ ├── config
+ │   ├── genomes_200.txt
+ │   ├── plasmids_10.txt
+@@ -93,4 +96,4 @@
+ ├── upgrade_proteome_mode.sh
+ └── virus_accessions.txt
+ 
+-8 directories, 37 files
++11 directories, 37 files

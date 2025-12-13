@@ -1,0 +1,4 @@
+NC_002134.1: fetching from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NC_002134.1: fetched and saved FASTA (95695 bytes)
+NC_002134.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+NC_002134.1: fetched and saved GenBank (265993 bytes)

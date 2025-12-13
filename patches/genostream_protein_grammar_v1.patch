@@ -1,0 +1,560 @@
+diff -ruN ./genostream/cli.py ../gs_curr/genostream/cli.py
+--- ./genostream/cli.py	2025-12-13 06:28:37.147875732 +0000
++++ ../gs_curr/genostream/cli.py	2025-12-13 06:27:29.913333497 +0000
+@@ -76,6 +76,80 @@
+         if window_size <= 0 or stride <= 0:
+             raise ValueError("window_size/stride must be positive")
+ 
++
++
++def _resolve_proteome_params(args: argparse.Namespace, train_cfg, state, tok: str, src: str) -> dict[str, Any]:
++    """Resolve proteome-related knobs (curriculum, balanced sampling, denoising).
++
++    Applied only for tok=="aa" and src=="genbank". CLI flags override config, which overrides curriculum.
++    """
++    tok = (tok or "").lower()
++    src = (src or "").lower()
++
++    # Defaults from config
++    pol: dict[str, Any] = {
++        "protein_len_min": getattr(train_cfg, "protein_len_min", None),
++        "protein_len_max": getattr(train_cfg, "protein_len_max", None),
++        "translation_only": bool(getattr(train_cfg, "translation_only", False)),
++        "max_windows_per_protein": getattr(train_cfg, "max_windows_per_protein", None),
++        "mask_prob": float(getattr(train_cfg, "aa_mask_prob", 0.05)) if tok == "aa" else 0.0,
++        "span_mask_prob": float(getattr(train_cfg, "aa_span_mask_prob", 0.0)),
++        "span_mask_len": int(getattr(train_cfg, "aa_span_mask_len", 0)),
++        "curriculum_tag": None,
++    }
++
++    total_steps = int(state.get("total_steps", 0)) if isinstance(state, dict) else 0
++
++    # Curriculum (optional)
++    if (
++        tok == "aa"
++        and src == "genbank"
++        and not bool(getattr(args, "no_curriculum", False))
++        and bool(getattr(train_cfg, "curriculum_enabled", False))
++    ):
++        phases = list(getattr(train_cfg, "curriculum_phases", []) or [])
++        steps = list(getattr(train_cfg, "curriculum_steps", []) or [])
++        if phases:
++            # Determine phase index by total_steps
++            idx = 0
++            if steps:
++                for j, s in enumerate(steps):
++                    try:
++                        if total_steps >= int(s):
++                            idx = j
++                    except Exception:
++                        pass
++            idx = max(0, min(idx, len(phases) - 1))
++            phase = phases[idx] if idx < len(phases) else {}
++            if isinstance(phase, dict):
++                for k in ("protein_len_min", "protein_len_max", "translation_only", "max_windows_per_protein", "mask_prob", "span_mask_prob", "span_mask_len"):
++                    if k in phase and phase[k] is not None:
++                        pol[k] = phase[k]
++            pol["curriculum_tag"] = f"cur{idx}"
++
++    # CLI overrides (only override if user explicitly set the flag)
++    if getattr(args, "protein_len_min", None) is not None:
++        pol["protein_len_min"] = int(getattr(args, "protein_len_min"))
++    if getattr(args, "protein_len_max", None) is not None:
++        pol["protein_len_max"] = int(getattr(args, "protein_len_max"))
++    if getattr(args, "max_windows_per_protein", None) is not None:
++        pol["max_windows_per_protein"] = int(getattr(args, "max_windows_per_protein"))
++
++    # translation-only tri-state: --translation-only / --allow-translated
++    if getattr(args, "translation_only", None) is True:
++        pol["translation_only"] = True
++    if getattr(args, "allow_translated", None) is True:
++        pol["translation_only"] = False
++
++    if getattr(args, "mask_prob", None) is not None:
++        pol["mask_prob"] = float(getattr(args, "mask_prob"))
++    if getattr(args, "span_mask_prob", None) is not None:
++        pol["span_mask_prob"] = float(getattr(args, "span_mask_prob"))
++    if getattr(args, "span_mask_len", None) is not None:
++        pol["span_mask_len"] = int(getattr(args, "span_mask_len"))
++
++    return pol
++
+ def cmd_init(args: argparse.Namespace) -> int:
+     cfg = load_full_config(args.config)
+     _, _, io_cfg = extract_configs(cfg)
+@@ -121,17 +195,27 @@
+     _validate_tok_params(tok, window_size, stride, frame)
+ 
+     src = _get_source(args, tok)
++    pol = _resolve_proteome_params(args, train_cfg, state=None, tok=tok, src=src)
+     _ensure_record(args.accession, src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=False)
+ 
+     out_path = encoded_cache_path(
+         io_cfg, args.accession, tok, window_size, stride, frame,
+         source=src,
+         min_orf_aa=(min_orf if tok=="aa" else None),
++        max_windows_per_protein=(pol.get("max_windows_per_protein") if tok=="aa" else None),
++        protein_len_min=(pol.get("protein_len_min") if tok=="aa" else None),
++        protein_len_max=(pol.get("protein_len_max") if tok=="aa" else None),
++        translation_only=bool(pol.get("translation_only", False)) if tok=="aa" else False,
++        curriculum_tag=pol.get("curriculum_tag"),
+     )
+     encoded = encode_accession(
+         args.accession, io_cfg, window_size, stride,
+         tokenizer=tok, frame_offset=frame, min_orf_aa=min_orf,
+         source=src,
++        max_windows_per_protein=(pol.get("max_windows_per_protein") if tok=="aa" else None),
++        protein_len_min=(pol.get("protein_len_min") if tok=="aa" else None),
++        protein_len_max=(pol.get("protein_len_max") if tok=="aa" else None),
++        translation_only=bool(pol.get("translation_only", False)) if tok=="aa" else False,
+         save_to_disk=True, out_path=out_path
+     )
+     print(f"{args.accession}: encoded tokenizer={tok} source={src} -> shape={encoded.shape} saved={out_path}")
+@@ -152,6 +236,8 @@
+ 
+     src = _get_source(args, tok)
+ 
++    pol = _resolve_proteome_params(args, train_cfg, state=state, tok=tok, src=src)
++
+     batch_size = args.batch_size or train_cfg.batch_size
+     steps = args.steps or train_cfg.steps_per_plasmid
+ 
+@@ -161,6 +247,11 @@
+         io_cfg, args.accession, tok, window_size, stride, frame,
+         source=src,
+         min_orf_aa=(min_orf if tok=="aa" else None),
++        max_windows_per_protein=(pol.get("max_windows_per_protein") if tok=="aa" else None),
++        protein_len_min=(pol.get("protein_len_min") if tok=="aa" else None),
++        protein_len_max=(pol.get("protein_len_max") if tok=="aa" else None),
++        translation_only=bool(pol.get("translation_only", False)) if tok=="aa" else False,
++        curriculum_tag=pol.get("curriculum_tag"),
+     )
+     if os.path.exists(enc_path) and not args.reencode:
+         encoded = np.load(enc_path)
+@@ -170,6 +261,10 @@
+             args.accession, io_cfg, window_size, stride,
+             tokenizer=tok, frame_offset=frame, min_orf_aa=min_orf,
+             source=src,
++            max_windows_per_protein=(pol.get("max_windows_per_protein") if tok=="aa" else None),
++            protein_len_min=(pol.get("protein_len_min") if tok=="aa" else None),
++            protein_len_max=(pol.get("protein_len_max") if tok=="aa" else None),
++            translation_only=bool(pol.get("translation_only", False)) if tok=="aa" else False,
+             save_to_disk=True, out_path=enc_path
+         )
+ 
+@@ -179,7 +274,9 @@
+         state=state, io_cfg=io_cfg, train_cfg=train_cfg,
+         tokenizer=tok, window_size_bp=window_size,
+         loss_type=getattr(args, "loss_type", None),
+-        mask_prob=getattr(args, "mask_prob", None),
++        mask_prob=pol.get("mask_prob"),
++        span_mask_prob=pol.get("span_mask_prob"),
++        span_mask_len=pol.get("span_mask_len"),
+     )
+ 
+     pvc = state["plasmid_visit_counts"]
+@@ -355,6 +452,7 @@
+ 
+         for idx in indices:
+             acc = accessions[idx]
++            pol = _resolve_proteome_params(args, train_cfg, state=state, tok=tok, src=src)
+ 
+             _ensure_record(acc, src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=False)
+ 
+@@ -362,6 +460,11 @@
+                 io_cfg, acc, tok, window_size, stride, frame,
+                 source=src,
+                 min_orf_aa=(min_orf if tok=="aa" else None),
++                max_windows_per_protein=(pol.get("max_windows_per_protein") if tok=="aa" else None),
++                protein_len_min=(pol.get("protein_len_min") if tok=="aa" else None),
++                protein_len_max=(pol.get("protein_len_max") if tok=="aa" else None),
++                translation_only=bool(pol.get("translation_only", False)) if tok=="aa" else False,
++                curriculum_tag=pol.get("curriculum_tag"),
+             )
+             if os.path.exists(enc_path):
+                 encoded = np.load(enc_path)
+@@ -370,6 +473,10 @@
+                     acc, io_cfg, window_size, stride,
+                     tokenizer=tok, frame_offset=frame, min_orf_aa=min_orf,
+                     source=src,
++                    max_windows_per_protein=(pol.get("max_windows_per_protein") if tok=="aa" else None),
++                    protein_len_min=(pol.get("protein_len_min") if tok=="aa" else None),
++                    protein_len_max=(pol.get("protein_len_max") if tok=="aa" else None),
++                    translation_only=bool(pol.get("translation_only", False)) if tok=="aa" else False,
+                     save_to_disk=True, out_path=enc_path
+                 )
+ 
+@@ -379,7 +486,9 @@
+                 state=state, io_cfg=io_cfg, train_cfg=train_cfg,
+                 tokenizer=tok, window_size_bp=window_size,
+                 loss_type=getattr(args, "loss_type", None),
+-                mask_prob=getattr(args, "mask_prob", None),
++                mask_prob=pol.get("mask_prob"),
++                span_mask_prob=pol.get("span_mask_prob"),
++                span_mask_len=pol.get("span_mask_len"),
+             )
+ 
+             pvc = state["plasmid_visit_counts"]
+@@ -472,6 +581,13 @@
+         sp.add_argument("--frame-offset", type=int, choices=[0,1,2], default=None, help="Codon frame offset (default from config)")
+         sp.add_argument("--min-orf-aa", type=int, default=None, help="AA tokenizer: minimum ORF length in amino acids (default from config)")
+         sp.add_argument("--source", choices=["fasta","genbank"], default=None, help="Sequence record source. Default: fasta for base/codon, genbank for aa.")
++        # Proteome (aa) sampling / filters
++        sp.add_argument("--protein-len-min", type=int, default=None, help="AA tokenizer: minimum protein length to include (overrides config/curriculum)")
++        sp.add_argument("--protein-len-max", type=int, default=None, help="AA tokenizer: maximum protein length to include (overrides config/curriculum)")
++        sp.add_argument("--max-windows-per-protein", type=int, default=None, help="AA tokenizer: cap windows sampled per CDS/protein (balances long proteins)")
++        sp.add_argument("--translation-only", action="store_true", default=None, help="AA tokenizer+genbank: use only /translation-provided proteins")
++        sp.add_argument("--allow-translated", action="store_true", default=None, help="AA tokenizer+genbank: allow translating from CDS when /translation missing")
++        sp.add_argument("--no-curriculum", action="store_true", help="Disable proteome curriculum for this run")
+ 
+     def add_loss_args(sp):
+         sp.add_argument(
+@@ -486,6 +602,8 @@
+             default=None,
+             help="Denoising mask probability (AA tokenizer only). Default: 0.05 for aa, 0 for others.",
+         )
++        sp.add_argument("--span-mask-prob", type=float, default=None, help="AA tokenizer: probability to apply a contiguous span mask per sequence")
++        sp.add_argument("--span-mask-len", type=int, default=None, help="AA tokenizer: length (aa) of the contiguous span mask")
+ 
+     s = sub.add_parser("encode-one")
+     s.add_argument("accession")
+diff -ruN ./genostream/config.py ../gs_curr/genostream/config.py
+--- ./genostream/config.py	2025-12-13 06:28:37.137262884 +0000
++++ ../gs_curr/genostream/config.py	2025-12-13 06:18:44.169134354 +0000
+@@ -31,6 +31,27 @@
+         "protein_window_aa": 256,
+         "protein_stride_aa": 128,
+         "min_orf_aa": 90,
++        # proteome denoising / grammar
++        # (applied only when tokenizer=aa)
++        "aa_mask_prob": 0.10,
++        "aa_span_mask_prob": 0.05,
++        "aa_span_mask_len": 12,
++
++        # proteome sampling balance + filters
++        "max_windows_per_protein": 4,
++        "protein_len_min": None,
++        "protein_len_max": None,
++        "translation_only": False,
++
++        # curriculum (length/quality/balance) — aa+genbank only
++        "curriculum_enabled": True,
++        # total_steps boundaries (from state/progress.json)
++        "curriculum_steps": [0, 2000, 8000],
++        "curriculum_phases": [
++            {"translation_only": True,  "protein_len_min": 100, "protein_len_max": 400, "max_windows_per_protein": 2, "aa_mask_prob": 0.08, "aa_span_mask_prob": 0.03, "aa_span_mask_len": 10},
++            {"translation_only": True,  "protein_len_min": 60,  "protein_len_max": 800, "max_windows_per_protein": 4, "aa_mask_prob": 0.10, "aa_span_mask_prob": 0.05, "aa_span_mask_len": 12},
++            {"translation_only": False, "protein_len_min": 60,  "protein_len_max": None,"max_windows_per_protein": 6, "aa_mask_prob": 0.12, "aa_span_mask_prob": 0.06, "aa_span_mask_len": 14},
++        ],
+     },
+     "io": {
+         "cache_fasta_dir": "cache/fasta",
+@@ -71,6 +92,22 @@
+     protein_stride_aa: int
+     min_orf_aa: int
+ 
++    # denoising / inpainting (aa only)
++    aa_mask_prob: float
++    aa_span_mask_prob: float
++    aa_span_mask_len: int
++
++    # balance + filters (aa only)
++    max_windows_per_protein: int
++    protein_len_min: Optional[int]
++    protein_len_max: Optional[int]
++    translation_only: bool
++
++    # curriculum (aa+genbank only)
++    curriculum_enabled: bool
++    curriculum_steps: list
++    curriculum_phases: list
++
+ @dataclass
+ class IOConfig:
+     cache_fasta_dir: str
+@@ -131,6 +168,19 @@
+             protein_window_aa=int(t.get("protein_window_aa", 256)),
+             protein_stride_aa=int(t.get("protein_stride_aa", 128)),
+             min_orf_aa=int(t.get("min_orf_aa", 90)),
++            aa_mask_prob=float(t.get("aa_mask_prob", 0.10)),
++            aa_span_mask_prob=float(t.get("aa_span_mask_prob", 0.05)),
++            aa_span_mask_len=int(t.get("aa_span_mask_len", 12)),
++
++            max_windows_per_protein=int(t.get("max_windows_per_protein", 4)),
++            protein_len_min=(None if t.get("protein_len_min") is None else int(t.get("protein_len_min"))),
++            protein_len_max=(None if t.get("protein_len_max") is None else int(t.get("protein_len_max"))),
++            translation_only=bool(t.get("translation_only", False)),
++
++            curriculum_enabled=bool(t.get("curriculum_enabled", True)),
++            curriculum_steps=list(t.get("curriculum_steps", [0, 2000, 8000])),
++            curriculum_phases=list(t.get("curriculum_phases", [])),
++
+         ),
+         IOConfig(
+             cache_fasta_dir=io.get("cache_fasta_dir", "cache/fasta"),
+diff -ruN ./genostream/encoding.py ../gs_curr/genostream/encoding.py
+--- ./genostream/encoding.py	2025-12-13 06:28:37.137749045 +0000
++++ ../gs_curr/genostream/encoding.py	2025-12-13 06:22:36.548184381 +0000
+@@ -226,7 +226,7 @@
+         aas.append(CODON_TO_AA.get(cod, "X"))
+     return "".join(aas)
+ 
+-def extract_cds_proteins_from_genbank(path: str, min_aa: int = 90) -> List[str]:
++def extract_cds_proteins_from_genbank(path: str, min_aa: int = 90, return_sources: bool = False):
+     """
+     Extract protein sequences from GenBank FEATURES/CDS.
+ 
+@@ -248,6 +248,7 @@
+         origin_dna = ""
+ 
+     proteins: List[str] = []
++    sources: List[bool] = []
+     in_features = False
+     in_origin = False
+ 
+@@ -268,6 +269,8 @@
+             reading_translation = False; trans_buf = []
+             return
+ 
++        from_translation = bool(cur_translation)
++
+         prot = ""
+         if cur_translation:
+             prot = cur_translation
+@@ -282,6 +285,7 @@
+             prot = prot[:-1]
+         if prot and len(prot) >= min_aa:
+             proteins.append(prot)
++            sources.append(from_translation)
+ 
+         # reset
+         cur_loc = None; cur_translation = None; cur_codon_start = 1; cur_is_pseudo = False
+@@ -365,6 +369,9 @@
+                         trans_buf = [val]
+                     continue
+ 
++
++    if return_sources:
++        return list(zip(proteins, sources))
+     return proteins
+ # -----------------------------
+ # Base encoding
+@@ -516,13 +523,21 @@
+     scan_strand(reverse_complement(seq))
+     return proteins
+ 
+-def encode_proteins_aa_windows(proteins: List[str], window_aa: int, stride_aa: int) -> np.ndarray:
++def encode_proteins_aa_windows(
++    proteins: List[str],
++    window_aa: int,
++    stride_aa: int,
++    max_windows_per_protein: int | None = None,
++    rng: np.random.Generator | None = None,
++) -> np.ndarray:
+     """
+     Returns: (num_windows, window_aa, 21)
+     Pads short proteins to one window.
+     """
+     if window_aa <= 0 or stride_aa <= 0:
+         raise ValueError("window_aa and stride_aa must be > 0")
++    if rng is None:
++        rng = np.random.default_rng(0)
+     windows: List[np.ndarray] = []
+ 
+     for prot in proteins:
+@@ -538,7 +553,14 @@
+             windows.append(arr)
+             continue
+ 
+-        for start in range(0, len(prot) - window_aa + 1, stride_aa):
++        starts = list(range(0, len(prot) - window_aa + 1, stride_aa))
++        if not starts:
++            starts = [0]
++        if max_windows_per_protein is not None and max_windows_per_protein > 0 and len(starts) > max_windows_per_protein:
++            starts = list(rng.choice(starts, size=int(max_windows_per_protein), replace=False))
++            starts.sort()
++
++        for start in starts:
+             chunk = prot[start:start+window_aa]
+             arr = np.zeros((window_aa, AA_VOCAB_SIZE), dtype=np.float32)
+             for i, aa in enumerate(chunk):
+@@ -560,6 +582,11 @@
+     tokenizer: str = "base",
+     frame_offset: int = 0,
+     min_orf_aa: int = 90,
++    max_windows_per_protein: int | None = None,
++    protein_len_min: int | None = None,
++    protein_len_max: int | None = None,
++    translation_only: bool = False,
++    rng_seed: int | None = None,
+     source: str = "fasta",
+     save_to_disk: bool = True,
+     out_path: Optional[str] = None,
+@@ -591,7 +618,15 @@
+         proteins: List[str] = []
+         if src == "genbank" and gb_for_proteins is not None:
+             try:
+-                proteins = extract_cds_proteins_from_genbank(gb_for_proteins, min_aa=min_orf_aa)
++                prot_items = extract_cds_proteins_from_genbank(gb_for_proteins, min_aa=min_orf_aa, return_sources=True)
++                # prot_items may be list[str] or list[(str, bool)] depending on return_sources
++                if prot_items and isinstance(prot_items[0], tuple):
++                    if translation_only:
++                        proteins = [p for (p, from_tr) in prot_items if from_tr]
++                    else:
++                        proteins = [p for (p, _) in prot_items]
++                else:
++                    proteins = list(prot_items)
+                 if proteins:
+                     logging.info(f"{accession}: extracted CDS proteins from GenBank: {len(proteins)} (min_aa={min_orf_aa})")
+                 else:
+@@ -601,7 +636,23 @@
+                 proteins = []
+         if not proteins:
+             proteins = find_orfs_proteins(seq, min_orf_aa=min_orf_aa)
+-        encoded = encode_proteins_aa_windows(proteins, window_aa=window_size, stride_aa=stride)
++        # Optional protein length filters (in addition to min_orf_aa)
++        if proteins and protein_len_min is not None:
++            proteins = [p for p in proteins if len(p) >= int(protein_len_min)]
++        if proteins and protein_len_max is not None:
++            proteins = [p for p in proteins if len(p) <= int(protein_len_max)]
++
++        # Deterministic sampling seed for balancing across proteins
++        if rng_seed is None:
++            import zlib
++            rng_seed = zlib.crc32(accession.encode('utf-8')) & 0xFFFFFFFF
++        rng = np.random.default_rng(int(rng_seed))
++
++        encoded = encode_proteins_aa_windows(
++            proteins, window_aa=window_size, stride_aa=stride,
++            max_windows_per_protein=max_windows_per_protein,
++            rng=rng,
++        )
+         logging.info(
+             f"{accession}: encoded(AA) src={src} genome_len={len(seq)} proteins={len(proteins)} "
+             f"-> windows={encoded.shape[0]} window_aa={window_size} stride_aa={stride} shape={encoded.shape}"
+diff -ruN ./genostream/io_utils.py ../gs_curr/genostream/io_utils.py
+--- ./genostream/io_utils.py	2025-12-13 06:28:37.137950423 +0000
++++ ../gs_curr/genostream/io_utils.py	2025-12-13 06:20:53.046268070 +0000
+@@ -81,6 +81,11 @@
+     frame_offset: int,
+     source: str = "fasta",
+     min_orf_aa: int | None = None,
++    max_windows_per_protein: int | None = None,
++    protein_len_min: int | None = None,
++    protein_len_max: int | None = None,
++    translation_only: bool = False,
++    curriculum_tag: str | None = None,
+ ) -> str:
+     """
+     Encoded cache file path that avoids mixing tokenizers / window params.
+@@ -103,6 +108,16 @@
+         tag += f".f{int(frame_offset)}"
+     if tok == "aa" and min_orf_aa is not None:
+         tag += f".min{int(min_orf_aa)}"
++    if tok == "aa" and max_windows_per_protein is not None:
++        tag += f".wpp{int(max_windows_per_protein)}"
++    if tok == "aa" and protein_len_min is not None:
++        tag += f".pmin{int(protein_len_min)}"
++    if tok == "aa" and protein_len_max is not None:
++        tag += f".pmax{int(protein_len_max)}"
++    if tok == "aa" and translation_only:
++        tag += ".tronly"
++    if tok == "aa" and curriculum_tag:
++        tag += f".{curriculum_tag}"
+     import os
+     fname = f"{accession}.{tag}.npy"
+     return os.path.join(io_cfg.cache_encoded_dir, fname)
+diff -ruN ./genostream/training.py ../gs_curr/genostream/training.py
+--- ./genostream/training.py	2025-12-13 06:28:37.197022079 +0000
++++ ../gs_curr/genostream/training.py	2025-12-13 06:24:09.198307793 +0000
+@@ -41,6 +41,42 @@
+         x[mask, X_IDX] = 1.0
+     return x
+ 
++
++
++def _apply_aa_span_mask(batch_onehot: "torch.Tensor", span_prob: float, span_len: int) -> "torch.Tensor":
++    """Replace a contiguous span with X (unknown) in the *input*.
++
++    This is a simple inpainting-style corruption. We keep the training target clean.
++    """
++    if torch is None:
++        raise RuntimeError("PyTorch not installed.")
++    p = float(span_prob)
++    L = int(span_len)
++    if p <= 0 or L <= 0:
++        return batch_onehot
++    B = batch_onehot.size(0)
++    seq_len = batch_onehot.size(1)
++    if seq_len <= 0:
++        return batch_onehot
++    # X is last index in AA vocab
++    X_IDX = batch_onehot.size(2) - 1
++    x = batch_onehot.clone()
++    # for each sample, maybe apply one span
++    apply = (torch.rand(B, device=x.device) < p)
++    if not bool(apply.any()):
++        return x
++    # start positions
++    max_start = max(0, seq_len - L)
++    starts = torch.randint(low=0, high=max_start + 1, size=(B,), device=x.device)
++    for b in range(B):
++        if not bool(apply[b]):
++            continue
++        s = int(starts[b].item())
++        e = min(seq_len, s + L)
++        x[b, s:e, :] = 0.0
++        x[b, s:e, X_IDX] = 1.0
++    return x
++
+ def train_on_encoded(
+     accession: str,
+     encoded: np.ndarray,
+@@ -53,6 +89,8 @@
+     window_size_bp: int,
+     loss_type: Optional[str] = None,
+     mask_prob: Optional[float] = None,
++    span_mask_prob: Optional[float] = None,
++    span_mask_len: Optional[int] = None,
+ ) -> float:
+     if torch is None:
+         raise RuntimeError("PyTorch not installed.")
+@@ -62,7 +100,9 @@
+     hidden_dim = train_cfg.hidden_dim
+ 
+     lt = _default_loss_type(tokenizer) if loss_type is None else str(loss_type).lower()
+-    mp = float(mask_prob) if mask_prob is not None else (0.05 if str(tokenizer).lower() == "aa" else 0.0)
++    mp = float(mask_prob) if mask_prob is not None else float(getattr(train_cfg, 'aa_mask_prob', 0.05 if str(tokenizer).lower() == 'aa' else 0.0))
++    sp = float(span_mask_prob) if span_mask_prob is not None else float(getattr(train_cfg, 'aa_span_mask_prob', 0.0))
++    sl = int(span_mask_len) if span_mask_len is not None else int(getattr(train_cfg, 'aa_span_mask_len', 0))
+ 
+     model, optimizer, global_step, ckpt_path = load_or_init_model(
+         io_cfg=io_cfg,
+@@ -100,11 +140,13 @@
+             (batch,) = next(it)
+ 
+         batch = batch.to(device)         # (B, L, V)
+-        # Denoising (AA only by default): corrupt *input*, keep target clean.
+-        if mp > 0 and str(tokenizer).lower() == "aa":
+-            x_in = _apply_aa_mask(batch, mp)
+-        else:
+-            x_in = batch
++        # Denoising/inpainting (AA only): corrupt *input*, keep target clean.
++        x_in = batch
++        if str(tokenizer).lower() == "aa":
++            if sp > 0 and sl > 0:
++                x_in = _apply_aa_span_mask(x_in, sp, sl)
++            if mp > 0:
++                x_in = _apply_aa_mask(x_in, mp)
+         x_flat = x_in.view(x_in.size(0), -1)
+         x_target_flat = batch.view(batch.size(0), -1)
+ 
+@@ -130,7 +172,7 @@
+ 
+         if step_count % 10 == 0 or step_count == steps:
+             logging.info(
+-                f"{accession}: step {step_count}/{steps} total={total.item():.6f} recon={recon.item():.6f} kl={kl.item():.6f} beta={beta:.3g} loss={lt} mask={mp:.3g}"
++                f"{accession}: step {step_count}/{steps} total={total.item():.6f} recon={recon.item():.6f} kl={kl.item():.6f} beta={beta:.3g} loss={lt} mask={mp:.3g} span={sp:.3g}/{sl}"
+             )
+ 
+     state["total_steps"] = int(state.get("total_steps", 0)) + step_count

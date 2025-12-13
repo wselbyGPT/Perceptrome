@@ -1,0 +1,31 @@
+--- genostream/config.py	2025-12-13 07:25:50.444356673 +0000
++++ genostream/config.py	2025-12-13 07:29:51.857036645 +0000
+@@ -31,6 +31,14 @@
+         "protein_window_aa": 256,
+         "protein_stride_aa": 128,
+         "min_orf_aa": 90,
++        # biologically grounded GenBank/CDS options (aa + source=genbank)
++        "protein_strict_cds_only": False,       # no ORF fallback
++        "protein_require_translation": False,   # only accept /translation qualifiers
++        "protein_reject_partial": True,        # reject CDS with < or > in location
++        "protein_require_start_m": True,       # require protein begins with M
++        "protein_x_free": True,               # reject proteins containing X
++        "protein_min_aa": 90,                 # minimum protein length (aa)
++        "protein_max_aa": 5000,               # maximum protein length (aa)
+     },
+     "io": {
+         "cache_fasta_dir": "cache/fasta",
+@@ -139,6 +155,13 @@
+             protein_window_aa=int(t.get("protein_window_aa", 256)),
+             protein_stride_aa=int(t.get("protein_stride_aa", 128)),
+             min_orf_aa=int(t.get("min_orf_aa", 90)),
++            protein_strict_cds_only=bool(t.get("protein_strict_cds_only", False)),
++            protein_require_translation=bool(t.get("protein_require_translation", False)),
++            protein_reject_partial=bool(t.get("protein_reject_partial", True)),
++            protein_require_start_m=bool(t.get("protein_require_start_m", True)),
++            protein_x_free=bool(t.get("protein_x_free", True)),
++            protein_min_aa=int(t.get("protein_min_aa", t.get("min_orf_aa", 90))),
++            protein_max_aa=int(t.get("protein_max_aa", 5000)),
+         ),
+         IOConfig(
+             cache_fasta_dir=io.get("cache_fasta_dir", "cache/fasta"),

@@ -1,0 +1,97 @@
+2025-12-12 22:13:58,125 [INFO] NC_002134.1: fetching from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+2025-12-12 22:13:58,647 [INFO] NC_002134.1: fetched and saved FASTA (95695 bytes)
+2025-12-12 22:14:01,361 [INFO] NC_002134.1: encoded(AA) genome_len=94281 proteins=172 -> windows=216 window_aa=256 stride_aa=128 shape=(216, 256, 21)
+2025-12-12 22:14:01,365 [INFO] NC_002134.1: saved encoded tensor to cache/encoded/NC_002134.1.aa.w256.s128.min90.npy
+2025-12-12 22:14:05,554 [INFO] Initializing new VAE (tokenizer=aa, seq_len=256, vocab=21, input_dim=5376, hidden=512, lr=0.001)
+2025-12-12 22:14:05,554 [INFO] NC_002134.1: train tokenizer=aa windows=216 L=256 V=21 steps=10 batch=8
+2025-12-12 22:14:06,214 [INFO] NC_002134.1: step 10/10 total=0.039393 recon=0.039392 kl=0.533294 beta=2e-06
+2025-12-12 22:14:06,471 [INFO] Saved checkpoint step=10 -> model/checkpoints/latest.pt
+2025-12-12 22:14:11,921 [INFO] Loaded checkpoint model/checkpoints/latest.pt (tokenizer=aa, seq_len=256, vocab=21, hidden=512, step=10)
+2025-12-12 22:14:22,697 [INFO] Loaded checkpoint model/checkpoints/latest.pt (tokenizer=aa, seq_len=256, vocab=21, hidden=512, step=10)
+2025-12-12 22:56:05,837 [INFO] NC_002134.1: fetching GenBank from NCBI https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+2025-12-12 22:56:06,466 [INFO] NC_002134.1: fetched and saved GenBank (265993 bytes)
+2025-12-12 22:56:06,523 [INFO] NC_002134.1: extracted CDS proteins from GenBank: 90 (min_aa=90)
+2025-12-12 22:56:06,542 [INFO] NC_002134.1: encoded(AA) src=genbank genome_len=94281 proteins=90 -> windows=133 window_aa=256 stride_aa=128 shape=(133, 256, 21)
+2025-12-12 22:56:06,551 [INFO] NC_002134.1: saved encoded tensor to cache/encoded/NC_002134.1.aa.w256.s128.srcgb.min90.npy
+2025-12-12 22:56:16,628 [INFO] NC_002134.1: using cached encoded at cache/encoded/NC_002134.1.aa.w256.s128.srcgb.min90.npy shape=(133, 256, 21)
+2025-12-12 22:56:22,494 [INFO] Initializing new VAE (tokenizer=aa, seq_len=256, vocab=21, input_dim=5376, hidden=512, lr=0.001)
+2025-12-12 22:56:22,503 [INFO] NC_002134.1: train tokenizer=aa windows=133 L=256 V=21 steps=50 batch=16
+2025-12-12 22:56:23,812 [INFO] NC_002134.1: step 10/50 total=0.037310 recon=0.037307 kl=1.222014 beta=2e-06
+2025-12-12 22:56:23,899 [INFO] NC_002134.1: step 20/50 total=0.037624 recon=0.037540 kl=21.172199 beta=4e-06
+2025-12-12 22:56:23,982 [INFO] NC_002134.1: step 30/50 total=0.039887 recon=0.039574 kl=52.179375 beta=6e-06
+2025-12-12 22:56:24,064 [INFO] NC_002134.1: step 40/50 total=0.037507 recon=0.037272 kl=29.418474 beta=8e-06
+2025-12-12 22:56:24,144 [INFO] NC_002134.1: step 50/50 total=0.037828 recon=0.037621 kl=20.751329 beta=1e-05
+2025-12-12 22:56:24,380 [INFO] Saved checkpoint step=50 -> model/checkpoints/latest.pt
+2025-12-12 22:56:34,212 [INFO] Loaded checkpoint model/checkpoints/latest.pt (tokenizer=aa, seq_len=256, vocab=21, hidden=512, step=50)
+2025-12-12 23:12:26,511 [INFO] NC_002134.1: using cached encoded at cache/encoded/NC_002134.1.aa.w256.s128.srcgb.min90.npy shape=(133, 256, 21)
+2025-12-12 23:13:26,202 [INFO] NC_002134.1: using cached encoded at cache/encoded/NC_002134.1.aa.w256.s128.srcgb.min90.npy shape=(133, 256, 21)
+2025-12-12 23:13:31,246 [INFO] Initializing new VAE (tokenizer=aa, loss_type=ce, seq_len=256, vocab=21, input_dim=5376, hidden=512, lr=0.001)
+2025-12-12 23:13:31,248 [INFO] NC_002134.1: train tokenizer=aa windows=133 L=256 V=21 steps=300 batch=16
+2025-12-12 23:13:32,639 [INFO] NC_002134.1: step 10/300 total=2.517236 recon=2.517236 kl=0.052862 beta=2e-06 loss=ce mask=0.05
+2025-12-12 23:13:32,737 [INFO] NC_002134.1: step 20/300 total=2.519788 recon=2.519787 kl=0.052659 beta=4e-06 loss=ce mask=0.05
+2025-12-12 23:13:32,819 [INFO] NC_002134.1: step 30/300 total=2.437604 recon=2.437603 kl=0.193974 beta=6e-06 loss=ce mask=0.05
+2025-12-12 23:13:32,895 [INFO] NC_002134.1: step 40/300 total=2.458549 recon=2.458548 kl=0.127689 beta=8e-06 loss=ce mask=0.05
+2025-12-12 23:13:32,973 [INFO] NC_002134.1: step 50/300 total=2.558305 recon=2.558302 kl=0.332051 beta=1e-05 loss=ce mask=0.05
+2025-12-12 23:13:33,054 [INFO] NC_002134.1: step 60/300 total=2.280622 recon=2.280618 kl=0.351798 beta=1.2e-05 loss=ce mask=0.05
+2025-12-12 23:13:33,132 [INFO] NC_002134.1: step 70/300 total=2.153720 recon=2.153713 kl=0.523598 beta=1.4e-05 loss=ce mask=0.05
+2025-12-12 23:13:33,210 [INFO] NC_002134.1: step 80/300 total=1.811679 recon=1.811664 kl=0.927444 beta=1.6e-05 loss=ce mask=0.05
+2025-12-12 23:13:33,287 [INFO] NC_002134.1: step 90/300 total=1.878773 recon=1.878749 kl=1.325290 beta=1.8e-05 loss=ce mask=0.05
+2025-12-12 23:13:33,365 [INFO] NC_002134.1: step 100/300 total=0.880866 recon=0.880819 kl=2.321643 beta=2e-05 loss=ce mask=0.05
+2025-12-12 23:13:33,467 [INFO] NC_002134.1: step 110/300 total=0.490266 recon=0.490191 kl=3.386884 beta=2.2e-05 loss=ce mask=0.05
+2025-12-12 23:13:33,555 [INFO] NC_002134.1: step 120/300 total=0.314991 recon=0.314887 kl=4.350993 beta=2.4e-05 loss=ce mask=0.05
+2025-12-12 23:13:33,633 [INFO] NC_002134.1: step 130/300 total=0.105065 recon=0.104925 kl=5.383971 beta=2.6e-05 loss=ce mask=0.05
+2025-12-12 23:13:33,708 [INFO] NC_002134.1: step 140/300 total=0.050258 recon=0.050087 kl=6.092458 beta=2.8e-05 loss=ce mask=0.05
+2025-12-12 23:13:33,782 [INFO] NC_002134.1: step 150/300 total=0.018845 recon=0.018652 kl=6.419443 beta=3e-05 loss=ce mask=0.05
+2025-12-12 23:13:33,870 [INFO] NC_002134.1: step 160/300 total=0.016231 recon=0.016028 kl=6.367352 beta=3.2e-05 loss=ce mask=0.05
+2025-12-12 23:13:33,952 [INFO] NC_002134.1: step 170/300 total=0.008773 recon=0.008567 kl=6.061988 beta=3.4e-05 loss=ce mask=0.05
+2025-12-12 23:13:34,027 [INFO] NC_002134.1: step 180/300 total=0.005962 recon=0.005721 kl=6.702137 beta=3.6e-05 loss=ce mask=0.05
+2025-12-12 23:13:34,105 [INFO] NC_002134.1: step 190/300 total=0.003078 recon=0.002803 kl=7.227527 beta=3.8e-05 loss=ce mask=0.05
+2025-12-12 23:13:34,184 [INFO] NC_002134.1: step 200/300 total=0.002679 recon=0.002380 kl=7.477534 beta=4e-05 loss=ce mask=0.05
+2025-12-12 23:13:34,264 [INFO] NC_002134.1: step 210/300 total=0.002733 recon=0.002405 kl=7.817127 beta=4.2e-05 loss=ce mask=0.05
+2025-12-12 23:13:34,344 [INFO] NC_002134.1: step 220/300 total=0.001857 recon=0.001477 kl=8.636501 beta=4.4e-05 loss=ce mask=0.05
+2025-12-12 23:13:34,426 [INFO] NC_002134.1: step 230/300 total=0.002604 recon=0.002283 kl=6.976840 beta=4.6e-05 loss=ce mask=0.05
+2025-12-12 23:13:34,503 [INFO] NC_002134.1: step 240/300 total=0.002315 recon=0.001882 kl=9.012571 beta=4.8e-05 loss=ce mask=0.05
+2025-12-12 23:13:34,579 [INFO] NC_002134.1: step 250/300 total=0.002563 recon=0.002154 kl=8.179941 beta=5e-05 loss=ce mask=0.05
+2025-12-12 23:13:34,654 [INFO] NC_002134.1: step 260/300 total=0.001754 recon=0.001382 kl=7.156082 beta=5.2e-05 loss=ce mask=0.05
+2025-12-12 23:13:34,726 [INFO] NC_002134.1: step 270/300 total=0.001558 recon=0.001126 kl=8.002296 beta=5.4e-05 loss=ce mask=0.05
+2025-12-12 23:13:34,807 [INFO] NC_002134.1: step 280/300 total=0.001501 recon=0.001080 kl=7.520911 beta=5.6e-05 loss=ce mask=0.05
+2025-12-12 23:13:34,879 [INFO] NC_002134.1: step 290/300 total=0.001370 recon=0.000895 kl=8.190562 beta=5.8e-05 loss=ce mask=0.05
+2025-12-12 23:13:34,958 [INFO] NC_002134.1: step 300/300 total=0.001470 recon=0.001010 kl=7.655840 beta=6e-05 loss=ce mask=0.05
+2025-12-12 23:13:35,104 [INFO] Saved checkpoint step=300 -> model/checkpoints/latest.pt
+2025-12-12 23:13:52,965 [INFO] Loaded checkpoint model/checkpoints/latest.pt (tokenizer=aa, seq_len=256, vocab=21, hidden=512, step=300)
+2025-12-13 00:22:36,872 [INFO] NC_002134.1: extracted CDS proteins from GenBank: 90 (min_aa=90)
+2025-12-13 00:22:36,879 [INFO] NC_002134.1: encoded(AA) src=genbank genome_len=94281 proteins=68 -> windows=68 window_aa=256 stride_aa=128 shape=(68, 256, 21)
+2025-12-13 00:22:36,882 [INFO] NC_002134.1: saved encoded tensor to cache/encoded/NC_002134.1.aa.w256.s128.srcgb.min90.wpp2.pmin100.pmax400.tronly.cur0.npy
+2025-12-13 00:22:42,780 [INFO] Initializing new VAE (tokenizer=aa, loss_type=ce, seq_len=256, vocab=21, input_dim=5376, hidden=512, lr=0.001)
+2025-12-13 00:22:42,786 [INFO] NC_002134.1: train tokenizer=aa windows=68 L=256 V=21 steps=300 batch=16
+2025-12-13 00:22:44,548 [INFO] NC_002134.1: step 10/300 total=2.787729 recon=2.787728 kl=0.305543 beta=2e-06 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:44,685 [INFO] NC_002134.1: step 20/300 total=1.813175 recon=1.813174 kl=0.311563 beta=4e-06 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:44,836 [INFO] NC_002134.1: step 30/300 total=2.381486 recon=2.381485 kl=0.143021 beta=6e-06 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:44,983 [INFO] NC_002134.1: step 40/300 total=1.915898 recon=1.915894 kl=0.406319 beta=8e-06 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:45,116 [INFO] NC_002134.1: step 50/300 total=1.255289 recon=1.255282 kl=0.662710 beta=1e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:45,249 [INFO] NC_002134.1: step 60/300 total=1.281010 recon=1.281000 kl=0.852899 beta=1.2e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:45,394 [INFO] NC_002134.1: step 70/300 total=0.993958 recon=0.993920 kl=2.721592 beta=1.4e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:45,547 [INFO] NC_002134.1: step 80/300 total=0.498249 recon=0.498209 kl=2.523010 beta=1.6e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:45,724 [INFO] NC_002134.1: step 90/300 total=0.236589 recon=0.236525 kl=3.525291 beta=1.8e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:45,884 [INFO] NC_002134.1: step 100/300 total=0.021966 recon=0.021865 kl=5.067510 beta=2e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:46,021 [INFO] NC_002134.1: step 110/300 total=0.004344 recon=0.004196 kl=6.699660 beta=2.2e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:46,166 [INFO] NC_002134.1: step 120/300 total=0.003209 recon=0.003034 kl=7.280850 beta=2.4e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:46,303 [INFO] NC_002134.1: step 130/300 total=0.003083 recon=0.002939 kl=5.531755 beta=2.6e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:46,450 [INFO] NC_002134.1: step 140/300 total=0.001700 recon=0.001521 kl=6.396949 beta=2.8e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:46,587 [INFO] NC_002134.1: step 150/300 total=0.001385 recon=0.001136 kl=8.316469 beta=3e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:46,723 [INFO] NC_002134.1: step 160/300 total=0.001715 recon=0.001514 kl=6.293925 beta=3.2e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:46,886 [INFO] NC_002134.1: step 170/300 total=0.001538 recon=0.001333 kl=6.016979 beta=3.4e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:47,028 [INFO] NC_002134.1: step 180/300 total=0.001214 recon=0.000944 kl=7.504687 beta=3.6e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:47,160 [INFO] NC_002134.1: step 190/300 total=0.001191 recon=0.000957 kl=6.157703 beta=3.8e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:47,291 [INFO] NC_002134.1: step 200/300 total=0.001140 recon=0.000917 kl=5.573122 beta=4e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:47,437 [INFO] NC_002134.1: step 210/300 total=0.001126 recon=0.000868 kl=6.136188 beta=4.2e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:47,573 [INFO] NC_002134.1: step 220/300 total=0.000862 recon=0.000560 kl=6.876513 beta=4.4e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:47,745 [INFO] NC_002134.1: step 230/300 total=0.000716 recon=0.000381 kl=7.300401 beta=4.6e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:47,902 [INFO] NC_002134.1: step 240/300 total=0.000938 recon=0.000623 kl=6.560084 beta=4.8e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:48,044 [INFO] NC_002134.1: step 250/300 total=0.000853 recon=0.000432 kl=8.424570 beta=5e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:48,183 [INFO] NC_002134.1: step 260/300 total=0.000813 recon=0.000447 kl=7.037580 beta=5.2e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:48,323 [INFO] NC_002134.1: step 270/300 total=0.000709 recon=0.000254 kl=8.425591 beta=5.4e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:48,464 [INFO] NC_002134.1: step 280/300 total=0.000832 recon=0.000455 kl=6.731812 beta=5.6e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:48,596 [INFO] NC_002134.1: step 290/300 total=0.000770 recon=0.000336 kl=7.485575 beta=5.8e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:48,736 [INFO] NC_002134.1: step 300/300 total=0.001044 recon=0.000689 kl=5.906765 beta=6e-05 loss=ce mask=0.1 span=0.05/12
+2025-12-13 00:22:48,901 [INFO] Saved checkpoint step=300 -> model/checkpoints/latest.pt
