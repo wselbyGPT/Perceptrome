@@ -1,0 +1,27 @@
+ncbi:
+  email: "you@example.com"   # <- put your real email if you want to be nice to NCBI
+  api_key: null
+  max_retries: 3
+  backoff_seconds: 2.0
+
+training:
+  steps_per_plasmid: 25      # small, just to smoke-test
+  batch_size: 32
+  window_size: 512
+  stride: 256
+  max_stream_epochs: 10
+  shuffle_catalog: true
+  hidden_dim: 512
+  learning_rate: 1.0e-3
+  beta_kl: 1.0e-3
+  kl_warmup_steps: 5000
+  max_grad_norm: 5.0
+
+io:
+  cache_fasta_dir: "cache/fasta"
+  cache_genbank_dir: "cache/genbank"
+  cache_encoded_dir: "cache/encoded"
+  model_dir: "model"
+  checkpoints_dir: "model/checkpoints"
+  logs_dir: "logs"
+  state_file: "state/progress.json"

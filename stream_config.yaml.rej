@@ -1,0 +1,27 @@
+--- stream_config.yaml	2025-12-13 07:25:50.445416368 +0000
++++ stream_config.yaml	2025-12-13 07:40:38.307379103 +0000
+@@ -17,6 +17,24 @@
+   kl_warmup_steps: 5000
+   max_grad_norm: 5.0
+ 
++  # tokenizer (base|codon|aa)
++  tokenizer: base
++  frame_offset: 0
++
++  # proteome (aa mode) windowing
++  protein_window_aa: 256
++  protein_stride_aa: 128
++  min_orf_aa: 90
++
++  # biologically grounded GenBank/CDS options (aa + source=genbank)
++  protein_strict_cds_only: false
++  protein_require_translation: false
++  protein_reject_partial: true
++  protein_require_start_m: true
++  protein_x_free: true
++  protein_min_aa: 90
++  protein_max_aa: 5000
++
+ io:
+   cache_fasta_dir: "cache/fasta"
+   cache_genbank_dir: "cache/genbank"
