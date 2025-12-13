@@ -1,18 +1,47 @@
-# stream_config.yaml — default configuration for genostream
-
 ncbi:
-  email: "you@example.com"      # TODO: set to your email for NCBI
-  api_key: null                 # optional NCBI API key
+  email: "you@example.com"   # put your real email if you want to be nice to NCBI
+  api_key: null
   max_retries: 3
-  backoff_seconds: 2
+  backoff_seconds: 2.0
 
 training:
-  steps_per_plasmid: 50         # gradient steps per plasmid visit
-  batch_size: 16
+  # small, just to smoke-test
+  steps_per_plasmid: 25
+  batch_size: 32
+
+  # genome windowing (base/codon modes)
   window_size: 512
   stride: 256
-  max_stream_epochs: 100
+
+  max_stream_epochs: 10
   shuffle_catalog: true
+  hidden_dim: 512
+  learning_rate: 1.0e-3
+  beta_kl: 1.0e-3
+  kl_warmup_steps: 5000
+  max_grad_norm: 5.0
+
+  # tokenizer (base|codon|aa)
+  tokenizer: base
+  frame_offset: 0
+
+  # proteome (aa mode) windowing
+  protein_window_aa: 256
+  protein_stride_aa: 128
+  min_orf_aa: 90
+
+  # IMPORTANT: must be an int (not null) or cli.py may try int(None)
+  max_protein_aa: 5000
+
+  # biologically grounded GenBank/CDS options (aa + source=genbank)
+  # These are "compatibility" keys some code versions expect.
+  protein_strict_cds_only: false
+  protein_require_translation: false
+  protein_reject_partial: true
+  protein_require_start_m: true
+  protein_x_free: true
+  protein_min_aa: 90
+  protein_max_aa: 5000
 
 io:
   cache_fasta_dir: "cache/fasta"
