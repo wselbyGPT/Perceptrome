@@ -98,6 +98,11 @@ def train_on_encoded(
 
     seq_len, vocab_size = tokenizer_meta(tokenizer, window_size_bp)
     hidden_dim = train_cfg.hidden_dim
+    model_type = train_cfg.model_type
+    transformer_d_model = train_cfg.transformer_d_model
+    transformer_nhead = train_cfg.transformer_nhead
+    transformer_layers = train_cfg.transformer_layers
+    transformer_dropout = train_cfg.transformer_dropout
 
     lt = _default_loss_type(tokenizer) if loss_type is None else str(loss_type).lower()
     mp = float(mask_prob) if mask_prob is not None else float(getattr(train_cfg, 'aa_mask_prob', 0.05 if str(tokenizer).lower() == 'aa' else 0.0))
@@ -113,6 +118,11 @@ def train_on_encoded(
         device=device,
         tokenizer=tokenizer,
         loss_type=lt,
+        model_type=model_type,
+        transformer_d_model=transformer_d_model,
+        transformer_nhead=transformer_nhead,
+        transformer_layers=transformer_layers,
+        transformer_dropout=transformer_dropout,
     )
 
     windows_tensor = torch.from_numpy(encoded)  # (N, L, V)
@@ -187,6 +197,11 @@ def train_on_encoded(
         vocab_size=vocab_size,
         hidden_dim=hidden_dim,
         loss_type=lt,
+        model_type=model_type,
+        transformer_d_model=transformer_d_model,
+        transformer_nhead=transformer_nhead,
+        transformer_layers=transformer_layers,
+        transformer_dropout=transformer_dropout,
     )
 
     return last_total
@@ -217,6 +232,11 @@ def compute_window_errors(
 
     seq_len, vocab_size = tokenizer_meta(tokenizer, window_size_bp)
     hidden_dim = train_cfg.hidden_dim
+    model_type = train_cfg.model_type
+    transformer_d_model = train_cfg.transformer_d_model
+    transformer_nhead = train_cfg.transformer_nhead
+    transformer_layers = train_cfg.transformer_layers
+    transformer_dropout = train_cfg.transformer_dropout
 
     lt = _default_loss_type(tokenizer) if loss_type is None else str(loss_type).lower()
 
@@ -229,6 +249,11 @@ def compute_window_errors(
         device=device,
         tokenizer=tokenizer,
         loss_type=lt,
+        model_type=model_type,
+        transformer_d_model=transformer_d_model,
+        transformer_nhead=transformer_nhead,
+        transformer_layers=transformer_layers,
+        transformer_dropout=transformer_dropout,
     )
 
     model.eval()
