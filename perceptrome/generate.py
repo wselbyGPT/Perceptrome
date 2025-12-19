@@ -78,6 +78,12 @@ def generate_plasmid_sequence(
     device = get_device()
     seq_len, vocab_size = tokenizer_meta(tok, window_size_bp)
     hidden_dim = train_cfg.hidden_dim
+    model_type = train_cfg.model_type
+    transformer_d_model = train_cfg.transformer_d_model
+    transformer_nhead = train_cfg.transformer_nhead
+    transformer_layers = train_cfg.transformer_layers
+    transformer_dropout = train_cfg.transformer_dropout
+    latent_dim = transformer_d_model if str(model_type).lower() == "transformer" else hidden_dim
 
     model, optimizer, global_step, ckpt_path = load_or_init_model(
         io_cfg=io_cfg,
@@ -88,6 +94,11 @@ def generate_plasmid_sequence(
         device=device,
         tokenizer=tok,
         loss_type="mse",
+        model_type=model_type,
+        transformer_d_model=transformer_d_model,
+        transformer_nhead=transformer_nhead,
+        transformer_layers=transformer_layers,
+        transformer_dropout=transformer_dropout,
     )
     model.eval()
 
@@ -106,7 +117,7 @@ def generate_plasmid_sequence(
 
     with torch.no_grad():
         for _ in range(n_windows):
-            z = torch.randn(1, hidden_dim, device=device) * latent_scale
+            z = torch.randn(1, latent_dim, device=device) * latent_scale
             logits_flat = model.decode(z)   # (1, seq_len*vocab)
             logits = logits_flat.view(seq_len, vocab_size).cpu().numpy()
 
@@ -171,6 +182,12 @@ def generate_protein_sequence(
     seq_len, vocab_size = tokenizer_meta(tok, window_aa)
     assert vocab_size == AA_VOCAB_SIZE
     hidden_dim = train_cfg.hidden_dim
+    model_type = train_cfg.model_type
+    transformer_d_model = train_cfg.transformer_d_model
+    transformer_nhead = train_cfg.transformer_nhead
+    transformer_layers = train_cfg.transformer_layers
+    transformer_dropout = train_cfg.transformer_dropout
+    latent_dim = transformer_d_model if str(model_type).lower() == "transformer" else hidden_dim
 
     model, optimizer, global_step, ckpt_path = load_or_init_model(
         io_cfg=io_cfg,
@@ -181,6 +198,11 @@ def generate_protein_sequence(
         device=device,
         tokenizer=tok,
         loss_type="ce",
+        model_type=model_type,
+        transformer_d_model=transformer_d_model,
+        transformer_nhead=transformer_nhead,
+        transformer_layers=transformer_layers,
+        transformer_dropout=transformer_dropout,
     )
     model.eval()
 
@@ -198,7 +220,7 @@ def generate_protein_sequence(
         aa_chars: List[str] = []
         with torch.no_grad():
             for _ in range(n_windows):
-                z = torch.randn(1, hidden_dim, device=device) * latent_scale
+                z = torch.randn(1, latent_dim, device=device) * latent_scale
                 logits_flat = model.decode(z)
                 logits = logits_flat.view(seq_len, vocab_size).cpu().numpy()
                 for j in range(seq_len):
