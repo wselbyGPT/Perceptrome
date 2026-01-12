@@ -1,19 +1,8 @@
 import curses
-import logging
-from dataclasses import dataclass
-from typing import Any
-
 import numpy as np
+import tensorflow as tf
 
-try:
-    import torch
-    from torch.utils.data import DataLoader
-except ImportError:  # pragma: no cover
-    torch = None  # type: ignore[assignment]
-    DataLoader = None  # type: ignore[assignment]
-
-from ..encoding_main import compute_gc_from_encoded
-from ..model import PlasmidVAE, get_device, load_or_init_model, vae_loss
+from ..model import PlasmidVAE
 
 
 def run_scope_ui(
@@ -40,6 +29,7 @@ def run_scope_ui(
         stdscr.addstr(0, 0, "No windows to visualize (encoded array empty).")
         stdscr.refresh()
         import time
+
         time.sleep(2.0)
         return
 
@@ -52,6 +42,7 @@ def run_scope_ui(
     start_idx = 0
 
     import time
+
     while True:
         stdscr.erase()
         h, w = stdscr.getmaxyx()
@@ -139,8 +130,8 @@ def run_scope_ui(
 
 def compute_errors_with_model_and_tensor(
     model: PlasmidVAE,
-    windows_tensor: "torch.Tensor",
-    device: "torch.device",
+    windows_tensor: tf.Tensor,
+    device: str,
     loss_type: str = "mse",
     seq_len: int = 0,
     vocab_size: int = 0,
@@ -150,34 +141,25 @@ def compute_errors_with_model_and_tensor(
     - loss_type='mse': MSE between sigmoid(logits) and one-hot input
     - loss_type='ce': mean cross-entropy (NLL) per window
     """
-    if torch is None:
-        raise RuntimeError(
-            "PyTorch is not installed. Install it with `pip install torch`."
-        )
-
-    model.eval()
-    with torch.no_grad():
-        wt = windows_tensor.to(device)
-        if wt.numel() == 0:
+    model.trainable = False
+    with tf.device(device):
+        wt = tf.convert_to_tensor(windows_tensor, dtype=tf.float32)
+        if wt.shape[0] == 0:
             return np.zeros((0,), dtype=np.float32)
-        N = wt.size(0)
-        x_flat = wt.view(N, -1)
-        mu, logvar = model.encode(x_flat)
-        logits_flat = model.decode(mu)
+        N = wt.shape[0]
+        x_flat = tf.reshape(wt, (N, -1))
+        mu, logvar = model.encode(x_flat, training=False)
+        logits_flat = model.decode(mu, training=False)
         if str(loss_type).lower() == "ce":
-            import torch.nn.functional as F
             if seq_len <= 0 or vocab_size <= 0:
-                # Infer shape from tensor
-                seq_len = int(wt.size(1))
-                vocab_size = int(wt.size(2))
-            logits3 = logits_flat.view(N, int(seq_len), int(vocab_size))
-            targets = wt.argmax(dim=2)
-            ce = F.cross_entropy(logits3.view(-1, int(vocab_size)), targets.view(-1), reduction="none")
-            ce_w = ce.view(N, int(seq_len)).mean(dim=1)
-            return ce_w.cpu().numpy().astype(np.float32)
-        else:
-            recon = torch.sigmoid(logits_flat).view_as(wt)
-            mse = (recon - wt).pow(2).mean(dim=(1, 2))
-            return mse.cpu().numpy().astype(np.float32)
+                seq_len = int(wt.shape[1])
+                vocab_size = int(wt.shape[2])
+            logits3 = tf.reshape(logits_flat, (N, int(seq_len), int(vocab_size)))
+            targets = tf.argmax(wt, axis=2)
+            ce = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=targets, logits=logits3)
+            ce_w = tf.reduce_mean(tf.reshape(ce, (N, int(seq_len))), axis=1)
+            return ce_w.numpy().astype(np.float32)
 
-
+        recon = tf.reshape(tf.nn.sigmoid(logits_flat), tf.shape(wt))
+        mse = tf.reduce_mean(tf.square(recon - wt), axis=(1, 2))
+        return mse.numpy().astype(np.float32)

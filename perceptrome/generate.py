@@ -1,16 +1,22 @@
-import logging, os, random
+import logging
+import os
+import random
 from typing import List, Optional
 
 import numpy as np
-
-try:
-    import torch
-except ImportError:
-    torch = None  # type: ignore
+import tensorflow as tf
 
 from .config import TrainingConfig, IOConfig
 from .model import get_device, load_or_init_model
-from .encoding_main import tokenizer_meta, IDX_TO_CODON, CODON_VOCAB_SIZE, GC_COUNT_PER_TOKEN, IDX_TO_AA, AA_VOCAB_SIZE
+from .encoding_main import (
+    tokenizer_meta,
+    IDX_TO_CODON,
+    CODON_VOCAB_SIZE,
+    GC_COUNT_PER_TOKEN,
+    IDX_TO_AA,
+    AA_VOCAB_SIZE,
+)
+
 
 def _sample_from_logits(logits: np.ndarray, temperature: float) -> int:
     """Sample an index from a logits vector using softmax( logits / T )."""
@@ -37,7 +43,7 @@ def _passes_protein_filters(seq: str, max_run: int, max_x_frac: float) -> bool:
         run = 1
         best = 1
         for i in range(1, len(seq)):
-            if seq[i] == seq[i-1]:
+            if seq[i] == seq[i - 1]:
                 run += 1
                 if run > best:
                     best = run
@@ -46,6 +52,7 @@ def _passes_protein_filters(seq: str, max_run: int, max_x_frac: float) -> bool:
         if best > int(max_run):
             return False
     return True
+
 
 def generate_plasmid_sequence(
     train_cfg: TrainingConfig,
@@ -61,8 +68,6 @@ def generate_plasmid_sequence(
     output_path: str,
     tokenizer: str,
 ) -> str:
-    if torch is None:
-        raise RuntimeError("PyTorch not installed.")
     tok = tokenizer.lower()
     if tok not in ("base", "codon"):
         raise ValueError("generate_plasmid_sequence only supports base|codon")
@@ -71,9 +76,9 @@ def generate_plasmid_sequence(
         length_bp = (length_bp // 3) * 3
 
     if seed is not None:
-        np.random.seed(seed); random.seed(seed); torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+        tf.random.set_seed(seed)
 
     device = get_device()
     seq_len, vocab_size = tokenizer_meta(tok, window_size_bp)
@@ -85,52 +90,49 @@ def generate_plasmid_sequence(
     transformer_dropout = train_cfg.transformer_dropout
     latent_dim = transformer_d_model if str(model_type).lower() == "transformer" else hidden_dim
 
-    model, optimizer, global_step, ckpt_path = load_or_init_model(
-        io_cfg=io_cfg,
-        seq_len=seq_len,
-        vocab_size=vocab_size,
-        hidden_dim=hidden_dim,
-        learning_rate=train_cfg.learning_rate,
-        device=device,
-        tokenizer=tok,
-        loss_type="mse",
-        model_type=model_type,
-        transformer_d_model=transformer_d_model,
-        transformer_nhead=transformer_nhead,
-        transformer_layers=transformer_layers,
-        transformer_dropout=transformer_dropout,
-    )
-    model.eval()
+    with tf.device(device):
+        model, optimizer, global_step, manager = load_or_init_model(
+            io_cfg=io_cfg,
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            learning_rate=train_cfg.learning_rate,
+            device=device,
+            tokenizer=tok,
+            loss_type="mse",
+            model_type=model_type,
+            transformer_d_model=transformer_d_model,
+            transformer_nhead=transformer_nhead,
+            transformer_layers=transformer_layers,
+            transformer_dropout=transformer_dropout,
+        )
+        model.trainable = False
 
-    if num_windows is not None:
-        n_windows = int(num_windows)
-        target_bp = n_windows * window_size_bp
-    else:
-        n_windows = (length_bp + window_size_bp - 1) // window_size_bp
-        target_bp = length_bp
+        if num_windows is not None:
+            n_windows = int(num_windows)
+            target_bp = n_windows * window_size_bp
+        else:
+            n_windows = (length_bp + window_size_bp - 1) // window_size_bp
+            target_bp = length_bp
 
-    temperature = float(temperature)
-    latent_scale = float(latent_scale)
-    gc_bias = float(gc_bias)
+        temperature = float(temperature)
+        latent_scale = float(latent_scale)
+        gc_bias = float(gc_bias)
 
-    seq_parts: List[str] = []
+        seq_parts: List[str] = []
 
-    with torch.no_grad():
         for _ in range(n_windows):
-            z = torch.randn(1, latent_dim, device=device) * latent_scale
-            logits_flat = model.decode(z)   # (1, seq_len*vocab)
-            logits = logits_flat.view(seq_len, vocab_size).cpu().numpy()
+            z = tf.random.normal((1, latent_dim)) * latent_scale
+            logits_flat = model.decode(z, training=False)
+            logits = logits_flat.numpy().reshape(seq_len, vocab_size)
 
             if tok == "base":
                 idx_to_base = ["A", "C", "G", "T"]
                 for j in range(seq_len):
-                    # base/codon models are trained with MSE on sigmoid weights
                     w = 1.0 / (1.0 + np.exp(-logits[j]))
-                    # apply gc bias to C/G
                     if gc_bias != 1.0:
                         w[1] *= gc_bias
                         w[2] *= gc_bias
-                    # weights, not logits: convert to pseudo-logits via log
                     idx = _sample_from_logits(np.log(np.clip(w, 1e-9, None)), temperature)
                     seq_parts.append(idx_to_base[idx])
             else:
@@ -141,17 +143,18 @@ def generate_plasmid_sequence(
                     idx = _sample_from_logits(np.log(np.clip(w, 1e-9, None)), temperature)
                     seq_parts.append(IDX_TO_CODON[idx])
 
-    seq = "".join(seq_parts)
-    seq = seq[:target_bp]
+        seq = "".join(seq_parts)
+        seq = seq[:target_bp]
 
-    out_dir = os.path.dirname(output_path) or "."
-    os.makedirs(out_dir, exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(f">{name}\n")
-        for i in range(0, len(seq), 60):
-            f.write(seq[i:i+60] + "\n")
+        out_dir = os.path.dirname(output_path) or "."
+        os.makedirs(out_dir, exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(f">{name}\n")
+            for i in range(0, len(seq), 60):
+                f.write(seq[i : i + 60] + "\n")
 
-    return seq
+        return seq
+
 
 def generate_protein_sequence(
     train_cfg: TrainingConfig,
@@ -169,13 +172,10 @@ def generate_protein_sequence(
     reject_max_run: int = 10,
     reject_max_x_frac: float = 0.15,
 ) -> str:
-    if torch is None:
-        raise RuntimeError("PyTorch not installed.")
-
     if seed is not None:
-        np.random.seed(seed); random.seed(seed); torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+        tf.random.set_seed(seed)
 
     device = get_device()
     tok = "aa"
@@ -189,64 +189,62 @@ def generate_protein_sequence(
     transformer_dropout = train_cfg.transformer_dropout
     latent_dim = transformer_d_model if str(model_type).lower() == "transformer" else hidden_dim
 
-    model, optimizer, global_step, ckpt_path = load_or_init_model(
-        io_cfg=io_cfg,
-        seq_len=seq_len,
-        vocab_size=vocab_size,
-        hidden_dim=hidden_dim,
-        learning_rate=train_cfg.learning_rate,
-        device=device,
-        tokenizer=tok,
-        loss_type="ce",
-        model_type=model_type,
-        transformer_d_model=transformer_d_model,
-        transformer_nhead=transformer_nhead,
-        transformer_layers=transformer_layers,
-        transformer_dropout=transformer_dropout,
-    )
-    model.eval()
+    with tf.device(device):
+        model, optimizer, global_step, manager = load_or_init_model(
+            io_cfg=io_cfg,
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            learning_rate=train_cfg.learning_rate,
+            device=device,
+            tokenizer=tok,
+            loss_type="ce",
+            model_type=model_type,
+            transformer_d_model=transformer_d_model,
+            transformer_nhead=transformer_nhead,
+            transformer_layers=transformer_layers,
+            transformer_dropout=transformer_dropout,
+        )
+        model.trainable = False
 
-    if num_windows is not None:
-        n_windows = int(num_windows)
-        target_aa = n_windows * window_aa
-    else:
-        n_windows = (length_aa + window_aa - 1) // window_aa
-        target_aa = length_aa
+        if num_windows is not None:
+            n_windows = int(num_windows)
+            target_aa = n_windows * window_aa
+        else:
+            n_windows = (length_aa + window_aa - 1) // window_aa
+            target_aa = length_aa
 
-    temperature = float(temperature)
-    latent_scale = float(latent_scale)
+        temperature = float(temperature)
+        latent_scale = float(latent_scale)
 
-    def _sample_once() -> str:
-        aa_chars: List[str] = []
-        with torch.no_grad():
+        def _sample_once() -> str:
+            aa_chars: List[str] = []
             for _ in range(n_windows):
-                z = torch.randn(1, latent_dim, device=device) * latent_scale
-                logits_flat = model.decode(z)
-                logits = logits_flat.view(seq_len, vocab_size).cpu().numpy()
+                z = tf.random.normal((1, latent_dim)) * latent_scale
+                logits_flat = model.decode(z, training=False)
+                logits = logits_flat.numpy().reshape(seq_len, vocab_size)
+
                 for j in range(seq_len):
                     idx = _sample_from_logits(logits[j], temperature)
                     aa_chars.append(IDX_TO_AA[idx])
-        return "".join(aa_chars)[:target_aa]
+            seq = "".join(aa_chars)
+            return seq[:target_aa]
 
-    if reject:
-        tries = max(1, int(reject_tries))
-        for t in range(tries):
-            seq = _sample_once()
-            if _passes_protein_filters(seq, max_run=int(reject_max_run), max_x_frac=float(reject_max_x_frac)):
-                break
-            if (t + 1) % 10 == 0:
-                logging.info(f"[generate-protein] rejection: {t+1}/{tries} rejected")
+        if reject:
+            for _ in range(reject_tries):
+                seq = _sample_once()
+                if _passes_protein_filters(seq, reject_max_run, reject_max_x_frac):
+                    break
+            else:
+                logging.warning("Failed to sample acceptable protein; using last attempt.")
         else:
-            logging.warning("[generate-protein] rejection-sampling exhausted tries; using last sample")
             seq = _sample_once()
-    else:
-        seq = _sample_once()
 
-    out_dir = os.path.dirname(output_path) or "."
-    os.makedirs(out_dir, exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(f">{name}\n")
-        for i in range(0, len(seq), 60):
-            f.write(seq[i:i+60] + "\n")
+        out_dir = os.path.dirname(output_path) or "."
+        os.makedirs(out_dir, exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(f">{name}\n")
+            for i in range(0, len(seq), 60):
+                f.write(seq[i : i + 60] + "\n")
 
-    return seq
+        return seq

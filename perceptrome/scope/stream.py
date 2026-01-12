@@ -1,31 +1,20 @@
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterator
 
 import numpy as np
+import curses
+import tensorflow as tf
 
-try:
-    import curses
-except ImportError:
-    curses = None  # type: ignore
-
-try:
-    import torch
-    from torch.utils.data import DataLoader
-except ImportError:
-    torch = None  # type: ignore
-    DataLoader = None  # type: ignore
-
-from ..model import PlasmidVAE
+from ..model import PlasmidVAE, vae_loss
 from .ui import compute_errors_with_model_and_tensor
 
 
 @dataclass
 class ScopeStreamContext:
     model: PlasmidVAE
-    optimizer: "torch.optim.Optimizer"
-    device: "torch.device"
-    dataloader: DataLoader
-    dataloader_iter: Any
+    optimizer: tf.keras.optimizers.Optimizer
+    device: str
+    dataloader_iter: Iterator[tf.Tensor]
     global_step: int
     last_total: float
     steps_target: int
@@ -41,7 +30,7 @@ class ScopeStreamContext:
 def run_scope_stream_ui(
     stdscr,
     accession: str,
-    windows_tensor: "torch.Tensor",
+    windows_tensor: tf.Tensor,
     gc_values: np.ndarray,
     window_size: int,
     stride: int,
@@ -52,20 +41,16 @@ def run_scope_stream_ui(
     """
     Live GenomeScope + VAE training.
     """
-    if torch is None:
-        raise RuntimeError(
-            "PyTorch is not installed. Install it with `pip install torch`."
-        )
-
     curses.curs_set(0)
     stdscr.nodelay(True)
     stdscr.keypad(True)
 
-    num_windows = windows_tensor.size(0)
+    num_windows = int(windows_tensor.shape[0])
     if num_windows == 0:
         stdscr.addstr(0, 0, "No windows to visualize (encoded array empty).")
         stdscr.refresh()
         import time
+
         time.sleep(2.0)
         return
 
@@ -79,11 +64,16 @@ def run_scope_stream_ui(
     paused = False
 
     errors = compute_errors_with_model_and_tensor(
-        ctx.model, windows_tensor, ctx.device,
-        loss_type=ctx.loss_type, seq_len=ctx.seq_len, vocab_size=ctx.vocab_size,
+        ctx.model,
+        windows_tensor,
+        ctx.device,
+        loss_type=ctx.loss_type,
+        seq_len=ctx.seq_len,
+        vocab_size=ctx.vocab_size,
     )
 
     import time
+
     while True:
         stdscr.erase()
         h, w = stdscr.getmaxyx()
@@ -188,21 +178,14 @@ def run_scope_stream_ui(
 
         if (not paused) and (ctx.steps_done < ctx.steps_target):
             steps_this_frame = min(update_every, ctx.steps_target - ctx.steps_done)
-            ctx.model.train()
 
             for _ in range(steps_this_frame):
-                try:
-                    (batch,) = next(ctx.dataloader_iter)
-                except StopIteration:
-                    ctx.dataloader_iter = iter(ctx.dataloader)
-                    (batch,) = next(ctx.dataloader_iter)
-
-                batch = batch.to(ctx.device)  # (B, L, V)
-                B = batch.size(0)
-                x_target_flat = batch.view(B, -1)
+                batch = next(ctx.dataloader_iter)
+                batch = tf.convert_to_tensor(batch, dtype=tf.float32)
+                B = tf.shape(batch)[0]
+                x_target_flat = tf.reshape(batch, (B, -1))
                 x_in_flat = x_target_flat
 
-                # KL annealing
                 if ctx.kl_warmup_steps > 0:
                     warmup = min(
                         1.0, (ctx.global_step + 1) / float(ctx.kl_warmup_steps)
@@ -211,28 +194,40 @@ def run_scope_stream_ui(
                 else:
                     beta = ctx.beta_kl
 
-                ctx.optimizer.zero_grad(set_to_none=True)
-                recon_logits, mu, logvar = ctx.model(x_in_flat)
-                total_loss, recon_loss, kl_loss = vae_loss(
-                    recon_logits, x_target_flat, mu, logvar, beta,
-                    str(ctx.loss_type).lower(), int(ctx.seq_len), int(ctx.vocab_size)
-                )
-                total_loss.backward()
-
-                if ctx.max_grad_norm and ctx.max_grad_norm > 0:
-                    torch.nn.utils.clip_grad_norm_(
-                        ctx.model.parameters(), ctx.max_grad_norm
+                with tf.GradientTape() as tape:
+                    recon_logits, mu, logvar = ctx.model(x_in_flat, training=True)
+                    total_loss, recon_loss, kl_loss = vae_loss(
+                        recon_logits,
+                        x_target_flat,
+                        mu,
+                        logvar,
+                        beta,
+                        str(ctx.loss_type).lower(),
+                        int(ctx.seq_len),
+                        int(ctx.vocab_size),
                     )
 
-                ctx.optimizer.step()
+                grads = tape.gradient(total_loss, ctx.model.trainable_variables)
+                if ctx.max_grad_norm and ctx.max_grad_norm > 0:
+                    grads = [
+                        tf.clip_by_norm(g, ctx.max_grad_norm) if g is not None else None
+                        for g in grads
+                    ]
+                ctx.optimizer.apply_gradients(
+                    zip(grads, ctx.model.trainable_variables)
+                )
 
                 ctx.steps_done += 1
                 ctx.global_step += 1
-                ctx.last_total = float(total_loss.item())
+                ctx.last_total = float(total_loss.numpy())
 
             errors = compute_errors_with_model_and_tensor(
-                ctx.model, windows_tensor, ctx.device,
-                loss_type=ctx.loss_type, seq_len=ctx.seq_len, vocab_size=ctx.vocab_size,
+                ctx.model,
+                windows_tensor,
+                ctx.device,
+                loss_type=ctx.loss_type,
+                seq_len=ctx.seq_len,
+                vocab_size=ctx.vocab_size,
             )
 
         time.sleep(max(0.0, 1.0 / max(fps, 1e-3)))

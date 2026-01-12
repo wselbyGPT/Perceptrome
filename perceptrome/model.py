@@ -1,19 +1,39 @@
-import logging, os
+import json
+import logging
+import os
 from typing import Dict, Tuple
 
-try:
-    import torch
-    from torch import nn, optim
-    import torch.nn.functional as F
-except ImportError:
-    torch = None  # type: ignore
-    nn = None     # type: ignore
-    optim = None  # type: ignore
-    F = None      # type: ignore
+import tensorflow as tf
 
 from .config import IOConfig
 
-class TransformerVAE(nn.Module):  # type: ignore[misc]
+
+class TransformerBlock(tf.keras.layers.Layer):
+    def __init__(self, d_model: int, nhead: int, dropout: float) -> None:
+        super().__init__()
+        key_dim = int(d_model) // int(nhead)
+        self.attn = tf.keras.layers.MultiHeadAttention(
+            num_heads=int(nhead), key_dim=key_dim, dropout=float(dropout)
+        )
+        self.ffn = tf.keras.Sequential(
+            [
+                tf.keras.layers.Dense(int(d_model) * 4, activation="relu"),
+                tf.keras.layers.Dense(int(d_model)),
+            ]
+        )
+        self.dropout1 = tf.keras.layers.Dropout(float(dropout))
+        self.dropout2 = tf.keras.layers.Dropout(float(dropout))
+        self.norm1 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+        self.norm2 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+
+    def call(self, x: tf.Tensor, training: bool = False) -> tf.Tensor:
+        attn_out = self.attn(x, x, training=training)
+        x = self.norm1(x + self.dropout1(attn_out, training=training))
+        ffn_out = self.ffn(x, training=training)
+        return self.norm2(x + self.dropout2(ffn_out, training=training))
+
+
+class TransformerVAE(tf.keras.Model):
     def __init__(
         self,
         seq_len: int,
@@ -22,130 +42,127 @@ class TransformerVAE(nn.Module):  # type: ignore[misc]
         nhead: int,
         num_layers: int,
         dropout: float,
-    ):
-        if torch is None or nn is None:
-            raise RuntimeError("PyTorch is required for TransformerVAE.")
+    ) -> None:
         super().__init__()
         self.seq_len = int(seq_len)
         self.vocab_size = int(vocab_size)
         self.d_model = int(d_model)
 
-        self.input_proj = nn.Linear(self.vocab_size, self.d_model)
-        self.pos_embed = nn.Parameter(torch.zeros(1, self.seq_len, self.d_model))
-
-        enc_layer = nn.TransformerEncoderLayer(
-            d_model=self.d_model,
-            nhead=int(nhead),
-            dim_feedforward=int(self.d_model * 4),
-            dropout=float(dropout),
-            batch_first=True,
+        self.input_proj = tf.keras.layers.Dense(self.d_model)
+        self.pos_embed = self.add_weight(
+            shape=(1, self.seq_len, self.d_model), initializer="zeros", trainable=True
         )
-        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=int(num_layers))
+        self.encoder_layers = [
+            TransformerBlock(self.d_model, int(nhead), float(dropout))
+            for _ in range(int(num_layers))
+        ]
 
-        self.fc_mu = nn.Linear(self.d_model, self.d_model)
-        self.fc_logvar = nn.Linear(self.d_model, self.d_model)
+        self.fc_mu = tf.keras.layers.Dense(self.d_model)
+        self.fc_logvar = tf.keras.layers.Dense(self.d_model)
 
-        self.z_to_seq = nn.Linear(self.d_model, self.seq_len * self.d_model)
-        dec_layer = nn.TransformerEncoderLayer(
-            d_model=self.d_model,
-            nhead=int(nhead),
-            dim_feedforward=int(self.d_model * 4),
-            dropout=float(dropout),
-            batch_first=True,
-        )
-        self.decoder = nn.TransformerEncoder(dec_layer, num_layers=int(num_layers))
-        self.out_proj = nn.Linear(self.d_model, self.vocab_size)
+        self.z_to_seq = tf.keras.layers.Dense(self.seq_len * self.d_model)
+        self.decoder_layers = [
+            TransformerBlock(self.d_model, int(nhead), float(dropout))
+            for _ in range(int(num_layers))
+        ]
+        self.out_proj = tf.keras.layers.Dense(self.vocab_size)
 
-    def _ensure_seq(self, x: "torch.Tensor") -> "torch.Tensor":
-        if x.dim() == 2:
-            return x.view(x.size(0), self.seq_len, self.vocab_size)
+    def _ensure_seq(self, x: tf.Tensor) -> tf.Tensor:
+        if len(x.shape) == 2:
+            return tf.reshape(x, (-1, self.seq_len, self.vocab_size))
         return x
 
-    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+    def encode(self, x: tf.Tensor, training: bool = False) -> Tuple[tf.Tensor, tf.Tensor]:
         x_seq = self._ensure_seq(x)
         h = self.input_proj(x_seq) + self.pos_embed
-        h = self.encoder(h)
-        pooled = h.mean(dim=1)
+        for layer in self.encoder_layers:
+            h = layer(h, training=training)
+        pooled = tf.reduce_mean(h, axis=1)
         return self.fc_mu(pooled), self.fc_logvar(pooled)
 
-    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
+    def reparameterize(self, mu: tf.Tensor, logvar: tf.Tensor) -> tf.Tensor:
+        std = tf.exp(0.5 * logvar)
+        eps = tf.random.normal(tf.shape(std))
         return mu + eps * std
 
-    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
-        h = self.z_to_seq(z).view(z.size(0), self.seq_len, self.d_model)
-        h = self.decoder(h + self.pos_embed)
+    def decode(self, z: tf.Tensor, training: bool = False) -> tf.Tensor:
+        h = self.z_to_seq(z)
+        h = tf.reshape(h, (-1, self.seq_len, self.d_model))
+        h = h + self.pos_embed
+        for layer in self.decoder_layers:
+            h = layer(h, training=training)
         logits = self.out_proj(h)
-        return logits.view(z.size(0), self.seq_len * self.vocab_size)
+        return tf.reshape(logits, (-1, self.seq_len * self.vocab_size))
 
-    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
-        if torch is None or F is None:
-            raise RuntimeError("PyTorch is required.")
-        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
-        lt = str(loss_type).lower()
-        if lt == "ce":
-            return F.softmax(logits, dim=-1)
-        return torch.sigmoid(logits)
+    def decode_probs(self, z: tf.Tensor, loss_type: str) -> tf.Tensor:
+        logits = tf.reshape(self.decode(z), (-1, self.seq_len, self.vocab_size))
+        if str(loss_type).lower() == "ce":
+            return tf.nn.softmax(logits, axis=-1)
+        return tf.nn.sigmoid(logits)
 
-    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
-        mu, logvar = self.encode(x)
+    def call(self, x: tf.Tensor, training: bool = False) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+        mu, logvar = self.encode(x, training=training)
         z = self.reparameterize(mu, logvar)
-        recon_logits = self.decode(z)
+        recon_logits = self.decode(z, training=training)
         return recon_logits, mu, logvar
 
-class PlasmidVAE(nn.Module):  # type: ignore[misc]
-    def __init__(self, input_dim: int, hidden_dim: int):
-        if torch is None or nn is None:
-            raise RuntimeError("PyTorch is required for PlasmidVAE.")
+
+class PlasmidVAE(tf.keras.Model):
+    def __init__(self, input_dim: int, hidden_dim: int) -> None:
         super().__init__()
-        self.hidden_dim = hidden_dim
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.fc_mu = nn.Linear(hidden_dim, hidden_dim)
-        self.fc_logvar = nn.Linear(hidden_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc_out = nn.Linear(hidden_dim, input_dim)
-        self.act = nn.ReLU()
+        self.hidden_dim = int(hidden_dim)
+        self.fc1 = tf.keras.layers.Dense(self.hidden_dim, activation="relu")
+        self.fc_mu = tf.keras.layers.Dense(self.hidden_dim)
+        self.fc_logvar = tf.keras.layers.Dense(self.hidden_dim)
+        self.fc2 = tf.keras.layers.Dense(self.hidden_dim, activation="relu")
+        self.fc_out = tf.keras.layers.Dense(int(input_dim))
 
-    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
-        h = self.act(self.fc1(x))
-        return self.fc_mu(h), self.fc_logvar(h)
+    def encode(self, x: tf.Tensor, training: bool = False) -> Tuple[tf.Tensor, tf.Tensor]:
+        h = self.fc1(x, training=training)
+        return self.fc_mu(h, training=training), self.fc_logvar(h, training=training)
 
-    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
+    def reparameterize(self, mu: tf.Tensor, logvar: tf.Tensor) -> tf.Tensor:
+        std = tf.exp(0.5 * logvar)
+        eps = tf.random.normal(tf.shape(std))
         return mu + eps * std
 
-    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
-        """Return *logits* (not probabilities).
+    def decode(self, z: tf.Tensor, training: bool = False) -> tf.Tensor:
+        h = self.fc2(z, training=training)
+        return self.fc_out(h, training=training)
 
-        - For MSE-based training, we apply sigmoid to these logits in the loss.
-        - For categorical training (CE), these logits are fed directly to softmax/CE.
-        """
-        h = self.act(self.fc2(z))
-        return self.fc_out(h)
+    def decode_probs(self, z: tf.Tensor, seq_len: int, vocab_size: int, loss_type: str) -> tf.Tensor:
+        logits = tf.reshape(self.decode(z), (-1, int(seq_len), int(vocab_size)))
+        if str(loss_type).lower() == "ce":
+            return tf.nn.softmax(logits, axis=-1)
+        return tf.nn.sigmoid(logits)
 
-    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
-        """Return probabilities shaped (B, seq_len, vocab_size)."""
-        if torch is None or F is None:
-            raise RuntimeError("PyTorch is required.")
-        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
-        lt = str(loss_type).lower()
-        if lt == "ce":
-            return F.softmax(logits, dim=-1)
-        # mse (legacy): independent sigmoid weights
-        return torch.sigmoid(logits)
-
-    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
-        mu, logvar = self.encode(x)
+    def call(self, x: tf.Tensor, training: bool = False) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+        mu, logvar = self.encode(x, training=training)
         z = self.reparameterize(mu, logvar)
-        recon_logits = self.decode(z)
+        recon_logits = self.decode(z, training=training)
         return recon_logits, mu, logvar
 
-def get_device() -> "torch.device":
-    if torch is None:
-        raise RuntimeError("PyTorch not installed.")
-    return torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
+def get_device() -> str:
+    gpus = tf.config.list_physical_devices("GPU")
+    return "/GPU:0" if gpus else "/CPU:0"
+
+
+def _checkpoint_manager(
+    model: tf.keras.Model, optimizer: tf.keras.optimizers.Optimizer, io_cfg: IOConfig
+) -> tf.train.CheckpointManager:
+    ckpt = tf.train.Checkpoint(model=model, optimizer=optimizer)
+    return tf.train.CheckpointManager(
+        ckpt,
+        io_cfg.checkpoints_dir,
+        max_to_keep=1,
+        checkpoint_name="keras_latest",
+    )
+
+
+def _meta_path(io_cfg: IOConfig) -> str:
+    return os.path.join(io_cfg.checkpoints_dir, "keras_latest.json")
+
 
 def load_or_init_model(
     io_cfg: IOConfig,
@@ -153,7 +170,7 @@ def load_or_init_model(
     vocab_size: int,
     hidden_dim: int,
     learning_rate: float,
-    device: "torch.device",
+    device: str,
     tokenizer: str,
     loss_type: str,
     model_type: str,
@@ -161,16 +178,11 @@ def load_or_init_model(
     transformer_nhead: int,
     transformer_layers: int,
     transformer_dropout: float,
-) -> Tuple[nn.Module, "optim.Optimizer", int, str]:
+) -> Tuple[tf.keras.Model, tf.keras.optimizers.Optimizer, int, tf.train.CheckpointManager]:
     """
     seq_len: number of positions (bp or codons)
     vocab_size: 4 for base, 65 for codon
     """
-    if torch is None or nn is None or optim is None:
-        raise RuntimeError("PyTorch is required.")
-
-    ckpt_path = os.path.join(io_cfg.checkpoints_dir, "latest.pt")
-
     mt = str(model_type).lower()
     input_dim = int(seq_len) * int(vocab_size)
     if mt == "transformer":
@@ -181,15 +193,22 @@ def load_or_init_model(
             nhead=transformer_nhead,
             num_layers=transformer_layers,
             dropout=transformer_dropout,
-        ).to(device)
+        )
     else:
-        model = PlasmidVAE(input_dim=input_dim, hidden_dim=hidden_dim).to(device)
-    optimizer: optim.Optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+        model = PlasmidVAE(input_dim=input_dim, hidden_dim=hidden_dim)
+
+    optimizer = tf.keras.optimizers.Adam(learning_rate=float(learning_rate))
+
+    dummy = tf.zeros((1, input_dim), dtype=tf.float32)
+    _ = model(dummy, training=False)
+
+    manager = _checkpoint_manager(model, optimizer, io_cfg)
+    meta_path = _meta_path(io_cfg)
     global_step = 0
 
-    if os.path.exists(ckpt_path):
-        data = torch.load(ckpt_path, map_location=device)
-        meta: Dict[str, object] = data.get("meta", {})
+    if os.path.exists(meta_path) and manager.latest_checkpoint:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta: Dict[str, object] = json.load(f)
         ck_tok = str(meta.get("tokenizer", "base")).lower()
         ck_seq = int(meta.get("seq_len", seq_len))
         ck_vocab = int(meta.get("vocab_size", vocab_size))
@@ -200,43 +219,72 @@ def load_or_init_model(
         ck_nhead = int(meta.get("transformer_nhead", transformer_nhead))
         ck_layers = int(meta.get("transformer_layers", transformer_layers))
         ck_dropout = float(meta.get("transformer_dropout", transformer_dropout))
-        
+        global_step = int(meta.get("global_step", 0))
+
         if ck_tok != tokenizer.lower():
-            raise ValueError(f"Checkpoint tokenizer={ck_tok} but requested tokenizer={tokenizer}. Delete {ckpt_path} or match settings.")
+            raise ValueError(
+                f"Checkpoint tokenizer={ck_tok} but requested tokenizer={tokenizer}. "
+                f"Delete {meta_path} or match settings."
+            )
         if ck_seq != seq_len:
-            raise ValueError(f"Checkpoint seq_len={ck_seq} but requested seq_len={seq_len}. Delete {ckpt_path} or match settings.")
+            raise ValueError(
+                f"Checkpoint seq_len={ck_seq} but requested seq_len={seq_len}. "
+                f"Delete {meta_path} or match settings."
+            )
         if ck_vocab != vocab_size:
-            raise ValueError(f"Checkpoint vocab_size={ck_vocab} but requested vocab_size={vocab_size}. Delete {ckpt_path} or match settings.")
+            raise ValueError(
+                f"Checkpoint vocab_size={ck_vocab} but requested vocab_size={vocab_size}. "
+                f"Delete {meta_path} or match settings."
+            )
         if ck_hidden != hidden_dim and mt != "transformer":
-            raise ValueError(f"Checkpoint hidden_dim={ck_hidden} but requested hidden_dim={hidden_dim}. Delete {ckpt_path} or match settings.")
+            raise ValueError(
+                f"Checkpoint hidden_dim={ck_hidden} but requested hidden_dim={hidden_dim}. "
+                f"Delete {meta_path} or match settings."
+            )
         if ck_loss != str(loss_type).lower():
             raise ValueError(
                 f"Checkpoint loss_type={ck_loss} but requested loss_type={loss_type}. "
-                f"Delete {ckpt_path} or match settings."
+                f"Delete {meta_path} or match settings."
             )
         if ck_model_type != mt:
             raise ValueError(
                 f"Checkpoint model_type={ck_model_type} but requested model_type={mt}. "
-                f"Delete {ckpt_path} or match settings."
+                f"Delete {meta_path} or match settings."
             )
         if mt == "transformer":
             if ck_d_model != transformer_d_model:
-                raise ValueError(f"Checkpoint transformer_d_model={ck_d_model} but requested {transformer_d_model}. Delete {ckpt_path} or match settings.")
+                raise ValueError(
+                    f"Checkpoint transformer_d_model={ck_d_model} but requested {transformer_d_model}. "
+                    f"Delete {meta_path} or match settings."
+                )
             if ck_nhead != transformer_nhead:
-                raise ValueError(f"Checkpoint transformer_nhead={ck_nhead} but requested {transformer_nhead}. Delete {ckpt_path} or match settings.")
+                raise ValueError(
+                    f"Checkpoint transformer_nhead={ck_nhead} but requested {transformer_nhead}. "
+                    f"Delete {meta_path} or match settings."
+                )
             if ck_layers != transformer_layers:
-                raise ValueError(f"Checkpoint transformer_layers={ck_layers} but requested {transformer_layers}. Delete {ckpt_path} or match settings.")
+                raise ValueError(
+                    f"Checkpoint transformer_layers={ck_layers} but requested {transformer_layers}. "
+                    f"Delete {meta_path} or match settings."
+                )
             if abs(ck_dropout - float(transformer_dropout)) > 1e-8:
-                raise ValueError(f"Checkpoint transformer_dropout={ck_dropout} but requested {transformer_dropout}. Delete {ckpt_path} or match settings.")
+                raise ValueError(
+                    f"Checkpoint transformer_dropout={ck_dropout} but requested {transformer_dropout}. "
+                    f"Delete {meta_path} or match settings."
+                )
 
-        model.load_state_dict(data["model"])
-        optimizer.load_state_dict(data["optim"])
-        global_step = int(meta.get("global_step", 0))
-
+        manager.checkpoint.restore(manager.latest_checkpoint).expect_partial()
         logging.info(
             "Loaded checkpoint %s (tokenizer=%s, seq_len=%s, vocab=%s, hidden=%s, model=%s, step=%s)",
-            ckpt_path, ck_tok, ck_seq, ck_vocab, ck_hidden, ck_model_type, global_step
+            manager.latest_checkpoint,
+            ck_tok,
+            ck_seq,
+            ck_vocab,
+            ck_hidden,
+            ck_model_type,
+            global_step,
         )
+    else:
         logging.info(
             "Initializing new VAE (tokenizer=%s, loss_type=%s, model=%s, "
             "seq_len=%s, vocab=%s, input_dim=%s, hidden=%s, d_model=%s, nhead=%s, layers=%s, dropout=%s, lr=%s)",
@@ -254,12 +302,13 @@ def load_or_init_model(
             learning_rate,
         )
 
-    return model, optimizer, global_step, ckpt_path
+    return model, optimizer, global_step, manager
+
 
 def save_checkpoint(
-    ckpt_path: str,
-    model: PlasmidVAE,
-    optimizer: "optim.Optimizer",
+    manager: tf.train.CheckpointManager,
+    model: tf.keras.Model,
+    optimizer: tf.keras.optimizers.Optimizer,
     global_step: int,
     tokenizer: str,
     seq_len: int,
@@ -272,58 +321,46 @@ def save_checkpoint(
     transformer_layers: int,
     transformer_dropout: float,
 ) -> None:
-    if torch is None:
-        return
-    payload = {
-        "model": model.state_dict(),
-        "optim": optimizer.state_dict(),
-        "meta": {
-            "global_step": int(global_step),
-            "tokenizer": str(tokenizer).lower(),
-            "seq_len": int(seq_len),
-            "vocab_size": int(vocab_size),
-            "hidden_dim": int(hidden_dim),
-            "loss_type": str(loss_type).lower(),
-            "model_type": str(model_type).lower(),
-            "transformer_d_model": int(transformer_d_model),
-            "transformer_nhead": int(transformer_nhead),
-            "transformer_layers": int(transformer_layers),
-            "transformer_dropout": float(transformer_dropout),
-        },
+    meta = {
+        "global_step": int(global_step),
+        "tokenizer": str(tokenizer).lower(),
+        "seq_len": int(seq_len),
+        "vocab_size": int(vocab_size),
+        "hidden_dim": int(hidden_dim),
+        "loss_type": str(loss_type).lower(),
+        "model_type": str(model_type).lower(),
+        "transformer_d_model": int(transformer_d_model),
+        "transformer_nhead": int(transformer_nhead),
+        "transformer_layers": int(transformer_layers),
+        "transformer_dropout": float(transformer_dropout),
     }
-    tmp = ckpt_path + ".tmp"
-    torch.save(payload, tmp)
-    os.replace(tmp, ckpt_path)
-    logging.info(f"Saved checkpoint step={global_step} -> {ckpt_path}")
+    meta_path = os.path.join(manager.directory, "keras_latest.json")
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2, sort_keys=True)
+    manager.save(checkpoint_number=global_step)
+    logging.info("Saved checkpoint step=%s -> %s", global_step, manager.directory)
+
 
 def vae_loss(
-    recon_logits: "torch.Tensor",
-    x: "torch.Tensor",
-    mu: "torch.Tensor",
-    logvar: "torch.Tensor",
+    recon_logits: tf.Tensor,
+    x: tf.Tensor,
+    mu: tf.Tensor,
+    logvar: tf.Tensor,
     beta_kl: float,
     loss_type: str,
     seq_len: int,
     vocab_size: int,
-) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
-    if torch is None or nn is None:
-        raise RuntimeError("PyTorch required.")
-
+) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
     lt = str(loss_type).lower()
     if lt == "ce":
-        if F is None:
-            raise RuntimeError("PyTorch required.")
-        # logits: (B, L*V) -> (B, L, V)
-        logits = recon_logits.view(recon_logits.size(0), int(seq_len), int(vocab_size))
-        targets = x.view(x.size(0), int(seq_len), int(vocab_size)).argmax(dim=2)  # (B, L)
-        # per-position CE, mean over positions and batch
-        ce = F.cross_entropy(logits.view(-1, int(vocab_size)), targets.view(-1), reduction="mean")
-        recon_term = ce
+        logits = tf.reshape(recon_logits, (-1, int(seq_len), int(vocab_size)))
+        targets = tf.argmax(tf.reshape(x, (-1, int(seq_len), int(vocab_size))), axis=-1)
+        ce = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=targets, logits=logits)
+        recon_term = tf.reduce_mean(ce)
     else:
-        # legacy: regression on one-hot using sigmoid weights
-        recon = torch.sigmoid(recon_logits)
-        recon_term = nn.MSELoss(reduction="mean")(recon, x)
+        recon = tf.nn.sigmoid(recon_logits)
+        recon_term = tf.reduce_mean(tf.square(recon - x))
 
-    kl = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+    kl = -0.5 * tf.reduce_mean(1 + logvar - tf.square(mu) - tf.exp(logvar))
     total = recon_term + float(beta_kl) * kl
     return total, recon_term, kl

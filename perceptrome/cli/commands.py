@@ -362,8 +362,7 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
 
     metric = compute_gc_from_encoded(encoded, tokenizer=tok)
 
-    import torch
-    from torch.utils.data import DataLoader, TensorDataset
+    import tensorflow as tf
     from ..model import get_device, load_or_init_model
     from ..encoding_main import tokenizer_meta
 
@@ -378,7 +377,7 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
 
     lt = (args.loss_type if getattr(args, "loss_type", None) is not None else ("ce" if tok == "aa" else "mse"))
 
-    model, optimizer, global_step, ckpt_path = load_or_init_model(
+    model, optimizer, global_step, manager = load_or_init_model(
         io_cfg=io_cfg, seq_len=seq_len, vocab_size=vocab_size,
         hidden_dim=hidden_dim, learning_rate=train_cfg.learning_rate,
         device=device, tokenizer=tok, loss_type=lt,
@@ -389,13 +388,18 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
         transformer_dropout=transformer_dropout,
     )
 
-    windows_tensor = torch.from_numpy(encoded)
-    dataset = TensorDataset(windows_tensor)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False)
+    windows_tensor = tf.convert_to_tensor(encoded.astype(np.float32))
+    dataset = (
+        tf.data.Dataset.from_tensor_slices(encoded.astype(np.float32))
+        .shuffle(max(1, encoded.shape[0]))
+        .batch(batch_size, drop_remainder=False)
+        .repeat()
+    )
+    dataloader_iter = iter(dataset)
 
     ctx = ScopeStreamContext(
         model=model, optimizer=optimizer, device=device,
-        dataloader=dataloader, dataloader_iter=iter(dataloader),
+        dataloader_iter=dataloader_iter,
         global_step=global_step, last_total=0.0,
         steps_target=steps, steps_done=0,
         beta_kl=train_cfg.beta_kl, kl_warmup_steps=train_cfg.kl_warmup_steps,
