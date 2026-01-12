@@ -11,7 +11,16 @@ from .config import IOConfig
 class TransformerBlock(tf.keras.layers.Layer):
     def __init__(self, d_model: int, nhead: int, dropout: float) -> None:
         super().__init__()
-        key_dim = int(d_model) // int(nhead)
+        if int(nhead) <= 0:
+            raise ValueError(f"nhead must be > 0 (got {nhead})")
+        key_dim = max(1, int(d_model) // int(nhead))
+        if int(d_model) % int(nhead) != 0:
+            logging.warning(
+                "Transformer d_model (%s) is not divisible by nhead (%s); using key_dim=%s",
+                d_model,
+                nhead,
+                key_dim,
+            )
         self.attn = tf.keras.layers.MultiHeadAttention(
             num_heads=int(nhead), key_dim=key_dim, dropout=float(dropout)
         )
