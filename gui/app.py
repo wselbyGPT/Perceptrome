@@ -131,13 +131,17 @@ class PerceptromeGUI:
         else:
             var.set(coerce_to_string(value))
 
+    def _apply_form_vars(self, vars_dict: Dict[str, tk.Variable], keys: Tuple[str, ...], args: Dict[str, Any]) -> None:
+        for key in keys:
+            self._set_var(vars_dict[key], args.get(key))
+
     def _load_args_into_form(self, command_key: str, args: Dict[str, Any]) -> None:
         if "config" in args:
             self.config_path.set(coerce_to_string(args.get("config")))
 
         if command_key == "fetch_one":
             v = self.fetch_vars
-            self._set_var(v["accession"], args.get("accession"))
+            self._apply_form_vars(v, ("accession",), args)
             self._set_var(v["source"], args.get("source", "fasta"))
             self._set_var(v["force"], args.get("force", False))
             self.notebook.select(self.tab_fetch)
@@ -145,72 +149,87 @@ class PerceptromeGUI:
 
         if command_key == "encode_one":
             v = self.encode_vars
-            self._set_var(v["accession"], args.get("accession"))
-            self._set_var(v["tokenizer"], args.get("tokenizer"))
-            self._set_var(v["window_size"], args.get("window_size"))
-            self._set_var(v["stride"], args.get("stride"))
-            self._set_var(v["frame_offset"], args.get("frame_offset"))
-            self._set_var(v["min_orf_aa"], args.get("min_orf_aa"))
-            self._set_var(v["source"], args.get("source"))
+            self._apply_form_vars(
+                v,
+                (
+                    "accession",
+                    "tokenizer",
+                    "window_size",
+                    "stride",
+                    "frame_offset",
+                    "min_orf_aa",
+                    "source",
+                ),
+                args,
+            )
             self.notebook.select(self.tab_encode)
             return
 
         if command_key == "train_one":
             v = self.train_vars
-            for k in (
-                "accession",
-                "steps",
-                "batch_size",
-                "window_size",
-                "stride",
-                "tokenizer",
-                "frame_offset",
-                "min_orf_aa",
-                "loss_type",
-                "mask_prob",
-                "span_mask_prob",
-                "span_mask_len",
-            ):
-                self._set_var(v[k], args.get(k))
+            self._apply_form_vars(
+                v,
+                (
+                    "accession",
+                    "steps",
+                    "batch_size",
+                    "window_size",
+                    "stride",
+                    "tokenizer",
+                    "frame_offset",
+                    "min_orf_aa",
+                    "loss_type",
+                    "mask_prob",
+                    "span_mask_prob",
+                    "span_mask_len",
+                ),
+                args,
+            )
             self._set_var(v["reencode"], args.get("reencode", False))
             self.notebook.select(self.tab_train)
             return
 
         if command_key == "gen_plasmid":
             v = self.genp_vars
-            for k in (
-                "tokenizer",
-                "length_bp",
-                "num_windows",
-                "window_size",
-                "name",
-                "output",
-                "seed",
-                "latent_scale",
-                "temperature",
-                "gc_bias",
-            ):
-                self._set_var(v[k], args.get(k))
+            self._apply_form_vars(
+                v,
+                (
+                    "tokenizer",
+                    "length_bp",
+                    "num_windows",
+                    "window_size",
+                    "name",
+                    "output",
+                    "seed",
+                    "latent_scale",
+                    "temperature",
+                    "gc_bias",
+                ),
+                args,
+            )
             self._gen_focus = "plasmid"
             self.notebook.select(self.tab_generate)
             return
 
         if command_key == "gen_protein":
             v = self.gena_vars
-            for k in (
-                "length_aa",
-                "num_windows",
-                "window_aa",
-                "name",
-                "output",
-                "seed",
-                "latent_scale",
-                "temperature",
-                "reject_tries",
-                "reject_max_run",
-                "reject_max_x_frac",
-            ):
-                self._set_var(v[k], args.get(k))
+            self._apply_form_vars(
+                v,
+                (
+                    "length_aa",
+                    "num_windows",
+                    "window_aa",
+                    "name",
+                    "output",
+                    "seed",
+                    "latent_scale",
+                    "temperature",
+                    "reject_tries",
+                    "reject_max_run",
+                    "reject_max_x_frac",
+                ),
+                args,
+            )
             self._set_var(v["reject"], args.get("reject", False))
             self._gen_focus = "protein"
             self.notebook.select(self.tab_generate)
@@ -1331,4 +1350,3 @@ class PerceptromeGUI:
     def _on_close(self) -> None:
         self._persist_settings()
         self.root.destroy()
-

@@ -51,12 +51,11 @@ def import_help_message(err: BaseException) -> str:
         "",
         "Common fixes:",
         "  • Ensure you're in the correct venv for Perceptrome",
-        "  • If PyTorch is missing/broken, install a CPU build:",
+        "  • If TensorFlow is missing/broken, reinstall requirements:",
         "      python -m pip install --upgrade pip",
-        "      python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu",
+        "      python -m pip install -r requirements.txt",
         "",
         "Full traceback is shown below.",
     ]
     tb = "".join(traceback.format_exception(type(err), err, err.__traceback__))
     return "\n".join(msg) + "\n\n" + tb
-
