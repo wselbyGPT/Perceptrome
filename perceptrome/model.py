@@ -1,5 +1,5 @@
 import logging, os
-from typing import Dict, Tuple
+from typing import Any, Callable, Dict, Mapping, Protocol, Tuple
 
 try:
     import torch
@@ -12,6 +12,32 @@ except ImportError:
     F = None      # type: ignore
 
 from .config import IOConfig
+
+class VAEModelProtocol(Protocol):
+    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+        ...
+
+    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
+        ...
+
+    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
+        ...
+
+    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        ...
+
+    def parameters(self) -> Any:
+        ...
+
+    def state_dict(self) -> Dict[str, Any]:
+        ...
+
+    def load_state_dict(self, state_dict: Mapping[str, Any]) -> Any:
+        ...
+
+
+ModelFactory = Callable[[int, int, Mapping[str, Any], "torch.device"], VAEModelProtocol]
+ModelConfig = Dict[str, Any]
 
 class TransformerVAE(nn.Module):  # type: ignore[misc]
     def __init__(
@@ -142,6 +168,79 @@ class PlasmidVAE(nn.Module):  # type: ignore[misc]
         recon_logits = self.decode(z)
         return recon_logits, mu, logvar
 
+def _get_required(model_config: Mapping[str, Any], key: str) -> Any:
+    if key not in model_config or model_config[key] is None:
+        raise KeyError(f"model_config missing required key '{key}'")
+    return model_config[key]
+
+def _normalize_model_config(model_type: str, model_config: Mapping[str, Any]) -> ModelConfig:
+    mt = str(model_type).lower()
+    cfg: ModelConfig = dict(model_config)
+    if mt == "transformer":
+        return {
+            "d_model": int(_get_required(cfg, "d_model")),
+            "nhead": int(_get_required(cfg, "nhead")),
+            "num_layers": int(_get_required(cfg, "num_layers")),
+            "dropout": float(_get_required(cfg, "dropout")),
+        }
+    if mt == "mlp":
+        return {
+            "hidden_dim": int(_get_required(cfg, "hidden_dim")),
+        }
+    return dict(cfg)
+
+def _build_plasmid_vae(
+    seq_len: int,
+    vocab_size: int,
+    model_config: Mapping[str, Any],
+    device: "torch.device",
+) -> PlasmidVAE:
+    input_dim = int(seq_len) * int(vocab_size)
+    hidden_dim = int(_get_required(model_config, "hidden_dim"))
+    return PlasmidVAE(input_dim=input_dim, hidden_dim=hidden_dim).to(device)
+
+def _build_transformer_vae(
+    seq_len: int,
+    vocab_size: int,
+    model_config: Mapping[str, Any],
+    device: "torch.device",
+) -> TransformerVAE:
+    return TransformerVAE(
+        seq_len=seq_len,
+        vocab_size=vocab_size,
+        d_model=int(_get_required(model_config, "d_model")),
+        nhead=int(_get_required(model_config, "nhead")),
+        num_layers=int(_get_required(model_config, "num_layers")),
+        dropout=float(_get_required(model_config, "dropout")),
+    ).to(device)
+
+MODEL_REGISTRY: Dict[str, ModelFactory] = {
+    "mlp": _build_plasmid_vae,
+    "transformer": _build_transformer_vae,
+}
+
+def resolve_latent_dim(model_type: str, model_config: Mapping[str, Any]) -> int:
+    cfg = _normalize_model_config(model_type, model_config)
+    if str(model_type).lower() == "transformer":
+        return int(cfg["d_model"])
+    if str(model_type).lower() == "mlp":
+        return int(cfg["hidden_dim"])
+    raise ValueError(f"Latent dimension not defined for model_type '{model_type}'")
+
+def build_model(
+    model_type: str,
+    model_config: Mapping[str, Any],
+    seq_len: int,
+    vocab_size: int,
+    device: "torch.device",
+) -> VAEModelProtocol:
+    mt = str(model_type).lower()
+    factory = MODEL_REGISTRY.get(mt)
+    if factory is None:
+        raise ValueError(f"Unknown model_type '{model_type}'. Available: {sorted(MODEL_REGISTRY)}")
+    cfg = _normalize_model_config(mt, model_config)
+    return factory(seq_len, vocab_size, cfg, device)
+
 def get_device() -> "torch.device":
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -151,17 +250,13 @@ def load_or_init_model(
     io_cfg: IOConfig,
     seq_len: int,
     vocab_size: int,
-    hidden_dim: int,
     learning_rate: float,
     device: "torch.device",
     tokenizer: str,
     loss_type: str,
     model_type: str,
-    transformer_d_model: int,
-    transformer_nhead: int,
-    transformer_layers: int,
-    transformer_dropout: float,
-) -> Tuple[nn.Module, "optim.Optimizer", int, str]:
+    model_config: Mapping[str, Any],
+) -> Tuple[VAEModelProtocol, "optim.Optimizer", int, str]:
     """
     seq_len: number of positions (bp or codons)
     vocab_size: 4 for base, 65 for codon
@@ -172,18 +267,8 @@ def load_or_init_model(
     ckpt_path = os.path.join(io_cfg.checkpoints_dir, "latest.pt")
 
     mt = str(model_type).lower()
-    input_dim = int(seq_len) * int(vocab_size)
-    if mt == "transformer":
-        model = TransformerVAE(
-            seq_len=seq_len,
-            vocab_size=vocab_size,
-            d_model=transformer_d_model,
-            nhead=transformer_nhead,
-            num_layers=transformer_layers,
-            dropout=transformer_dropout,
-        ).to(device)
-    else:
-        model = PlasmidVAE(input_dim=input_dim, hidden_dim=hidden_dim).to(device)
+    normalized_config = _normalize_model_config(mt, model_config)
+    model = build_model(mt, normalized_config, seq_len, vocab_size, device)
     optimizer: optim.Optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     global_step = 0
 
@@ -193,13 +278,24 @@ def load_or_init_model(
         ck_tok = str(meta.get("tokenizer", "base")).lower()
         ck_seq = int(meta.get("seq_len", seq_len))
         ck_vocab = int(meta.get("vocab_size", vocab_size))
-        ck_hidden = int(meta.get("hidden_dim", hidden_dim))
+        ck_model_config_raw = meta.get("model_config", {})
+        if not isinstance(ck_model_config_raw, dict):
+            ck_model_config_raw = {}
+        if mt == "transformer" and not ck_model_config_raw:
+            ck_model_config_raw = {
+                "d_model": meta.get("transformer_d_model"),
+                "nhead": meta.get("transformer_nhead"),
+                "num_layers": meta.get("transformer_layers"),
+                "dropout": meta.get("transformer_dropout"),
+            }
+        if mt == "mlp" and not ck_model_config_raw:
+            ck_model_config_raw = {
+                "hidden_dim": meta.get("hidden_dim"),
+            }
+        ck_model_config_raw = {k: v for k, v in ck_model_config_raw.items() if v is not None}
+        ck_model_config = _normalize_model_config(mt, {**normalized_config, **ck_model_config_raw})
         ck_loss = str(meta.get("loss_type", "mse")).lower()
         ck_model_type = str(meta.get("model_type", "mlp")).lower()
-        ck_d_model = int(meta.get("transformer_d_model", transformer_d_model))
-        ck_nhead = int(meta.get("transformer_nhead", transformer_nhead))
-        ck_layers = int(meta.get("transformer_layers", transformer_layers))
-        ck_dropout = float(meta.get("transformer_dropout", transformer_dropout))
         
         if ck_tok != tokenizer.lower():
             raise ValueError(f"Checkpoint tokenizer={ck_tok} but requested tokenizer={tokenizer}. Delete {ckpt_path} or match settings.")
@@ -207,8 +303,6 @@ def load_or_init_model(
             raise ValueError(f"Checkpoint seq_len={ck_seq} but requested seq_len={seq_len}. Delete {ckpt_path} or match settings.")
         if ck_vocab != vocab_size:
             raise ValueError(f"Checkpoint vocab_size={ck_vocab} but requested vocab_size={vocab_size}. Delete {ckpt_path} or match settings.")
-        if ck_hidden != hidden_dim and mt != "transformer":
-            raise ValueError(f"Checkpoint hidden_dim={ck_hidden} but requested hidden_dim={hidden_dim}. Delete {ckpt_path} or match settings.")
         if ck_loss != str(loss_type).lower():
             raise ValueError(
                 f"Checkpoint loss_type={ck_loss} but requested loss_type={loss_type}. "
@@ -219,15 +313,20 @@ def load_or_init_model(
                 f"Checkpoint model_type={ck_model_type} but requested model_type={mt}. "
                 f"Delete {ckpt_path} or match settings."
             )
-        if mt == "transformer":
-            if ck_d_model != transformer_d_model:
-                raise ValueError(f"Checkpoint transformer_d_model={ck_d_model} but requested {transformer_d_model}. Delete {ckpt_path} or match settings.")
-            if ck_nhead != transformer_nhead:
-                raise ValueError(f"Checkpoint transformer_nhead={ck_nhead} but requested {transformer_nhead}. Delete {ckpt_path} or match settings.")
-            if ck_layers != transformer_layers:
-                raise ValueError(f"Checkpoint transformer_layers={ck_layers} but requested {transformer_layers}. Delete {ckpt_path} or match settings.")
-            if abs(ck_dropout - float(transformer_dropout)) > 1e-8:
-                raise ValueError(f"Checkpoint transformer_dropout={ck_dropout} but requested {transformer_dropout}. Delete {ckpt_path} or match settings.")
+        for key, value in normalized_config.items():
+            ck_value = ck_model_config.get(key)
+            if isinstance(value, float):
+                if ck_value is None or abs(float(ck_value) - float(value)) > 1e-8:
+                    raise ValueError(
+                        f"Checkpoint model_config[{key}]={ck_value} but requested {value}. "
+                        f"Delete {ckpt_path} or match settings."
+                    )
+            else:
+                if ck_value is None or ck_value != value:
+                    raise ValueError(
+                        f"Checkpoint model_config[{key}]={ck_value} but requested {value}. "
+                        f"Delete {ckpt_path} or match settings."
+                    )
 
         model.load_state_dict(data["model"])
         optimizer.load_state_dict(data["optim"])
@@ -235,22 +334,17 @@ def load_or_init_model(
 
         logging.info(
             "Loaded checkpoint %s (tokenizer=%s, seq_len=%s, vocab=%s, hidden=%s, model=%s, step=%s)",
-            ckpt_path, ck_tok, ck_seq, ck_vocab, ck_hidden, ck_model_type, global_step
+            ckpt_path, ck_tok, ck_seq, ck_vocab, ck_model_config.get("hidden_dim"), ck_model_type, global_step
         )
         logging.info(
             "Initializing new VAE (tokenizer=%s, loss_type=%s, model=%s, "
-            "seq_len=%s, vocab=%s, input_dim=%s, hidden=%s, d_model=%s, nhead=%s, layers=%s, dropout=%s, lr=%s)",
+            "seq_len=%s, vocab=%s, model_config=%s, lr=%s)",
             tokenizer,
             loss_type,
             mt,
             seq_len,
             vocab_size,
-            input_dim,
-            hidden_dim,
-            transformer_d_model,
-            transformer_nhead,
-            transformer_layers,
-            transformer_dropout,
+            normalized_config,
             learning_rate,
         )
 
@@ -258,22 +352,19 @@ def load_or_init_model(
 
 def save_checkpoint(
     ckpt_path: str,
-    model: PlasmidVAE,
+    model: VAEModelProtocol,
     optimizer: "optim.Optimizer",
     global_step: int,
     tokenizer: str,
     seq_len: int,
     vocab_size: int,
-    hidden_dim: int,
     loss_type: str,
     model_type: str,
-    transformer_d_model: int,
-    transformer_nhead: int,
-    transformer_layers: int,
-    transformer_dropout: float,
+    model_config: Mapping[str, Any],
 ) -> None:
     if torch is None:
         return
+    normalized_config = _normalize_model_config(model_type, model_config)
     payload = {
         "model": model.state_dict(),
         "optim": optimizer.state_dict(),
@@ -282,13 +373,9 @@ def save_checkpoint(
             "tokenizer": str(tokenizer).lower(),
             "seq_len": int(seq_len),
             "vocab_size": int(vocab_size),
-            "hidden_dim": int(hidden_dim),
             "loss_type": str(loss_type).lower(),
             "model_type": str(model_type).lower(),
-            "transformer_d_model": int(transformer_d_model),
-            "transformer_nhead": int(transformer_nhead),
-            "transformer_layers": int(transformer_layers),
-            "transformer_dropout": float(transformer_dropout),
+            "model_config": normalized_config,
         },
     }
     tmp = ckpt_path + ".tmp"

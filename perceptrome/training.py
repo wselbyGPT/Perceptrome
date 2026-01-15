@@ -97,12 +97,21 @@ def train_on_encoded(
     device = get_device()
 
     seq_len, vocab_size = tokenizer_meta(tokenizer, window_size_bp)
-    hidden_dim = train_cfg.hidden_dim
     model_type = train_cfg.model_type
+    hidden_dim = train_cfg.hidden_dim
     transformer_d_model = train_cfg.transformer_d_model
     transformer_nhead = train_cfg.transformer_nhead
     transformer_layers = train_cfg.transformer_layers
     transformer_dropout = train_cfg.transformer_dropout
+    if str(model_type).lower() == "transformer":
+        model_config = {
+            "d_model": transformer_d_model,
+            "nhead": transformer_nhead,
+            "num_layers": transformer_layers,
+            "dropout": transformer_dropout,
+        }
+    else:
+        model_config = {"hidden_dim": hidden_dim}
 
     lt = _default_loss_type(tokenizer) if loss_type is None else str(loss_type).lower()
     mp = float(mask_prob) if mask_prob is not None else float(getattr(train_cfg, 'aa_mask_prob', 0.05 if str(tokenizer).lower() == 'aa' else 0.0))
@@ -113,16 +122,12 @@ def train_on_encoded(
         io_cfg=io_cfg,
         seq_len=seq_len,
         vocab_size=vocab_size,
-        hidden_dim=hidden_dim,
         learning_rate=train_cfg.learning_rate,
         device=device,
         tokenizer=tokenizer,
         loss_type=lt,
         model_type=model_type,
-        transformer_d_model=transformer_d_model,
-        transformer_nhead=transformer_nhead,
-        transformer_layers=transformer_layers,
-        transformer_dropout=transformer_dropout,
+        model_config=model_config,
     )
 
     windows_tensor = torch.from_numpy(encoded)  # (N, L, V)
@@ -195,13 +200,9 @@ def train_on_encoded(
         tokenizer=tokenizer,
         seq_len=seq_len,
         vocab_size=vocab_size,
-        hidden_dim=hidden_dim,
         loss_type=lt,
         model_type=model_type,
-        transformer_d_model=transformer_d_model,
-        transformer_nhead=transformer_nhead,
-        transformer_layers=transformer_layers,
-        transformer_dropout=transformer_dropout,
+        model_config=model_config,
     )
 
     return last_total
@@ -231,12 +232,21 @@ def compute_window_errors(
     device = get_device()
 
     seq_len, vocab_size = tokenizer_meta(tokenizer, window_size_bp)
-    hidden_dim = train_cfg.hidden_dim
     model_type = train_cfg.model_type
+    hidden_dim = train_cfg.hidden_dim
     transformer_d_model = train_cfg.transformer_d_model
     transformer_nhead = train_cfg.transformer_nhead
     transformer_layers = train_cfg.transformer_layers
     transformer_dropout = train_cfg.transformer_dropout
+    if str(model_type).lower() == "transformer":
+        model_config = {
+            "d_model": transformer_d_model,
+            "nhead": transformer_nhead,
+            "num_layers": transformer_layers,
+            "dropout": transformer_dropout,
+        }
+    else:
+        model_config = {"hidden_dim": hidden_dim}
 
     lt = _default_loss_type(tokenizer) if loss_type is None else str(loss_type).lower()
 
@@ -244,16 +254,12 @@ def compute_window_errors(
         io_cfg=io_cfg,
         seq_len=seq_len,
         vocab_size=vocab_size,
-        hidden_dim=hidden_dim,
         learning_rate=train_cfg.learning_rate,
         device=device,
         tokenizer=tokenizer,
         loss_type=lt,
         model_type=model_type,
-        transformer_d_model=transformer_d_model,
-        transformer_nhead=transformer_nhead,
-        transformer_layers=transformer_layers,
-        transformer_dropout=transformer_dropout,
+        model_config=model_config,
     )
 
     model.eval()

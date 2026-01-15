@@ -9,7 +9,7 @@ except ImportError:
     torch = None  # type: ignore
 
 from .config import TrainingConfig, IOConfig
-from .model import get_device, load_or_init_model
+from .model import get_device, load_or_init_model, resolve_latent_dim
 from .encoding_main import tokenizer_meta, IDX_TO_CODON, CODON_VOCAB_SIZE, GC_COUNT_PER_TOKEN, IDX_TO_AA, AA_VOCAB_SIZE
 
 def _sample_from_logits(logits: np.ndarray, temperature: float) -> int:
@@ -77,28 +77,33 @@ def generate_plasmid_sequence(
 
     device = get_device()
     seq_len, vocab_size = tokenizer_meta(tok, window_size_bp)
-    hidden_dim = train_cfg.hidden_dim
     model_type = train_cfg.model_type
+    hidden_dim = train_cfg.hidden_dim
     transformer_d_model = train_cfg.transformer_d_model
     transformer_nhead = train_cfg.transformer_nhead
     transformer_layers = train_cfg.transformer_layers
     transformer_dropout = train_cfg.transformer_dropout
-    latent_dim = transformer_d_model if str(model_type).lower() == "transformer" else hidden_dim
+    if str(model_type).lower() == "transformer":
+        model_config = {
+            "d_model": transformer_d_model,
+            "nhead": transformer_nhead,
+            "num_layers": transformer_layers,
+            "dropout": transformer_dropout,
+        }
+    else:
+        model_config = {"hidden_dim": hidden_dim}
+    latent_dim = resolve_latent_dim(model_type, model_config)
 
     model, optimizer, global_step, ckpt_path = load_or_init_model(
         io_cfg=io_cfg,
         seq_len=seq_len,
         vocab_size=vocab_size,
-        hidden_dim=hidden_dim,
         learning_rate=train_cfg.learning_rate,
         device=device,
         tokenizer=tok,
         loss_type="mse",
         model_type=model_type,
-        transformer_d_model=transformer_d_model,
-        transformer_nhead=transformer_nhead,
-        transformer_layers=transformer_layers,
-        transformer_dropout=transformer_dropout,
+        model_config=model_config,
     )
     model.eval()
 
@@ -181,28 +186,33 @@ def generate_protein_sequence(
     tok = "aa"
     seq_len, vocab_size = tokenizer_meta(tok, window_aa)
     assert vocab_size == AA_VOCAB_SIZE
-    hidden_dim = train_cfg.hidden_dim
     model_type = train_cfg.model_type
+    hidden_dim = train_cfg.hidden_dim
     transformer_d_model = train_cfg.transformer_d_model
     transformer_nhead = train_cfg.transformer_nhead
     transformer_layers = train_cfg.transformer_layers
     transformer_dropout = train_cfg.transformer_dropout
-    latent_dim = transformer_d_model if str(model_type).lower() == "transformer" else hidden_dim
+    if str(model_type).lower() == "transformer":
+        model_config = {
+            "d_model": transformer_d_model,
+            "nhead": transformer_nhead,
+            "num_layers": transformer_layers,
+            "dropout": transformer_dropout,
+        }
+    else:
+        model_config = {"hidden_dim": hidden_dim}
+    latent_dim = resolve_latent_dim(model_type, model_config)
 
     model, optimizer, global_step, ckpt_path = load_or_init_model(
         io_cfg=io_cfg,
         seq_len=seq_len,
         vocab_size=vocab_size,
-        hidden_dim=hidden_dim,
         learning_rate=train_cfg.learning_rate,
         device=device,
         tokenizer=tok,
         loss_type="ce",
         model_type=model_type,
-        transformer_d_model=transformer_d_model,
-        transformer_nhead=transformer_nhead,
-        transformer_layers=transformer_layers,
-        transformer_dropout=transformer_dropout,
+        model_config=model_config,
     )
     model.eval()
 
