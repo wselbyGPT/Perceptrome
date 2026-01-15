@@ -56,6 +56,13 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--span-mask-prob", type=float, default=None, help="AA tokenizer: probability to apply a contiguous span mask per sequence")
         sp.add_argument("--span-mask-len", type=int, default=None, help="AA tokenizer: length (aa) of the contiguous span mask")
 
+    def add_model_args(sp):
+        sp.add_argument(
+            "--model-config",
+            default=None,
+            help="Override training.model_config with JSON or a path to a JSON/YAML file.",
+        )
+
     s = sub.add_parser("encode-one")
     s.add_argument("accession")
     s.add_argument("--window-size", type=int, default=None)
@@ -72,6 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reencode", action="store_true")
     add_tok_args(s)
     add_loss_args(s)
+    add_model_args(s)
     s.set_defaults(func=cmd_train_one)
 
     s = sub.add_parser("scope-one")
@@ -81,6 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--fps", type=float, default=12.0)
     s.add_argument("--reencode", action="store_true")
     add_tok_args(s)
+    add_model_args(s)
     s.add_argument("--loss-type", choices=["mse", "ce"], default=None, help="Override loss used for error metric (default: ce for aa, mse for base/codon)")
     s.set_defaults(func=cmd_scope_one)
 
@@ -95,6 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reencode", action="store_true")
     add_tok_args(s)
     add_loss_args(s)
+    add_model_args(s)
     s.set_defaults(func=cmd_scope_stream)
 
     s = sub.add_parser("stream")
@@ -107,6 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--delete-cache", action="store_true")
     add_tok_args(s)
     add_loss_args(s)
+    add_model_args(s)
     s.set_defaults(func=cmd_stream)
 
     s = sub.add_parser("generate-plasmid")
@@ -120,6 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--temperature", type=float, default=1.0)
     s.add_argument("--gc-bias", type=float, default=1.0)
     add_tok_args(s)
+    add_model_args(s)
     s.set_defaults(func=cmd_generate_plasmid)
 
     s = sub.add_parser("generate-protein")
@@ -135,6 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reject-tries", type=int, default=40)
     s.add_argument("--reject-max-run", type=int, default=10, help="Reject if any AA repeats longer than this")
     s.add_argument("--reject-max-x-frac", type=float, default=0.15, help="Reject if fraction of 'X' exceeds this")
+    add_model_args(s)
     s.set_defaults(func=cmd_generate_protein)
 
     return p

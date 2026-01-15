@@ -12,7 +12,7 @@ except ImportError:
     TensorDataset = None  # type: ignore
 
 from .config import IOConfig, TrainingConfig
-from .model import get_device, load_or_init_model, save_checkpoint, vae_loss
+from .model import get_device, load_or_init_model, resolve_model_config, save_checkpoint, vae_loss
 from .encoding_main import tokenizer_meta
 
 
@@ -103,6 +103,22 @@ def train_on_encoded(
     transformer_nhead = train_cfg.transformer_nhead
     transformer_layers = train_cfg.transformer_layers
     transformer_dropout = train_cfg.transformer_dropout
+    model_config = getattr(train_cfg, "model_config", None)
+
+    resolved = resolve_model_config(
+        model_type=model_type,
+        hidden_dim=hidden_dim,
+        transformer_d_model=transformer_d_model,
+        transformer_nhead=transformer_nhead,
+        transformer_layers=transformer_layers,
+        transformer_dropout=transformer_dropout,
+        model_config=model_config,
+    )
+    hidden_dim = int(resolved["hidden_dim"])
+    transformer_d_model = int(resolved["transformer_d_model"])
+    transformer_nhead = int(resolved["transformer_nhead"])
+    transformer_layers = int(resolved["transformer_layers"])
+    transformer_dropout = float(resolved["transformer_dropout"])
 
     lt = _default_loss_type(tokenizer) if loss_type is None else str(loss_type).lower()
     mp = float(mask_prob) if mask_prob is not None else float(getattr(train_cfg, 'aa_mask_prob', 0.05 if str(tokenizer).lower() == 'aa' else 0.0))
@@ -123,6 +139,7 @@ def train_on_encoded(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        model_config=model_config,
     )
 
     windows_tensor = torch.from_numpy(encoded)  # (N, L, V)
@@ -202,6 +219,7 @@ def train_on_encoded(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        model_config=model_config,
     )
 
     return last_total

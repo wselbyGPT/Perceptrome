@@ -26,6 +26,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "shuffle_catalog": True,
         "hidden_dim": 512,
         "model_type": "mlp",
+        "model_config": {},
         "transformer_d_model": 256,
         "transformer_nhead": 8,
         "transformer_layers": 4,
@@ -126,6 +127,7 @@ class TrainingConfig:
     shuffle_catalog: bool
     hidden_dim: int
     model_type: str
+    model_config: Dict[str, Any]
     transformer_d_model: int
     transformer_nhead: int
     transformer_layers: int
@@ -262,6 +264,7 @@ def extract_configs(cfg: Dict[str, Any]) -> Tuple[NCBIConfig, TrainingConfig, IO
         shuffle_catalog=bool(t.get("shuffle_catalog", True)),
         hidden_dim=int(t.get("hidden_dim", 512)),
         model_type=str(t.get("model_type", "mlp")),
+        model_config=dict(t.get("model_config", {}) or {}),
         transformer_d_model=int(t.get("transformer_d_model", 256)),
         transformer_nhead=int(t.get("transformer_nhead", 8)),
         transformer_layers=int(t.get("transformer_layers", 4)),

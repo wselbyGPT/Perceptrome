@@ -1,5 +1,5 @@
 import logging, os
-from typing import Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 try:
     import torch
@@ -147,6 +147,31 @@ def get_device() -> "torch.device":
         raise RuntimeError("PyTorch not installed.")
     return torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
+def resolve_model_config(
+    model_type: str,
+    hidden_dim: int,
+    transformer_d_model: int,
+    transformer_nhead: int,
+    transformer_layers: int,
+    transformer_dropout: float,
+    model_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    cfg = model_config or {}
+
+    def _pick(keys: Tuple[str, ...], default: Any) -> Any:
+        for key in keys:
+            if key in cfg and cfg[key] is not None:
+                return cfg[key]
+        return default
+
+    return {
+        "hidden_dim": int(_pick(("hidden_dim",), hidden_dim)),
+        "transformer_d_model": int(_pick(("d_model", "transformer_d_model"), transformer_d_model)),
+        "transformer_nhead": int(_pick(("nhead", "transformer_nhead"), transformer_nhead)),
+        "transformer_layers": int(_pick(("num_layers", "transformer_layers"), transformer_layers)),
+        "transformer_dropout": float(_pick(("dropout", "transformer_dropout"), transformer_dropout)),
+    }
+
 def load_or_init_model(
     io_cfg: IOConfig,
     seq_len: int,
@@ -161,6 +186,7 @@ def load_or_init_model(
     transformer_nhead: int,
     transformer_layers: int,
     transformer_dropout: float,
+    model_config: Optional[Dict[str, Any]] = None,
 ) -> Tuple[nn.Module, "optim.Optimizer", int, str]:
     """
     seq_len: number of positions (bp or codons)
@@ -172,18 +198,32 @@ def load_or_init_model(
     ckpt_path = os.path.join(io_cfg.checkpoints_dir, "latest.pt")
 
     mt = str(model_type).lower()
+    resolved = resolve_model_config(
+        model_type=mt,
+        hidden_dim=hidden_dim,
+        transformer_d_model=transformer_d_model,
+        transformer_nhead=transformer_nhead,
+        transformer_layers=transformer_layers,
+        transformer_dropout=transformer_dropout,
+        model_config=model_config,
+    )
+    effective_hidden_dim = int(resolved["hidden_dim"])
+    effective_d_model = int(resolved["transformer_d_model"])
+    effective_nhead = int(resolved["transformer_nhead"])
+    effective_layers = int(resolved["transformer_layers"])
+    effective_dropout = float(resolved["transformer_dropout"])
     input_dim = int(seq_len) * int(vocab_size)
     if mt == "transformer":
         model = TransformerVAE(
             seq_len=seq_len,
             vocab_size=vocab_size,
-            d_model=transformer_d_model,
-            nhead=transformer_nhead,
-            num_layers=transformer_layers,
-            dropout=transformer_dropout,
+            d_model=effective_d_model,
+            nhead=effective_nhead,
+            num_layers=effective_layers,
+            dropout=effective_dropout,
         ).to(device)
     else:
-        model = PlasmidVAE(input_dim=input_dim, hidden_dim=hidden_dim).to(device)
+        model = PlasmidVAE(input_dim=input_dim, hidden_dim=effective_hidden_dim).to(device)
     optimizer: optim.Optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     global_step = 0
 
@@ -193,13 +233,13 @@ def load_or_init_model(
         ck_tok = str(meta.get("tokenizer", "base")).lower()
         ck_seq = int(meta.get("seq_len", seq_len))
         ck_vocab = int(meta.get("vocab_size", vocab_size))
-        ck_hidden = int(meta.get("hidden_dim", hidden_dim))
+        ck_hidden = int(meta.get("hidden_dim", effective_hidden_dim))
         ck_loss = str(meta.get("loss_type", "mse")).lower()
         ck_model_type = str(meta.get("model_type", "mlp")).lower()
-        ck_d_model = int(meta.get("transformer_d_model", transformer_d_model))
-        ck_nhead = int(meta.get("transformer_nhead", transformer_nhead))
-        ck_layers = int(meta.get("transformer_layers", transformer_layers))
-        ck_dropout = float(meta.get("transformer_dropout", transformer_dropout))
+        ck_d_model = int(meta.get("transformer_d_model", effective_d_model))
+        ck_nhead = int(meta.get("transformer_nhead", effective_nhead))
+        ck_layers = int(meta.get("transformer_layers", effective_layers))
+        ck_dropout = float(meta.get("transformer_dropout", effective_dropout))
         
         if ck_tok != tokenizer.lower():
             raise ValueError(f"Checkpoint tokenizer={ck_tok} but requested tokenizer={tokenizer}. Delete {ckpt_path} or match settings.")
@@ -207,8 +247,11 @@ def load_or_init_model(
             raise ValueError(f"Checkpoint seq_len={ck_seq} but requested seq_len={seq_len}. Delete {ckpt_path} or match settings.")
         if ck_vocab != vocab_size:
             raise ValueError(f"Checkpoint vocab_size={ck_vocab} but requested vocab_size={vocab_size}. Delete {ckpt_path} or match settings.")
-        if ck_hidden != hidden_dim and mt != "transformer":
-            raise ValueError(f"Checkpoint hidden_dim={ck_hidden} but requested hidden_dim={hidden_dim}. Delete {ckpt_path} or match settings.")
+        if ck_hidden != effective_hidden_dim and mt != "transformer":
+            raise ValueError(
+                f"Checkpoint hidden_dim={ck_hidden} but requested hidden_dim={effective_hidden_dim}. "
+                f"Delete {ckpt_path} or match settings."
+            )
         if ck_loss != str(loss_type).lower():
             raise ValueError(
                 f"Checkpoint loss_type={ck_loss} but requested loss_type={loss_type}. "
@@ -220,14 +263,26 @@ def load_or_init_model(
                 f"Delete {ckpt_path} or match settings."
             )
         if mt == "transformer":
-            if ck_d_model != transformer_d_model:
-                raise ValueError(f"Checkpoint transformer_d_model={ck_d_model} but requested {transformer_d_model}. Delete {ckpt_path} or match settings.")
-            if ck_nhead != transformer_nhead:
-                raise ValueError(f"Checkpoint transformer_nhead={ck_nhead} but requested {transformer_nhead}. Delete {ckpt_path} or match settings.")
-            if ck_layers != transformer_layers:
-                raise ValueError(f"Checkpoint transformer_layers={ck_layers} but requested {transformer_layers}. Delete {ckpt_path} or match settings.")
-            if abs(ck_dropout - float(transformer_dropout)) > 1e-8:
-                raise ValueError(f"Checkpoint transformer_dropout={ck_dropout} but requested {transformer_dropout}. Delete {ckpt_path} or match settings.")
+            if ck_d_model != effective_d_model:
+                raise ValueError(
+                    f"Checkpoint transformer_d_model={ck_d_model} but requested {effective_d_model}. "
+                    f"Delete {ckpt_path} or match settings."
+                )
+            if ck_nhead != effective_nhead:
+                raise ValueError(
+                    f"Checkpoint transformer_nhead={ck_nhead} but requested {effective_nhead}. "
+                    f"Delete {ckpt_path} or match settings."
+                )
+            if ck_layers != effective_layers:
+                raise ValueError(
+                    f"Checkpoint transformer_layers={ck_layers} but requested {effective_layers}. "
+                    f"Delete {ckpt_path} or match settings."
+                )
+            if abs(ck_dropout - float(effective_dropout)) > 1e-8:
+                raise ValueError(
+                    f"Checkpoint transformer_dropout={ck_dropout} but requested {effective_dropout}. "
+                    f"Delete {ckpt_path} or match settings."
+                )
 
         model.load_state_dict(data["model"])
         optimizer.load_state_dict(data["optim"])
@@ -246,11 +301,11 @@ def load_or_init_model(
             seq_len,
             vocab_size,
             input_dim,
-            hidden_dim,
-            transformer_d_model,
-            transformer_nhead,
-            transformer_layers,
-            transformer_dropout,
+            effective_hidden_dim,
+            effective_d_model,
+            effective_nhead,
+            effective_layers,
+            effective_dropout,
             learning_rate,
         )
 
@@ -271,6 +326,7 @@ def save_checkpoint(
     transformer_nhead: int,
     transformer_layers: int,
     transformer_dropout: float,
+    model_config: Optional[Dict[str, Any]] = None,
 ) -> None:
     if torch is None:
         return
@@ -289,6 +345,7 @@ def save_checkpoint(
             "transformer_nhead": int(transformer_nhead),
             "transformer_layers": int(transformer_layers),
             "transformer_dropout": float(transformer_dropout),
+            "model_config": model_config or {},
         },
     }
     tmp = ckpt_path + ".tmp"

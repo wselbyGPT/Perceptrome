@@ -1,10 +1,12 @@
 import argparse
+import json
 import logging
 import os
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
+from perceptrome.config import deep_update, yaml as config_yaml
 from perceptrome.cli.common import (
     extract_configs, load_full_config,
     compute_gc_from_encoded, encode_accession,
@@ -72,6 +74,41 @@ def _validate_tok_params(tok: str, window_size: int, stride: int, frame_offset: 
         return
 
     raise ValueError(f"Unknown tokenizer: {tok}")
+
+def _parse_model_config_arg(raw: Optional[str]) -> Optional[Dict[str, Any]]:
+    if raw is None:
+        return None
+    if os.path.exists(raw):
+        with open(raw, "r", encoding="utf-8") as f:
+            if raw.lower().endswith(".json"):
+                data = json.load(f)
+            else:
+                if config_yaml is None:
+                    raise RuntimeError("PyYAML is required to read YAML model-config files.")
+                data = config_yaml.safe_load(f)
+    else:
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            if config_yaml is None:
+                raise
+            data = config_yaml.safe_load(raw)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError("model_config must be a JSON/YAML object (dict).")
+    return data
+
+def _apply_model_config_override(args: argparse.Namespace, train_cfg) -> None:
+    raw = getattr(args, "model_config", None)
+    if raw is None:
+        return
+    override = _parse_model_config_arg(raw)
+    if override is None:
+        return
+    merged = dict(getattr(train_cfg, "model_config", {}) or {})
+    deep_update(merged, override)
+    train_cfg.model_config = merged
 
 
 def _resolve_proteome_params(args, train_cfg, state=None, tok: str = "base", src: str = "fasta") -> Dict[str, Any]:
@@ -191,6 +228,7 @@ def cmd_encode_one(args: argparse.Namespace) -> int:
 def cmd_train_one(args: argparse.Namespace) -> int:
     cfg = load_full_config(args.config)
     ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
+    _apply_model_config_override(args, train_cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
     state = load_state(io_cfg.state_file)
@@ -256,6 +294,7 @@ def cmd_scope_one(args: argparse.Namespace) -> int:
         raise RuntimeError("curses not available")
     cfg = load_full_config(args.config)
     ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
+    _apply_model_config_override(args, train_cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
 
@@ -321,6 +360,7 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
         raise RuntimeError("curses not available")
     cfg = load_full_config(args.config)
     ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
+    _apply_model_config_override(args, train_cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
 
@@ -375,6 +415,7 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
     transformer_nhead = train_cfg.transformer_nhead
     transformer_layers = train_cfg.transformer_layers
     transformer_dropout = train_cfg.transformer_dropout
+    model_config = getattr(train_cfg, "model_config", None)
 
     lt = (args.loss_type if getattr(args, "loss_type", None) is not None else ("ce" if tok == "aa" else "mse"))
 
@@ -387,6 +428,7 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        model_config=model_config,
     )
 
     windows_tensor = torch.from_numpy(encoded)
@@ -422,6 +464,7 @@ def cmd_stream(args: argparse.Namespace) -> int:
 
     cfg = load_full_config(args.config)
     ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
+    _apply_model_config_override(args, train_cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
 
@@ -504,6 +547,7 @@ def cmd_stream(args: argparse.Namespace) -> int:
 def cmd_generate_plasmid(args: argparse.Namespace) -> int:
     cfg = load_full_config(args.config)
     _, train_cfg, io_cfg = extract_configs(cfg)
+    _apply_model_config_override(args, train_cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
 
@@ -537,6 +581,7 @@ def cmd_generate_plasmid(args: argparse.Namespace) -> int:
 def cmd_generate_protein(args: argparse.Namespace) -> int:
     cfg = load_full_config(args.config)
     _, train_cfg, io_cfg = extract_configs(cfg)
+    _apply_model_config_override(args, train_cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
 

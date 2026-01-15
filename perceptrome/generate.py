@@ -9,7 +9,7 @@ except ImportError:
     torch = None  # type: ignore
 
 from .config import TrainingConfig, IOConfig
-from .model import get_device, load_or_init_model
+from .model import get_device, load_or_init_model, resolve_model_config
 from .encoding_main import tokenizer_meta, IDX_TO_CODON, CODON_VOCAB_SIZE, GC_COUNT_PER_TOKEN, IDX_TO_AA, AA_VOCAB_SIZE
 
 def _sample_from_logits(logits: np.ndarray, temperature: float) -> int:
@@ -83,6 +83,21 @@ def generate_plasmid_sequence(
     transformer_nhead = train_cfg.transformer_nhead
     transformer_layers = train_cfg.transformer_layers
     transformer_dropout = train_cfg.transformer_dropout
+    model_config = getattr(train_cfg, "model_config", None)
+    resolved = resolve_model_config(
+        model_type=model_type,
+        hidden_dim=hidden_dim,
+        transformer_d_model=transformer_d_model,
+        transformer_nhead=transformer_nhead,
+        transformer_layers=transformer_layers,
+        transformer_dropout=transformer_dropout,
+        model_config=model_config,
+    )
+    hidden_dim = int(resolved["hidden_dim"])
+    transformer_d_model = int(resolved["transformer_d_model"])
+    transformer_nhead = int(resolved["transformer_nhead"])
+    transformer_layers = int(resolved["transformer_layers"])
+    transformer_dropout = float(resolved["transformer_dropout"])
     latent_dim = transformer_d_model if str(model_type).lower() == "transformer" else hidden_dim
 
     model, optimizer, global_step, ckpt_path = load_or_init_model(
@@ -99,6 +114,7 @@ def generate_plasmid_sequence(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        model_config=model_config,
     )
     model.eval()
 
@@ -187,6 +203,21 @@ def generate_protein_sequence(
     transformer_nhead = train_cfg.transformer_nhead
     transformer_layers = train_cfg.transformer_layers
     transformer_dropout = train_cfg.transformer_dropout
+    model_config = getattr(train_cfg, "model_config", None)
+    resolved = resolve_model_config(
+        model_type=model_type,
+        hidden_dim=hidden_dim,
+        transformer_d_model=transformer_d_model,
+        transformer_nhead=transformer_nhead,
+        transformer_layers=transformer_layers,
+        transformer_dropout=transformer_dropout,
+        model_config=model_config,
+    )
+    hidden_dim = int(resolved["hidden_dim"])
+    transformer_d_model = int(resolved["transformer_d_model"])
+    transformer_nhead = int(resolved["transformer_nhead"])
+    transformer_layers = int(resolved["transformer_layers"])
+    transformer_dropout = float(resolved["transformer_dropout"])
     latent_dim = transformer_d_model if str(model_type).lower() == "transformer" else hidden_dim
 
     model, optimizer, global_step, ckpt_path = load_or_init_model(
@@ -203,6 +234,7 @@ def generate_protein_sequence(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        model_config=model_config,
     )
     model.eval()
 
