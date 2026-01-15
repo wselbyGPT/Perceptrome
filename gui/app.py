@@ -602,7 +602,12 @@ class PerceptromeGUI:
         self._register_lockable(chk)
 
         bar = self._action_bar(left)
-        btn = ttk.Button(bar, text="Fetch", command=lambda: self._run_command("fetch_one", "Fetch accession", self._collect_fetch_args()))
+        btn = ttk.Button(
+            bar,
+            text="Fetch",
+            style="Accent.TButton",
+            command=lambda: self._run_command("fetch_one", "Fetch accession", self._collect_fetch_args()),
+        )
         btn.pack(side=tk.RIGHT)
         self._register_lockable(btn)
 
@@ -654,7 +659,12 @@ class PerceptromeGUI:
         self._labeled_combo(left, "Source (override)", source, ["", "fasta", "genbank"], tooltip="Blank = auto.")
 
         bar = self._action_bar(left)
-        btn = ttk.Button(bar, text="Encode", command=lambda: self._run_command("encode_one", "Encode accession", self._collect_encode_args()))
+        btn = ttk.Button(
+            bar,
+            text="Encode",
+            style="Accent.TButton",
+            command=lambda: self._run_command("encode_one", "Encode accession", self._collect_encode_args()),
+        )
         btn.pack(side=tk.RIGHT)
         self._register_lockable(btn)
 
@@ -726,7 +736,12 @@ class PerceptromeGUI:
         self._register_lockable(chk)
 
         bar = self._action_bar(left)
-        btn = ttk.Button(bar, text="Train", command=lambda: self._run_command("train_one", "Train accession", self._collect_train_args()))
+        btn = ttk.Button(
+            bar,
+            text="Train",
+            style="Accent.TButton",
+            command=lambda: self._run_command("train_one", "Train accession", self._collect_train_args()),
+        )
         btn.pack(side=tk.RIGHT)
         self._register_lockable(btn)
 
@@ -791,7 +806,12 @@ class PerceptromeGUI:
         self._labeled_entry(left1, "GC bias", p_gc_bias, tooltip="Optional. Float.", on_focus=pf)
 
         bar1 = self._action_bar(left1)
-        b1 = ttk.Button(bar1, text="Generate plasmid", command=lambda: self._run_command("gen_plasmid", "Generate plasmid", self._collect_gen_plasmid_args()))
+        b1 = ttk.Button(
+            bar1,
+            text="Generate plasmid",
+            style="Accent.TButton",
+            command=lambda: self._run_command("gen_plasmid", "Generate plasmid", self._collect_gen_plasmid_args()),
+        )
         b1.pack(side=tk.RIGHT)
         self._register_lockable(b1)
 
@@ -859,7 +879,12 @@ class PerceptromeGUI:
         self._labeled_entry(left2, "Reject max X frac", a_reject_max_x_frac, tooltip="Optional. Float in [0..1].", on_focus=af)
 
         bar2 = self._action_bar(left2)
-        b2 = ttk.Button(bar2, text="Generate protein", command=lambda: self._run_command("gen_protein", "Generate protein", self._collect_gen_protein_args()))
+        b2 = ttk.Button(
+            bar2,
+            text="Generate protein",
+            style="Accent.TButton",
+            command=lambda: self._run_command("gen_protein", "Generate protein", self._collect_gen_protein_args()),
+        )
         b2.pack(side=tk.RIGHT)
         self._register_lockable(b2)
 
@@ -1331,4 +1356,3 @@ class PerceptromeGUI:
     def _on_close(self) -> None:
         self._persist_settings()
         self.root.destroy()
-

@@ -86,7 +86,13 @@ class PresetsPanel(ttk.LabelFrame):
         tree_frame = ttk.Frame(self)
         tree_frame.pack(fill=tk.BOTH, expand=True)
 
-        self.tree = ttk.Treeview(tree_frame, columns=("fav", "name", "last", "uses"), show="headings", height=12)
+        self.tree = ttk.Treeview(
+            tree_frame,
+            columns=("fav", "name", "last", "uses"),
+            show="headings",
+            height=12,
+            style="Themed.Treeview",
+        )
         self.tree.heading("fav", text="★")
         self.tree.heading("name", text="Name")
         self.tree.heading("last", text="Last used")

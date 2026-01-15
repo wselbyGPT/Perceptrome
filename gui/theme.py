@@ -15,11 +15,17 @@ def apply_theme(root: tk.Tk, dark: bool) -> ttk.Style:
         panel = "#0f111a"
         fg = "#e6e6e6"
         border = "#1f2335"
+        accent = "#3b82f6"
+        select_bg = "#1f3c73"
+        select_fg = "#f8fafc"
     else:
         bg = "#f7f7fb"
         panel = "#ffffff"
         fg = "#111111"
         border = "#d0d4dd"
+        accent = "#2563eb"
+        select_bg = "#dbeafe"
+        select_fg = "#0b1f4a"
 
     root.configure(background=bg)
 
@@ -35,6 +41,34 @@ def apply_theme(root: tk.Tk, dark: bool) -> ttk.Style:
     style.configure("TEntry", fieldbackground=panel, foreground=fg)
     style.configure("TCombobox", fieldbackground=panel, foreground=fg)
     style.map("TCombobox", fieldbackground=[("readonly", panel)], foreground=[("readonly", fg)])
+
+    style.configure("TButton", padding=(12, 6), font=("TkDefaultFont", 10))
+    style.configure("Accent.TButton", padding=(12, 6), font=("TkDefaultFont", 10), foreground="#ffffff", background=accent)
+    style.map(
+        "Accent.TButton",
+        background=[("pressed", accent), ("active", accent)],
+        foreground=[("pressed", "#ffffff"), ("active", "#ffffff")],
+    )
+
+    style.configure(
+        "Themed.Treeview",
+        rowheight=24,
+        fieldbackground=panel,
+        background=panel,
+        foreground=fg,
+        font=("TkDefaultFont", 10),
+    )
+    style.configure(
+        "Themed.Treeview.Heading",
+        background=bg,
+        foreground=fg,
+        font=("TkDefaultFont", 10, "bold"),
+    )
+    style.map(
+        "Themed.Treeview",
+        background=[("selected", select_bg)],
+        foreground=[("selected", select_fg)],
+    )
 
     style.configure("Status.TLabel", background=bg, foreground=fg)
     style.configure("TProgressbar", troughcolor=border)
