@@ -111,6 +111,59 @@ def _cache_kwargs(tok: str, min_orf: int, pol: Dict[str, Any]) -> Dict[str, Any]
     return kw
 
 
+def _available_subtypes(accessions_dir: str) -> list[str]:
+    if not os.path.isdir(accessions_dir):
+        return []
+    subtypes = []
+    for fname in os.listdir(accessions_dir):
+        if fname.endswith("_accessions.txt"):
+            subtypes.append(fname[: -len("_accessions.txt")])
+    return sorted(subtypes)
+
+
+def _resolve_subtype_path(subtype: str, accessions_dir: str) -> str:
+    path = os.path.join(accessions_dir, f"{subtype}_accessions.txt")
+    if not os.path.exists(path):
+        options = ", ".join(_available_subtypes(accessions_dir))
+        hint = f" Available: {options}" if options else ""
+        raise FileNotFoundError(
+            f"Subtype catalog not found for '{subtype}' at {path}.{hint}"
+        )
+    return path
+
+
+def _parse_range_spec(spec: str, total: int) -> list[int]:
+    spec = (spec or "all").strip().lower()
+    if spec in ("all", "*"):
+        return list(range(total))
+
+    indices: list[int] = []
+    for raw in spec.split(","):
+        token = raw.strip().lower()
+        if not token:
+            continue
+        if token in ("all", "*"):
+            indices.extend(range(total))
+            continue
+        if "-" in token:
+            start_str, end_str = token.split("-", 1)
+            start = 1 if start_str == "" else int(start_str)
+            end = total if end_str == "" else int(end_str)
+            if start < 1 or end < 1:
+                raise ValueError(f"Range values must be >= 1 (got {token})")
+            if start > total or end > total:
+                raise ValueError(f"Range {token} out of bounds (1..{total})")
+            if start > end:
+                raise ValueError(f"Range start greater than end: {token}")
+            indices.extend(list(range(start - 1, end)))
+            continue
+        idx = int(token)
+        if idx < 1 or idx > total:
+            raise ValueError(f"Index {idx} out of bounds (1..{total})")
+        indices.append(idx - 1)
+    return indices
+
+
 # -----------------------------
 # Commands
 # -----------------------------
@@ -248,6 +301,54 @@ def cmd_train_one(args: argparse.Namespace) -> int:
     save_state(io_cfg.state_file, state)
 
     print(f"{args.accession}: train-one tokenizer={tok} source={src} steps={steps} batch={batch_size} last_total={last_total:.6f}")
+    return 0
+
+
+def cmd_catalog_custom(args: argparse.Namespace) -> int:
+    accessions_dir = args.accessions_dir
+    output_path = args.output
+    if not accessions_dir:
+        accessions_dir = os.path.join(os.getcwd(), "accessions")
+
+    subtype_specs: list[Tuple[str, str]] = []
+    if args.subtype:
+        for raw in args.subtype:
+            if "=" not in raw:
+                raise ValueError(f"Invalid --subtype format '{raw}'. Use subtype=range_spec.")
+            name, spec = raw.split("=", 1)
+            name = name.strip()
+            spec = spec.strip() or "all"
+            subtype_specs.append((name, spec))
+
+    if args.include_all_subtypes:
+        for subtype in _available_subtypes(accessions_dir):
+            subtype_specs.append((subtype, args.default_range or "all"))
+
+    if not subtype_specs:
+        raise ValueError("No subtypes provided. Use --subtype or --include-all-subtypes.")
+
+    seen: set[str] = set()
+    combined: list[str] = []
+
+    for subtype, range_spec in subtype_specs:
+        path = _resolve_subtype_path(subtype, accessions_dir)
+        accessions = read_catalog(path)
+        indices = _parse_range_spec(range_spec, len(accessions))
+        selected = [accessions[idx] for idx in indices]
+        if not selected:
+            raise ValueError(f"No accessions matched range '{range_spec}' for subtype '{subtype}'.")
+        for acc in selected:
+            if acc in seen:
+                continue
+            seen.add(acc)
+            combined.append(acc)
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        for acc in combined:
+            f.write(f"{acc}\n")
+
+    print(f"Wrote {len(combined)} accessions to {output_path}")
     return 0
 
 

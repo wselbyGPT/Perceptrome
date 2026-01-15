@@ -5,6 +5,7 @@ from typing import Any
 from perceptrome.cli.commands import (
     cmd_init, cmd_catalog_show, cmd_fetch_one, cmd_encode_one, cmd_train_one,
     cmd_scope_one, cmd_scope_stream, cmd_stream, cmd_generate_plasmid, cmd_generate_protein,
+    cmd_catalog_custom,
 )
 
 def build_parser() -> argparse.ArgumentParser:
@@ -14,6 +15,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("init"); s.set_defaults(func=cmd_init)
     s = sub.add_parser("catalog-show"); s.add_argument("path"); s.set_defaults(func=cmd_catalog_show)
+    s = sub.add_parser("catalog-custom")
+    s.add_argument("--output", required=True, help="Output catalog file to write")
+    s.add_argument(
+        "--subtype",
+        action="append",
+        help="Subtype selection in the form subtype=range_spec (repeatable)",
+    )
+    s.add_argument(
+        "--include-all-subtypes",
+        action="store_true",
+        help="Include every subtype catalog in accessions directory",
+    )
+    s.add_argument(
+        "--default-range",
+        default=None,
+        help="Range spec to apply to all subtypes when using --include-all-subtypes",
+    )
+    s.add_argument(
+        "--accessions-dir",
+        default=None,
+        help="Directory containing *_accessions.txt subtype files (default: ./accessions)",
+    )
+    s.set_defaults(func=cmd_catalog_custom)
 
     s = sub.add_parser("fetch-one")
     s.add_argument("accession"); s.add_argument("--force", action="store_true")
