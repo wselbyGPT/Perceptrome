@@ -67,6 +67,8 @@ class PerceptromeGUI:
         self._build_menu()
         self._build_layout()
 
+        self._active_section = "home"
+
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # shortcuts
@@ -140,7 +142,7 @@ class PerceptromeGUI:
             self._set_var(v["accession"], args.get("accession"))
             self._set_var(v["source"], args.get("source", "fasta"))
             self._set_var(v["force"], args.get("force", False))
-            self.notebook.select(self.tab_fetch)
+            self._activate_section("fetch")
             return
 
         if command_key == "encode_one":
@@ -152,7 +154,7 @@ class PerceptromeGUI:
             self._set_var(v["frame_offset"], args.get("frame_offset"))
             self._set_var(v["min_orf_aa"], args.get("min_orf_aa"))
             self._set_var(v["source"], args.get("source"))
-            self.notebook.select(self.tab_encode)
+            self._activate_section("encode")
             return
 
         if command_key == "train_one":
@@ -173,7 +175,7 @@ class PerceptromeGUI:
             ):
                 self._set_var(v[k], args.get(k))
             self._set_var(v["reencode"], args.get("reencode", False))
-            self.notebook.select(self.tab_train)
+            self._activate_section("train")
             return
 
         if command_key == "gen_plasmid":
@@ -192,7 +194,7 @@ class PerceptromeGUI:
             ):
                 self._set_var(v[k], args.get(k))
             self._gen_focus = "plasmid"
-            self.notebook.select(self.tab_generate)
+            self._activate_section("generate")
             return
 
         if command_key == "gen_protein":
@@ -213,7 +215,7 @@ class PerceptromeGUI:
                 self._set_var(v[k], args.get(k))
             self._set_var(v["reject"], args.get("reject", False))
             self._gen_focus = "protein"
-            self.notebook.select(self.tab_generate)
+            self._activate_section("generate")
             return
 
     def _set_gen_focus(self, which: str) -> None:
@@ -236,15 +238,15 @@ class PerceptromeGUI:
         return False
 
     def _current_action(self) -> Optional[Tuple[str, str, Callable[[], Dict[str, Any]]]]:
-        """Return (command_key, label, collect_args) for the active tab."""
-        tab = self.notebook.select()
-        if tab == str(self.tab_fetch):
+        """Return (command_key, label, collect_args) for the active section."""
+        section = self._active_section
+        if section == "fetch":
             return ("fetch_one", "Fetch accession", self._collect_fetch_args)
-        if tab == str(self.tab_encode):
+        if section == "encode":
             return ("encode_one", "Encode accession", self._collect_encode_args)
-        if tab == str(self.tab_train):
+        if section == "train":
             return ("train_one", "Train accession", self._collect_train_args)
-        if tab == str(self.tab_generate):
+        if section == "generate":
             if self._gen_focus == "protein":
                 return ("gen_protein", "Generate protein", self._collect_gen_protein_args)
             return ("gen_plasmid", "Generate plasmid", self._collect_gen_plasmid_args)
@@ -363,14 +365,30 @@ class PerceptromeGUI:
         mid = ttk.PanedWindow(outer, orient=tk.VERTICAL)
         mid.pack(fill=tk.BOTH, expand=True)
 
-        nb_frame = ttk.Frame(mid)
+        content_frame = ttk.Frame(mid)
         log_frame = ttk.Frame(mid)
 
-        mid.add(nb_frame, weight=6)
+        mid.add(content_frame, weight=6)
         mid.add(log_frame, weight=2)
 
-        self.notebook = ttk.Notebook(nb_frame)
-        self.notebook.pack(fill=tk.BOTH, expand=True)
+        self.section_canvas = tk.Canvas(content_frame, highlightthickness=0)
+        self.section_scroll = ttk.Scrollbar(content_frame, orient="vertical", command=self.section_canvas.yview)
+        self.section_canvas.configure(yscrollcommand=self.section_scroll.set)
+
+        self.section_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.section_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.sections_container = ttk.Frame(self.section_canvas)
+        self.sections_window = self.section_canvas.create_window((0, 0), window=self.sections_container, anchor="nw")
+
+        def _sync_scroll_region(_event: tk.Event) -> None:
+            self.section_canvas.configure(scrollregion=self.section_canvas.bbox("all"))
+
+        def _sync_canvas_width(_event: tk.Event) -> None:
+            self.section_canvas.itemconfigure(self.sections_window, width=self.section_canvas.winfo_width())
+
+        self.sections_container.bind("<Configure>", _sync_scroll_region)
+        self.section_canvas.bind("<Configure>", _sync_canvas_width)
 
         self.log = LogPanel(log_frame, dark=self.dark)
         self.log.pack(fill=tk.BOTH, expand=True)
@@ -388,23 +406,16 @@ class PerceptromeGUI:
 
         # Base lockables
         self._lockables.clear()
-        for w in (self.notebook, e_cfg, b_browse, b_check):
+        for w in (self.section_canvas, self.section_scroll, e_cfg, b_browse, b_check):
             self._register_lockable(w)
 
-        # Build tabs
-        self.tab_home = self._build_home_tab(self.notebook)
-        self.tab_fetch = self._build_fetch_tab(self.notebook)
-        self.tab_encode = self._build_encode_tab(self.notebook)
-        self.tab_train = self._build_train_tab(self.notebook)
-        self.tab_generate = self._build_generate_tab(self.notebook)
-        self.tab_history = self._build_history_tab(self.notebook)
-
-        self.notebook.add(self.tab_home, text="Home")
-        self.notebook.add(self.tab_fetch, text="Fetch")
-        self.notebook.add(self.tab_encode, text="Encode")
-        self.notebook.add(self.tab_train, text="Train")
-        self.notebook.add(self.tab_generate, text="Generate")
-        self.notebook.add(self.tab_history, text="History")
+        self.section_frames: Dict[str, ttk.Frame] = {}
+        self._build_home_section(self.sections_container)
+        self._build_fetch_section(self.sections_container)
+        self._build_encode_section(self.sections_container)
+        self._build_train_section(self.sections_container)
+        self._build_generate_section(self.sections_container)
+        self._build_history_section(self.sections_container)
 
         self.runner.set_controls_to_lock(self._lockables)
 
@@ -551,14 +562,46 @@ class PerceptromeGUI:
         }
 
     # ----------------------------
-    # Tabs
+    # Sections
     # ----------------------------
 
-    def _build_home_tab(self, parent: tk.Widget) -> ttk.Frame:
-        frame = ttk.Frame(parent, padding=14)
+    def _activate_section(self, section: str) -> None:
+        self._active_section = section
+        frame = self.section_frames.get(section)
+        if frame is None:
+            return
+        self.sections_container.update_idletasks()
+        canvas_height = self.section_canvas.winfo_height()
+        content_height = self.sections_container.winfo_height()
+        if content_height <= 0:
+            return
+        y = frame.winfo_y()
+        if content_height > canvas_height:
+            self.section_canvas.yview_moveto(max(0.0, min(1.0, y / content_height)))
+
+    def _register_section(self, key: str, frame: ttk.Frame) -> None:
+        self.section_frames[key] = frame
+        def on_focus(_event: tk.Event, section: str = key) -> None:
+            self._activate_section(section)
+
+        frame.bind("<Enter>", on_focus, add=True)
+        frame.bind("<FocusIn>", on_focus, add=True)
+
+        def walk(w: tk.Widget) -> None:
+            for child in w.winfo_children():
+                child.bind("<Enter>", on_focus, add=True)
+                child.bind("<FocusIn>", on_focus, add=True)
+                walk(child)
+
+        walk(frame)
+
+    def _build_home_section(self, parent: tk.Widget) -> ttk.Frame:
+        frame = ttk.LabelFrame(parent, text="Home", padding=12)
+        frame.pack(fill=tk.X, pady=(0, 12))
 
         hero = ttk.LabelFrame(frame, text="Perceptrome GUI", padding=12)
-        hero.pack(fill=tk.X, pady=(0, 12))
+        hero.pack(fill=tk.X)
+
         ttk.Label(
             hero,
             text=(
@@ -578,10 +621,12 @@ class PerceptromeGUI:
             justify=tk.LEFT,
         ).pack(anchor="w")
 
+        self._register_section("home", frame)
         return frame
 
-    def _build_fetch_tab(self, parent: tk.Widget) -> ttk.Frame:
-        frame = ttk.Frame(parent, padding=14)
+    def _build_fetch_section(self, parent: tk.Widget) -> ttk.Frame:
+        frame = ttk.LabelFrame(parent, text="Fetch", padding=12)
+        frame.pack(fill=tk.X, pady=(0, 12))
 
         main = ttk.Frame(frame)
         main.pack(fill=tk.BOTH, expand=True)
@@ -615,10 +660,12 @@ class PerceptromeGUI:
             load_into_form=lambda a: self._load_args_into_form("fetch_one", a),
             save_preset_hotkey=lambda: self._save_current_as_preset_for("fetch_one", self._collect_fetch_args),
         ).pack(fill=tk.Y, expand=True)
+        self._register_section("fetch", frame)
         return frame
 
-    def _build_encode_tab(self, parent: tk.Widget) -> ttk.Frame:
-        frame = ttk.Frame(parent, padding=14)
+    def _build_encode_section(self, parent: tk.Widget) -> ttk.Frame:
+        frame = ttk.LabelFrame(parent, text="Encode", padding=12)
+        frame.pack(fill=tk.X, pady=(0, 12))
 
         main = ttk.Frame(frame)
         main.pack(fill=tk.BOTH, expand=True)
@@ -667,10 +714,12 @@ class PerceptromeGUI:
             load_into_form=lambda a: self._load_args_into_form("encode_one", a),
             save_preset_hotkey=lambda: self._save_current_as_preset_for("encode_one", self._collect_encode_args),
         ).pack(fill=tk.Y, expand=True)
+        self._register_section("encode", frame)
         return frame
 
-    def _build_train_tab(self, parent: tk.Widget) -> ttk.Frame:
-        frame = ttk.Frame(parent, padding=14)
+    def _build_train_section(self, parent: tk.Widget) -> ttk.Frame:
+        frame = ttk.LabelFrame(parent, text="Train", padding=12)
+        frame.pack(fill=tk.X, pady=(0, 12))
 
         main = ttk.Frame(frame)
         main.pack(fill=tk.BOTH, expand=True)
@@ -739,10 +788,12 @@ class PerceptromeGUI:
             load_into_form=lambda a: self._load_args_into_form("train_one", a),
             save_preset_hotkey=lambda: self._save_current_as_preset_for("train_one", self._collect_train_args),
         ).pack(fill=tk.Y, expand=True)
+        self._register_section("train", frame)
         return frame
 
-    def _build_generate_tab(self, parent: tk.Widget) -> ttk.Frame:
-        frame = ttk.Frame(parent, padding=14)
+    def _build_generate_section(self, parent: tk.Widget) -> ttk.Frame:
+        frame = ttk.LabelFrame(parent, text="Generate", padding=12)
+        frame.pack(fill=tk.X, pady=(0, 12))
         outer = ttk.Frame(frame)
         outer.pack(fill=tk.BOTH, expand=True)
 
@@ -873,14 +924,16 @@ class PerceptromeGUI:
             save_preset_hotkey=lambda: self._save_current_as_preset_for("gen_protein", self._collect_gen_protein_args),
         ).pack(fill=tk.Y, expand=True)
 
+        self._register_section("generate", frame)
         return frame
 
     # ----------------------------
     # History tab (filters + save-as-preset)
     # ----------------------------
 
-    def _build_history_tab(self, parent: tk.Widget) -> ttk.Frame:
-        frame = ttk.Frame(parent, padding=14)
+    def _build_history_section(self, parent: tk.Widget) -> ttk.Frame:
+        frame = ttk.LabelFrame(parent, text="History", padding=12)
+        frame.pack(fill=tk.BOTH, pady=(0, 12))
 
         top = ttk.Frame(frame)
         top.pack(fill=tk.X)
@@ -946,6 +999,7 @@ class PerceptromeGUI:
         self.history_details.pack(fill=tk.BOTH, expand=False)
         self.history_details.configure(state="disabled")
 
+        self._register_section("history", frame)
         return frame
 
     def _history_matches_filters(self, h: HistoryEntry) -> bool:
@@ -1260,7 +1314,7 @@ class PerceptromeGUI:
                     c.refresh()
                 walk(c)
 
-        walk(self.notebook)
+        walk(self.sections_container)
 
     def _export_presets(self) -> None:
         path = filedialog.asksaveasfilename(
@@ -1331,4 +1385,3 @@ class PerceptromeGUI:
     def _on_close(self) -> None:
         self._persist_settings()
         self.root.destroy()
-
