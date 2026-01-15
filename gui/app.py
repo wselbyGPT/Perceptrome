@@ -63,6 +63,9 @@ class PerceptromeGUI:
         self.history_search_var = tk.StringVar(value="")
         self.history_cmd_filter_var = tk.StringVar(value="All")
         self._history_refresh_job = None
+        self._section_focus_targets: Dict[str, tk.Widget] = {}
+        self.unified_canvas: Optional[tk.Canvas] = None
+        self.unified_container: Optional[tk.Widget] = None
 
         self._build_menu()
         self._build_layout()
@@ -131,6 +134,26 @@ class PerceptromeGUI:
         else:
             var.set(coerce_to_string(value))
 
+    def _scroll_to_widget(self, widget: tk.Widget) -> None:
+        canvas = self.unified_canvas
+        container = self.unified_container
+        if canvas is None or container is None:
+            return
+        canvas.update_idletasks()
+        try:
+            target_y = widget.winfo_rooty() - container.winfo_rooty()
+            height = max(container.winfo_height(), 1)
+            canvas.yview_moveto(max(0.0, min(1.0, target_y / height)))
+        except tk.TclError:
+            return
+
+    def _focus_section(self, command_key: str) -> None:
+        widget = self._section_focus_targets.get(command_key)
+        if widget is None:
+            return
+        self._scroll_to_widget(widget)
+        widget.focus_set()
+
     def _load_args_into_form(self, command_key: str, args: Dict[str, Any]) -> None:
         if "config" in args:
             self.config_path.set(coerce_to_string(args.get("config")))
@@ -140,7 +163,7 @@ class PerceptromeGUI:
             self._set_var(v["accession"], args.get("accession"))
             self._set_var(v["source"], args.get("source", "fasta"))
             self._set_var(v["force"], args.get("force", False))
-            self.notebook.select(self.tab_fetch)
+            self._focus_section("fetch_one")
             return
 
         if command_key == "encode_one":
@@ -152,7 +175,7 @@ class PerceptromeGUI:
             self._set_var(v["frame_offset"], args.get("frame_offset"))
             self._set_var(v["min_orf_aa"], args.get("min_orf_aa"))
             self._set_var(v["source"], args.get("source"))
-            self.notebook.select(self.tab_encode)
+            self._focus_section("encode_one")
             return
 
         if command_key == "train_one":
@@ -173,7 +196,7 @@ class PerceptromeGUI:
             ):
                 self._set_var(v[k], args.get(k))
             self._set_var(v["reencode"], args.get("reencode", False))
-            self.notebook.select(self.tab_train)
+            self._focus_section("train_one")
             return
 
         if command_key == "gen_plasmid":
@@ -192,7 +215,7 @@ class PerceptromeGUI:
             ):
                 self._set_var(v[k], args.get(k))
             self._gen_focus = "plasmid"
-            self.notebook.select(self.tab_generate)
+            self._focus_section("gen_plasmid")
             return
 
         if command_key == "gen_protein":
@@ -213,7 +236,7 @@ class PerceptromeGUI:
                 self._set_var(v[k], args.get(k))
             self._set_var(v["reject"], args.get("reject", False))
             self._gen_focus = "protein"
-            self.notebook.select(self.tab_generate)
+            self._focus_section("gen_protein")
             return
 
     def _set_gen_focus(self, which: str) -> None:
@@ -595,11 +618,12 @@ class PerceptromeGUI:
         force = tk.BooleanVar(value=False)
         self.fetch_vars = {"accession": accession, "source": source, "force": force}
 
-        self._labeled_entry(left, "Accession", accession, tooltip="NCBI accession. Required.")
+        fetch_accession = self._labeled_entry(left, "Accession", accession, tooltip="NCBI accession. Required.")
         self._labeled_combo(left, "Source", source, ["fasta", "genbank"], tooltip="Which upstream format to fetch.")
         chk = ttk.Checkbutton(left, text="Force re-download", variable=force)
         chk.pack(anchor="w", pady=6)
         self._register_lockable(chk)
+        self._section_focus_targets["fetch_one"] = fetch_accession
 
         bar = self._action_bar(left)
         btn = ttk.Button(bar, text="Fetch", command=lambda: self._run_command("fetch_one", "Fetch accession", self._collect_fetch_args()))
@@ -645,13 +669,14 @@ class PerceptromeGUI:
             "source": source,
         }
 
-        self._labeled_entry(left, "Accession", accession, tooltip="Required.")
+        encode_accession = self._labeled_entry(left, "Accession", accession, tooltip="Required.")
         self._labeled_combo(left, "Tokenizer", tokenizer, ["", "base", "codon", "aa"], tooltip="Blank = default.")
         self._labeled_entry(left, "Window size", window_size, tooltip="Optional. Integer.")
         self._labeled_entry(left, "Stride", stride, tooltip="Optional. Integer.")
         self._labeled_entry(left, "Frame offset", frame_offset, tooltip="Optional. 0/1/2.")
         self._labeled_entry(left, "Min ORF AA", min_orf_aa, tooltip="Optional. AA mode.")
         self._labeled_combo(left, "Source (override)", source, ["", "fasta", "genbank"], tooltip="Blank = auto.")
+        self._section_focus_targets["encode_one"] = encode_accession
 
         bar = self._action_bar(left)
         btn = ttk.Button(bar, text="Encode", command=lambda: self._run_command("encode_one", "Encode accession", self._collect_encode_args()))
@@ -709,7 +734,7 @@ class PerceptromeGUI:
             "reencode": reencode,
         }
 
-        self._labeled_entry(left, "Accession", accession, tooltip="Required.")
+        train_accession = self._labeled_entry(left, "Accession", accession, tooltip="Required.")
         self._labeled_entry(left, "Steps", steps, tooltip="Optional. Integer.")
         self._labeled_entry(left, "Batch size", batch_size, tooltip="Optional. Integer.")
         self._labeled_entry(left, "Window size", window_size, tooltip="Optional. Integer.")
@@ -724,6 +749,7 @@ class PerceptromeGUI:
         chk = ttk.Checkbutton(left, text="Re-encode before training", variable=reencode)
         chk.pack(anchor="w", pady=6)
         self._register_lockable(chk)
+        self._section_focus_targets["train_one"] = train_accession
 
         bar = self._action_bar(left)
         btn = ttk.Button(bar, text="Train", command=lambda: self._run_command("train_one", "Train accession", self._collect_train_args()))
@@ -779,7 +805,14 @@ class PerceptromeGUI:
         }
 
         pf = lambda: self._set_gen_focus("plasmid")
-        self._labeled_combo(left1, "Tokenizer", p_tokenizer, ["", "base", "codon", "aa"], tooltip="Blank = default.", on_focus=pf)
+        gen_plasmid_tokenizer = self._labeled_combo(
+            left1,
+            "Tokenizer",
+            p_tokenizer,
+            ["", "base", "codon", "aa"],
+            tooltip="Blank = default.",
+            on_focus=pf,
+        )
         self._labeled_entry(left1, "Length (bp)", p_length_bp, tooltip="Optional. Integer.", on_focus=pf)
         self._labeled_entry(left1, "Num windows", p_num_windows, tooltip="Optional. Integer.", on_focus=pf)
         self._labeled_entry(left1, "Window size", p_window_size, tooltip="Optional. Integer.", on_focus=pf)
@@ -789,6 +822,7 @@ class PerceptromeGUI:
         self._labeled_entry(left1, "Latent scale", p_latent_scale, tooltip="Optional. Float.", on_focus=pf)
         self._labeled_entry(left1, "Temperature", p_temperature, tooltip="Optional. Float.", on_focus=pf)
         self._labeled_entry(left1, "GC bias", p_gc_bias, tooltip="Optional. Float.", on_focus=pf)
+        self._section_focus_targets["gen_plasmid"] = gen_plasmid_tokenizer
 
         bar1 = self._action_bar(left1)
         b1 = ttk.Button(bar1, text="Generate plasmid", command=lambda: self._run_command("gen_plasmid", "Generate plasmid", self._collect_gen_plasmid_args()))
@@ -842,7 +876,7 @@ class PerceptromeGUI:
         }
 
         af = lambda: self._set_gen_focus("protein")
-        self._labeled_entry(left2, "Length (aa)", a_length_aa, tooltip="Optional. Integer.", on_focus=af)
+        gen_protein_length = self._labeled_entry(left2, "Length (aa)", a_length_aa, tooltip="Optional. Integer.", on_focus=af)
         self._labeled_entry(left2, "Num windows", a_num_windows, tooltip="Optional. Integer.", on_focus=af)
         self._labeled_entry(left2, "Window (aa)", a_window_aa, tooltip="Optional. Integer.", on_focus=af)
         self._labeled_entry(left2, "Name", a_name, tooltip="Optional.", on_focus=af)
@@ -857,6 +891,7 @@ class PerceptromeGUI:
         self._labeled_entry(left2, "Reject tries", a_reject_tries, tooltip="Optional. Integer.", on_focus=af)
         self._labeled_entry(left2, "Reject max run", a_reject_max_run, tooltip="Optional. Integer.", on_focus=af)
         self._labeled_entry(left2, "Reject max X frac", a_reject_max_x_frac, tooltip="Optional. Float in [0..1].", on_focus=af)
+        self._section_focus_targets["gen_protein"] = gen_protein_length
 
         bar2 = self._action_bar(left2)
         b2 = ttk.Button(bar2, text="Generate protein", command=lambda: self._run_command("gen_protein", "Generate protein", self._collect_gen_protein_args()))
@@ -1331,4 +1366,3 @@ class PerceptromeGUI:
     def _on_close(self) -> None:
         self._persist_settings()
         self.root.destroy()
-
