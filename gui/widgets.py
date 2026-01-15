@@ -92,14 +92,17 @@ class PresetsPanel(ttk.LabelFrame):
         self.tree.heading("last", text="Last used")
         self.tree.heading("uses", text="Uses")
         self.tree.column("fav", width=36, anchor="center")
-        self.tree.column("name", width=200, anchor="w")
-        self.tree.column("last", width=120, anchor="w")
+        self.tree.column("name", width=200, anchor="w", stretch=True)
+        self.tree.column("last", width=120, anchor="w", stretch=True)
         self.tree.column("uses", width=50, anchor="e")
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
+        hsb = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
+        hsb.pack(side=tk.BOTTOM, fill=tk.X)
+
         sb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.configure(yscrollcommand=sb.set, xscrollcommand=hsb.set)
 
         self.tree.bind("<Double-1>", lambda _e: self._run_selected())
         self.tree.bind("<Button-1>", self._maybe_toggle_star, add=True)
