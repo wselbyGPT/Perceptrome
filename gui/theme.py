@@ -2,8 +2,22 @@ from __future__ import annotations
 
 from .tk_compat import tk, ttk
 
+CURRENT_PALETTE = {
+    "bg": "#0b0d14",
+    "panel": "#0f111a",
+    "fg": "#e6e6e6",
+    "border": "#1f2335",
+    "tooltip_bg": "#111827",
+    "tooltip_fg": "#e5e7eb",
+}
+
+
+def get_theme_palette() -> dict[str, str]:
+    return dict(CURRENT_PALETTE)
+
 
 def apply_theme(root: tk.Tk, dark: bool) -> ttk.Style:
+    global CURRENT_PALETTE
     style = ttk.Style(root)
     try:
         style.theme_use("clam")
@@ -15,11 +29,24 @@ def apply_theme(root: tk.Tk, dark: bool) -> ttk.Style:
         panel = "#0f111a"
         fg = "#e6e6e6"
         border = "#1f2335"
+        tooltip_bg = "#111827"
+        tooltip_fg = "#e5e7eb"
     else:
         bg = "#f7f7fb"
         panel = "#ffffff"
         fg = "#111111"
         border = "#d0d4dd"
+        tooltip_bg = "#f9fafb"
+        tooltip_fg = "#111827"
+
+    CURRENT_PALETTE = {
+        "bg": bg,
+        "panel": panel,
+        "fg": fg,
+        "border": border,
+        "tooltip_bg": tooltip_bg,
+        "tooltip_fg": tooltip_fg,
+    }
 
     root.configure(background=bg)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 
 from .store import Preset
+from .theme import get_theme_palette
 from .tk_compat import messagebox, simpledialog, tk, ttk
 from .utils import fmt_epoch, json_dumps
 
@@ -11,9 +12,18 @@ if TYPE_CHECKING:
 
 
 class ToolTip:
-    def __init__(self, widget: tk.Widget, text: str) -> None:
+    def __init__(
+        self,
+        widget: tk.Widget,
+        text: str,
+        *,
+        background: Optional[str] = None,
+        foreground: Optional[str] = None,
+    ) -> None:
         self.widget = widget
         self.text = text
+        self.background = background
+        self.foreground = foreground
         self.tip: Optional[tk.Toplevel] = None
         widget.bind("<Enter>", self._show, add=True)
         widget.bind("<Leave>", self._hide, add=True)
@@ -21,6 +31,9 @@ class ToolTip:
     def _show(self, _event: tk.Event) -> None:
         if self.tip or not self.text:
             return
+        palette = get_theme_palette()
+        background = self.background or palette["tooltip_bg"]
+        foreground = self.foreground or palette["tooltip_fg"]
         x = self.widget.winfo_rootx() + 10
         y = self.widget.winfo_rooty() + self.widget.winfo_height() + 8
         self.tip = tk.Toplevel(self.widget)
@@ -30,8 +43,8 @@ class ToolTip:
             self.tip,
             text=self.text,
             justify=tk.LEFT,
-            background="#111827",
-            foreground="#e5e7eb",
+            background=background,
+            foreground=foreground,
             relief=tk.SOLID,
             borderwidth=1,
             padx=8,
