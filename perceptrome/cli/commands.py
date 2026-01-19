@@ -247,6 +247,8 @@ def cmd_train_one(args: argparse.Namespace) -> int:
     pvc[args.accession] = pvc.get(args.accession, 0) + 1
     save_state(io_cfg.state_file, state)
 
+    cleanup_accession_files(args.accession, io_cfg, enc_path)
+
     print(f"{args.accession}: train-one tokenizer={tok} source={src} steps={steps} batch={batch_size} last_total={last_total:.6f}")
     return 0
 
@@ -492,8 +494,7 @@ def cmd_stream(args: argparse.Namespace) -> int:
             state["epoch"] = epoch
             save_state(io_cfg.state_file, state)
 
-            if getattr(args, "delete_cache", False):
-                cleanup_accession_files(acc, io_cfg, enc_path)
+            cleanup_accession_files(acc, io_cfg, enc_path)
 
         epoch += 1
 
