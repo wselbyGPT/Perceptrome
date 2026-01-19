@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.dist-info/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual envs
+venv/
+.venv/
+
+# OS/editor
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Perceptrome artifacts (tune as you like)
+cache/
+logs/
+state/
+generated/
+model/
+*.log
+*.npy
+*.pt
+*.pth
+*.ckpt
+
+# Jupyter
+.ipynb_checkpoints/

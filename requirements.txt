@@ -30,3 +30,4 @@ torch==2.9.1
 triton==3.5.1
 typing_extensions==4.15.0
 urllib3==2.6.2
+PySide6>=6.6
