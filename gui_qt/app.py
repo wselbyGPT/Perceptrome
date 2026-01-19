@@ -4,6 +4,7 @@ from datetime import datetime
 
 from PySide6.QtCore import Qt, QSettings
 from PySide6.QtGui import QFont, QTextCursor
+from shiboken6 import isValid
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget,
     QVBoxLayout, QHBoxLayout, QFormLayout,
@@ -54,6 +55,8 @@ class PerceptromeQt(QMainWindow):
         # runners
         self.train_runner = ProcessRunner(self)
         self.gen_runner = ProcessRunner(self)
+
+        self._closing = False
 
         # Build tabs
         self.tab_home = self._build_home_tab()
@@ -260,6 +263,8 @@ class PerceptromeQt(QMainWindow):
         return wd if wd else "."
 
     def _append_log(self, box: QPlainTextEdit, text: str, max_lines: int = 5000):
+        if not isValid(box) or self._closing:
+            return
         box.moveCursor(QTextCursor.End)
         box.insertPlainText(text)
         # trim occasionally
@@ -274,6 +279,8 @@ class PerceptromeQt(QMainWindow):
         box.verticalScrollBar().setValue(box.verticalScrollBar().maximum())
 
     def _set_busy(self, bar: QProgressBar, busy: bool):
+        if not isValid(bar) or self._closing:
+            return
         if busy:
             bar.setRange(0, 0)  # indeterminate
         else:
@@ -412,10 +419,29 @@ class PerceptromeQt(QMainWindow):
         self._add_history("history_cleared", "")
 
 
+
+    def shutdown(self):
+        # Called on app quit/close to prevent "QProcess destroyed while running"
+        if self._closing:
+            return
+        self._closing = True
+        try:
+            self.train_runner.stop(None)
+        except Exception:
+            pass
+        try:
+            self.gen_runner.stop(None)
+        except Exception:
+            pass
+
+    def closeEvent(self, event):
+        self.shutdown()
+        super().closeEvent(event)
 def main():
     app = QApplication(sys.argv)
     apply_dark_mode(app)
     win = PerceptromeQt()
+    app.aboutToQuit.connect(win.shutdown)
     win.show()
     sys.exit(app.exec())
 
