@@ -1,21 +1,28 @@
+import math
+import os
 import re
 import sys
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QSettings
-from PySide6.QtGui import QFont, QTextCursor
+from PySide6.QtGui import QFont, QTextCursor, QPainter, QPen, QColor, QPdfWriter
+from PySide6.QtPdf import QPdfDocument
+from PySide6.QtPdfWidgets import QPdfView
 from shiboken6 import isValid
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget,
     QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QLineEdit, QPushButton,
     QPlainTextEdit, QProgressBar,
-    QSpinBox, QDoubleSpinBox,
+    QSpinBox, QDoubleSpinBox, QGroupBox,
     QTableWidget, QTableWidgetItem, QHeaderView
 )
 
 from .theme import apply_dark_mode
 from .runner import ProcessRunner
+from perceptrome.config import load_full_config, extract_configs
+from perceptrome.io_utils import ensure_dirs
+from perceptrome.ncbi_fetch import fetch_fasta
 
 
 PCT_RE = re.compile(r"(\d{1,3})\s*%")
@@ -62,11 +69,13 @@ class PerceptromeQt(QMainWindow):
         self.tab_home = self._build_home_tab()
         self.tab_train = self._build_train_tab()
         self.tab_generate = self._build_generate_tab()
+        self.tab_view = self._build_view_tab()
         self.tab_history = self._build_history_tab()
 
         self.tabs.addTab(self.tab_home, "Home / Config")
         self.tabs.addTab(self.tab_train, "Train")
         self.tabs.addTab(self.tab_generate, "Generate")
+        self.tabs.addTab(self.tab_view, "View")
         self.tabs.addTab(self.tab_history, "History")
 
         self._load_config()
@@ -224,6 +233,54 @@ class PerceptromeQt(QMainWindow):
         self.btn_clear_history.clicked.connect(self._clear_history)
         return w
 
+    def _build_view_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+
+        source_group = QGroupBox("Genome source")
+        source_layout = QFormLayout(source_group)
+        self.view_accession = QLineEdit()
+        self.view_accession.setPlaceholderText("Example: NC_000913.3")
+        self.view_fasta_path = QLineEdit()
+        self.view_fasta_path.setPlaceholderText("generated/novel_plasmid.fasta")
+        source_layout.addRow("Genome accession:", self.view_accession)
+        source_layout.addRow("FASTA path:", self.view_fasta_path)
+
+        output_group = QGroupBox("PDF output")
+        output_layout = QFormLayout(output_group)
+        self.view_pdf_path = QLineEdit()
+        self.view_pdf_path.setPlaceholderText("generated/circular_genome.pdf")
+        self.view_title = QLineEdit()
+        self.view_title.setPlaceholderText("Optional title override")
+        output_layout.addRow("Output PDF:", self.view_pdf_path)
+        output_layout.addRow("Title:", self.view_title)
+
+        btn_row = QHBoxLayout()
+        self.btn_view_generate = QPushButton("Generate PDF")
+        self.btn_view_open = QPushButton("Open PDF")
+        btn_row.addWidget(self.btn_view_generate)
+        btn_row.addWidget(self.btn_view_open)
+        btn_row.addStretch(1)
+
+        self.view_log = QPlainTextEdit()
+        self.view_log.setReadOnly(True)
+        self.view_log.setPlaceholderText("PDF generation status will appear here...")
+
+        self.view_pdf_doc = QPdfDocument(self)
+        self.view_pdf = QPdfView()
+        self.view_pdf.setDocument(self.view_pdf_doc)
+        self.view_pdf.setZoomMode(QPdfView.ZoomMode.FitInView)
+
+        layout.addWidget(source_group)
+        layout.addWidget(output_group)
+        layout.addLayout(btn_row)
+        layout.addWidget(self.view_log)
+        layout.addWidget(self.view_pdf, 1)
+
+        self.btn_view_generate.clicked.connect(self._view_generate_pdf)
+        self.btn_view_open.clicked.connect(self._view_open_pdf)
+        return w
+
     # -------------------------
     # Config persistence
     # -------------------------
@@ -236,6 +293,10 @@ class PerceptromeQt(QMainWindow):
         self.settings.setValue("lr", float(self.cfg_lr.value()))
         self.settings.setValue("train_cmd", self.train_cmd.text().strip())
         self.settings.setValue("gen_cmd", self.gen_cmd.text().strip())
+        self.settings.setValue("view_accession", self.view_accession.text().strip())
+        self.settings.setValue("view_fasta_path", self.view_fasta_path.text().strip())
+        self.settings.setValue("view_pdf_path", self.view_pdf_path.text().strip())
+        self.settings.setValue("view_title", self.view_title.text().strip())
         self.settings.sync()
 
         self.cfg_status.setText(f"Saved at {now_str()}")
@@ -252,6 +313,10 @@ class PerceptromeQt(QMainWindow):
         # sensible defaults: show subcommand help first; you can replace with real commands
         self.train_cmd.setText(self.settings.value("train_cmd", "python stream_train.py train --help"))
         self.gen_cmd.setText(self.settings.value("gen_cmd", "python stream_train.py generate --help"))
+        self.view_accession.setText(self.settings.value("view_accession", ""))
+        self.view_fasta_path.setText(self.settings.value("view_fasta_path", "generated/novel_plasmid.fasta"))
+        self.view_pdf_path.setText(self.settings.value("view_pdf_path", "generated/circular_genome.pdf"))
+        self.view_title.setText(self.settings.value("view_title", ""))
 
         self.cfg_status.setText("Loaded saved config (if any).")
 
@@ -402,6 +467,109 @@ class PerceptromeQt(QMainWindow):
         self.gen_runner.stop(lambda s: self._append_log(self.gen_out, s))
         self._add_history("generate_stop", "requested")
         self.btn_gen_stop.setEnabled(False)
+
+    # -------------------------
+    # View actions
+    # -------------------------
+    def _read_fasta_sequence(self, path: str) -> str:
+        seq_parts = []
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith(">"):
+                    continue
+                seq_parts.append(line)
+        return "".join(seq_parts)
+
+    def _resolve_genome_sequence(self) -> tuple[str, str]:
+        accession = self.view_accession.text().strip()
+        fasta_path = self.view_fasta_path.text().strip()
+        if accession:
+            cfg_path = self.cfg_stream_yaml.text().strip() or "stream_config.yaml"
+            cfg = load_full_config(cfg_path)
+            ncbi_cfg, _, io_cfg = extract_configs(cfg)
+            ensure_dirs(io_cfg)
+            fasta_path = fetch_fasta(accession, io_cfg, ncbi_cfg, force=False)
+            seq = self._read_fasta_sequence(fasta_path)
+            return seq, f"accession {accession}"
+        if fasta_path:
+            seq = self._read_fasta_sequence(fasta_path)
+            return seq, f"fasta {fasta_path}"
+        raise ValueError("Provide a genome accession or FASTA path.")
+
+    def _write_circular_pdf(self, seq: str, output_path: str, title: str) -> None:
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        writer = QPdfWriter(output_path)
+        writer.setResolution(150)
+
+        painter = QPainter(writer)
+        painter.setRenderHint(QPainter.Antialiasing)
+        try:
+            rect = painter.viewport()
+            side = int(min(rect.width(), rect.height()) * 0.72)
+            cx = rect.width() // 2
+            cy = rect.height() // 2
+            radius = side // 2
+
+            seq_len = len(seq)
+            gc = 0.0
+            if seq_len:
+                gc = (seq.count("G") + seq.count("C")) / float(seq_len)
+
+            painter.setPen(QPen(QColor("#68d5ff"), 4))
+            painter.drawEllipse(cx - radius, cy - radius, radius * 2, radius * 2)
+
+            painter.setPen(QPen(QColor("#3b3f46"), 1))
+            for i in range(12):
+                angle = (i / 12.0) * 2.0 * math.pi
+                x_outer = cx + int(radius * 1.02 * math.cos(angle))
+                y_outer = cy + int(radius * 1.02 * math.sin(angle))
+                x_inner = cx + int(radius * 0.92 * math.cos(angle))
+                y_inner = cy + int(radius * 0.92 * math.sin(angle))
+                painter.drawLine(x_inner, y_inner, x_outer, y_outer)
+
+            painter.setPen(QPen(QColor("#d9d9d9"), 2))
+            painter.drawText(cx - radius, cy - radius - 40, radius * 2, 30, Qt.AlignCenter, title or "Circular genome view")
+
+            info = f"Length: {seq_len:,} bp    GC: {gc * 100:.2f}%"
+            painter.setPen(QPen(QColor("#a8b0b8"), 1))
+            painter.drawText(cx - radius, cy + radius + 12, radius * 2, 30, Qt.AlignCenter, info)
+        finally:
+            painter.end()
+
+    def _view_generate_pdf(self):
+        self.view_log.clear()
+        try:
+            seq, source = self._resolve_genome_sequence()
+            output_path = self.view_pdf_path.text().strip() or "generated/circular_genome.pdf"
+            title = self.view_title.text().strip() or f"Circular genome ({source})"
+            self._append_log(self.view_log, f"[{now_str()}] Generating PDF from {source}\n")
+            self._write_circular_pdf(seq, output_path, title)
+            self._append_log(self.view_log, f"[{now_str()}] Saved PDF -> {output_path}\n")
+            self._add_history("view_pdf", output_path)
+            self._load_pdf(output_path)
+        except Exception as exc:
+            self._append_log(self.view_log, f"[{now_str()}] ERROR: {exc}\n")
+
+    def _load_pdf(self, path: str):
+        if not os.path.exists(path):
+            raise FileNotFoundError(path)
+        status = self.view_pdf_doc.load(path)
+        if status != QPdfDocument.Error.None_:
+            raise RuntimeError(f"Failed to load PDF (status {status})")
+
+    def _view_open_pdf(self):
+        path = self.view_pdf_path.text().strip()
+        if not path:
+            self._append_log(self.view_log, f"[{now_str()}] ERROR: No PDF path set.\n")
+            return
+        try:
+            self._load_pdf(path)
+            self._append_log(self.view_log, f"[{now_str()}] Loaded PDF -> {path}\n")
+        except Exception as exc:
+            self._append_log(self.view_log, f"[{now_str()}] ERROR: {exc}\n")
 
     # -------------------------
     # History
