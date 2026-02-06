@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QPushButton,
     QPlainTextEdit, QProgressBar,
     QSpinBox, QDoubleSpinBox, QGroupBox,
-    QTableWidget, QTableWidgetItem, QHeaderView
+    QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy
 )
 
 from .theme import apply_dark_mode
@@ -42,6 +42,7 @@ class PerceptromeQt(QMainWindow):
         self.settings = QSettings("Perceptrome", "GuiQt")
 
         container = QWidget()
+        container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         root = QVBoxLayout(container)
         root.setContentsMargins(14, 14, 14, 14)
         root.setSpacing(10)
@@ -56,6 +57,7 @@ class PerceptromeQt(QMainWindow):
         logo.setStyleSheet("QLabel { padding: 10px 0px; letter-spacing: 1px; }")
 
         self.tabs = QTabWidget()
+        self.tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         root.addWidget(logo)
         root.addWidget(self.tabs, 1)
 
@@ -160,6 +162,7 @@ class PerceptromeQt(QMainWindow):
         self.train_log = QPlainTextEdit()
         self.train_log.setReadOnly(True)
         self.train_log.setPlaceholderText("Live training output will appear here...")
+        self.train_log.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         layout.addLayout(form)
         layout.addLayout(btn_row)
@@ -199,6 +202,7 @@ class PerceptromeQt(QMainWindow):
         self.gen_out = QPlainTextEdit()
         self.gen_out.setReadOnly(True)
         self.gen_out.setPlaceholderText("Live generate output will appear here...")
+        self.gen_out.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         layout.addLayout(form)
         layout.addLayout(btn_row)
@@ -221,6 +225,7 @@ class PerceptromeQt(QMainWindow):
         self.history_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.history_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.history_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.history_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         btn_row = QHBoxLayout()
         self.btn_clear_history = QPushButton("Clear history")
@@ -265,11 +270,13 @@ class PerceptromeQt(QMainWindow):
         self.view_log = QPlainTextEdit()
         self.view_log.setReadOnly(True)
         self.view_log.setPlaceholderText("PDF generation status will appear here...")
+        self.view_log.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         self.view_pdf_doc = QPdfDocument(self)
         self.view_pdf = QPdfView()
         self.view_pdf.setDocument(self.view_pdf_doc)
         self.view_pdf.setZoomMode(QPdfView.ZoomMode.FitInView)
+        self.view_pdf.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         layout.addWidget(source_group)
         layout.addWidget(output_group)
