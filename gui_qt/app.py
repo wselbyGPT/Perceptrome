@@ -70,12 +70,14 @@ class PerceptromeQt(QMainWindow):
         self.tab_train = self._build_train_tab()
         self.tab_generate = self._build_generate_tab()
         self.tab_view = self._build_view_tab()
+        self.tab_instruction_example = self._build_instruction_example_tab()
         self.tab_history = self._build_history_tab()
 
         self.tabs.addTab(self.tab_home, "Home / Config")
         self.tabs.addTab(self.tab_train, "Train")
         self.tabs.addTab(self.tab_generate, "Generate")
         self.tabs.addTab(self.tab_view, "View")
+        self.tabs.addTab(self.tab_instruction_example, "Instruction Example")
         self.tabs.addTab(self.tab_history, "History")
 
         self._load_config()
@@ -281,6 +283,20 @@ class PerceptromeQt(QMainWindow):
         self.btn_view_open.clicked.connect(self._view_open_pdf)
         return w
 
+    def _build_instruction_example_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+
+        self.instruction_example_text = QPlainTextEdit()
+        self.instruction_example_text.setReadOnly(True)
+        self.instruction_example_text.setPlaceholderText(
+            "Example: Describe how to run a training job with settings and expected outputs."
+        )
+        self.instruction_example_text.setStyleSheet("QPlainTextEdit { font-family: monospace; }")
+
+        layout.addWidget(self.instruction_example_text, 1)
+        return w
+
     # -------------------------
     # Config persistence
     # -------------------------
@@ -297,6 +313,7 @@ class PerceptromeQt(QMainWindow):
         self.settings.setValue("view_fasta_path", self.view_fasta_path.text().strip())
         self.settings.setValue("view_pdf_path", self.view_pdf_path.text().strip())
         self.settings.setValue("view_title", self.view_title.text().strip())
+        self.settings.setValue("instruction_example_text", self.instruction_example_text.toPlainText())
         self.settings.sync()
 
         self.cfg_status.setText(f"Saved at {now_str()}")
@@ -317,6 +334,15 @@ class PerceptromeQt(QMainWindow):
         self.view_fasta_path.setText(self.settings.value("view_fasta_path", "generated/novel_plasmid.fasta"))
         self.view_pdf_path.setText(self.settings.value("view_pdf_path", "generated/circular_genome.pdf"))
         self.view_title.setText(self.settings.value("view_title", ""))
+        self.instruction_example_text.setPlainText(
+            self.settings.value(
+                "instruction_example_text",
+                "Example:\n"
+                "- Describe the training goal.\n"
+                "- Include datasets, epochs, and batch size.\n"
+                "- Mention expected output files and where to find them.\n",
+            )
+        )
 
         self.cfg_status.setText("Loaded saved config (if any).")
 
