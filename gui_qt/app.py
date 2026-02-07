@@ -4,7 +4,7 @@ import re
 import sys
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QSettings
+from PySide6.QtCore import Qt, QSettings, QEvent
 from PySide6.QtGui import QFont, QTextCursor, QPainter, QPen, QColor, QPdfWriter
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QPushButton,
     QPlainTextEdit, QProgressBar,
     QSpinBox, QDoubleSpinBox, QGroupBox,
-    QTableWidget, QTableWidgetItem, QHeaderView
+    QTableWidget, QTableWidgetItem, QHeaderView, QSlider
 )
 
 from .theme import apply_dark_mode
@@ -270,15 +270,39 @@ class PerceptromeQt(QMainWindow):
         self.view_pdf = QPdfView()
         self.view_pdf.setDocument(self.view_pdf_doc)
         self.view_pdf.setZoomMode(QPdfView.ZoomMode.FitInView)
+        self.view_pdf.installEventFilter(self)
+        self._pdf_drag_active = False
+        self._pdf_drag_last_pos = None
+
+        zoom_row = QHBoxLayout()
+        self.btn_view_zoom_out = QPushButton("-")
+        self.btn_view_zoom_out.setFixedWidth(32)
+        self.btn_view_zoom_in = QPushButton("+")
+        self.btn_view_zoom_in.setFixedWidth(32)
+        self.view_zoom_slider = QSlider(Qt.Horizontal)
+        self.view_zoom_slider.setRange(25, 400)
+        self.view_zoom_slider.setSingleStep(5)
+        self.view_zoom_slider.setPageStep(25)
+        self.view_zoom_slider.setValue(100)
+        self.view_zoom_label = QLabel("100%")
+        zoom_row.addWidget(QLabel("Zoom:"))
+        zoom_row.addWidget(self.btn_view_zoom_out)
+        zoom_row.addWidget(self.view_zoom_slider, 1)
+        zoom_row.addWidget(self.btn_view_zoom_in)
+        zoom_row.addWidget(self.view_zoom_label)
 
         layout.addWidget(source_group)
         layout.addWidget(output_group)
         layout.addLayout(btn_row)
+        layout.addLayout(zoom_row)
         layout.addWidget(self.view_log)
         layout.addWidget(self.view_pdf, 1)
 
         self.btn_view_generate.clicked.connect(self._view_generate_pdf)
         self.btn_view_open.clicked.connect(self._view_open_pdf)
+        self.view_zoom_slider.valueChanged.connect(self._view_zoom_changed)
+        self.btn_view_zoom_out.clicked.connect(lambda: self._step_view_zoom(-10))
+        self.btn_view_zoom_in.clicked.connect(lambda: self._step_view_zoom(10))
         return w
 
     # -------------------------
@@ -297,6 +321,7 @@ class PerceptromeQt(QMainWindow):
         self.settings.setValue("view_fasta_path", self.view_fasta_path.text().strip())
         self.settings.setValue("view_pdf_path", self.view_pdf_path.text().strip())
         self.settings.setValue("view_title", self.view_title.text().strip())
+        self.settings.setValue("view_zoom", int(self.view_zoom_slider.value()))
         self.settings.sync()
 
         self.cfg_status.setText(f"Saved at {now_str()}")
@@ -317,6 +342,8 @@ class PerceptromeQt(QMainWindow):
         self.view_fasta_path.setText(self.settings.value("view_fasta_path", "generated/novel_plasmid.fasta"))
         self.view_pdf_path.setText(self.settings.value("view_pdf_path", "generated/circular_genome.pdf"))
         self.view_title.setText(self.settings.value("view_title", ""))
+        if self.settings.contains("view_zoom"):
+            self.view_zoom_slider.setValue(int(self.settings.value("view_zoom", 100)))
 
         self.cfg_status.setText("Loaded saved config (if any).")
 
@@ -571,6 +598,14 @@ class PerceptromeQt(QMainWindow):
         except Exception as exc:
             self._append_log(self.view_log, f"[{now_str()}] ERROR: {exc}\n")
 
+    def _view_zoom_changed(self, value: int):
+        self.view_pdf.setZoomMode(QPdfView.ZoomMode.Custom)
+        self.view_pdf.setZoomFactor(value / 100.0)
+        self.view_zoom_label.setText(f"{value}%")
+
+    def _step_view_zoom(self, delta: int):
+        self.view_zoom_slider.setValue(max(25, min(400, self.view_zoom_slider.value() + delta)))
+
     # -------------------------
     # History
     # -------------------------
@@ -605,6 +640,38 @@ class PerceptromeQt(QMainWindow):
     def closeEvent(self, event):
         self.shutdown()
         super().closeEvent(event)
+
+    def eventFilter(self, watched, event):
+        if watched is self.view_pdf:
+            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                if hasattr(event, "position"):
+                    pos = event.position().toPoint()
+                else:
+                    pos = event.pos()
+                self._pdf_drag_active = True
+                self._pdf_drag_last_pos = pos
+                self.view_pdf.setCursor(Qt.ClosedHandCursor)
+                return True
+            if event.type() == QEvent.MouseMove and self._pdf_drag_active:
+                if hasattr(event, "position"):
+                    pos = event.position().toPoint()
+                else:
+                    pos = event.pos()
+                delta = pos - self._pdf_drag_last_pos
+                self._pdf_drag_last_pos = pos
+                hbar = self.view_pdf.horizontalScrollBar()
+                vbar = self.view_pdf.verticalScrollBar()
+                hbar.setValue(hbar.value() - delta.x())
+                vbar.setValue(vbar.value() - delta.y())
+                return True
+            if event.type() == QEvent.MouseButtonRelease and self._pdf_drag_active:
+                self._pdf_drag_active = False
+                self._pdf_drag_last_pos = None
+                self.view_pdf.setCursor(Qt.ArrowCursor)
+                return True
+        return super().eventFilter(watched, event)
+
+
 def main():
     app = QApplication(sys.argv)
     apply_dark_mode(app)
