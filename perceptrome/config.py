@@ -1,5 +1,6 @@
 import json
 import os
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -104,6 +105,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "checkpoints_dir": "model/checkpoints",
         "logs_dir": "logs",
         "state_file": "state/progress.json",
+        # Optional: set a run_id to control checkpoint filenames (e.g., "run-2024-01-01").
+        # If unset, a deterministic hash of key hyperparameters + tokenizer + window settings is used.
+        # Resume uses state["last_checkpoint"] (see state/progress.json), with latest.pt kept for compatibility.
+        "run_id": None,
     },
 }
 
@@ -205,6 +210,37 @@ class IOConfig:
     checkpoints_dir: str
     logs_dir: str
     state_file: str
+    run_id: str
+
+
+def _generate_run_id(train_cfg: "TrainingConfig") -> str:
+    """Create a deterministic run id from key hyperparameters + tokenizer + window settings."""
+    tok = str(train_cfg.tokenizer).lower()
+    if tok == "aa":
+        window_size = int(train_cfg.protein_window_aa)
+        stride = int(train_cfg.protein_stride_aa)
+    else:
+        window_size = int(train_cfg.window_size)
+        stride = int(train_cfg.stride)
+    payload = {
+        "tokenizer": tok,
+        "window_size": window_size,
+        "stride": stride,
+        "frame_offset": int(train_cfg.frame_offset),
+        "model_type": str(train_cfg.model_type).lower(),
+        "hidden_dim": int(train_cfg.hidden_dim),
+        "learning_rate": float(train_cfg.learning_rate),
+        "beta_kl": float(train_cfg.beta_kl),
+        "kl_warmup_steps": int(train_cfg.kl_warmup_steps),
+        "transformer_d_model": int(train_cfg.transformer_d_model),
+        "transformer_nhead": int(train_cfg.transformer_nhead),
+        "transformer_layers": int(train_cfg.transformer_layers),
+        "transformer_dropout": float(train_cfg.transformer_dropout),
+    }
+    digest = hashlib.sha1(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:10]
+    return f"run-{digest}"
 
 
 def deep_update(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
@@ -299,6 +335,12 @@ def extract_configs(cfg: Dict[str, Any]) -> Tuple[NCBIConfig, TrainingConfig, IO
         curriculum_phases=list(t.get("curriculum_phases", [])),
     )
 
+    raw_run_id = io.get("run_id", None)
+    if raw_run_id is None or str(raw_run_id).strip() == "":
+        run_id = _generate_run_id(train_cfg)
+    else:
+        run_id = str(raw_run_id).strip()
+
     io_cfg = IOConfig(
         cache_fasta_dir=str(io.get("cache_fasta_dir", "cache/fasta")),
         cache_genbank_dir=str(io.get("cache_genbank_dir", "cache/genbank")),
@@ -307,6 +349,7 @@ def extract_configs(cfg: Dict[str, Any]) -> Tuple[NCBIConfig, TrainingConfig, IO
         checkpoints_dir=str(io.get("checkpoints_dir", "model/checkpoints")),
         logs_dir=str(io.get("logs_dir", "logs")),
         state_file=str(io.get("state_file", "state/progress.json")),
+        run_id=run_id,
     )
 
     return ncbi_cfg, train_cfg, io_cfg

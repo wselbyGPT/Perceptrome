@@ -123,6 +123,8 @@ def train_on_encoded(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        run_id=io_cfg.run_id,
+        last_checkpoint=state.get("last_checkpoint"),
     )
 
     windows_tensor = torch.from_numpy(encoded)  # (N, L, V)
@@ -203,6 +205,7 @@ def train_on_encoded(
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
     )
+    state["last_checkpoint"] = ckpt_path
 
     return last_total
 
@@ -254,6 +257,7 @@ def compute_window_errors(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        run_id=io_cfg.run_id,
     )
 
     model.eval()

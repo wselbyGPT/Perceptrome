@@ -1,5 +1,5 @@
 import logging, os
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 
 try:
     import torch
@@ -161,6 +161,8 @@ def load_or_init_model(
     transformer_nhead: int,
     transformer_layers: int,
     transformer_dropout: float,
+    run_id: str,
+    last_checkpoint: Optional[str] = None,
 ) -> Tuple[nn.Module, "optim.Optimizer", int, str]:
     """
     seq_len: number of positions (bp or codons)
@@ -169,7 +171,16 @@ def load_or_init_model(
     if torch is None or nn is None or optim is None:
         raise RuntimeError("PyTorch is required.")
 
-    ckpt_path = os.path.join(io_cfg.checkpoints_dir, "latest.pt")
+    run_id = str(run_id).strip()
+    if run_id.lower().endswith(".pt"):
+        run_filename = run_id
+    else:
+        run_filename = f"{run_id}.pt"
+    run_ckpt_path = os.path.join(io_cfg.checkpoints_dir, run_filename)
+    last_ckpt_path = str(last_checkpoint).strip() if last_checkpoint else ""
+    if last_ckpt_path and not os.path.isabs(last_ckpt_path):
+        last_ckpt_path = os.path.join(io_cfg.checkpoints_dir, last_ckpt_path)
+    ckpt_path = last_ckpt_path if last_ckpt_path and os.path.exists(last_ckpt_path) else run_ckpt_path
 
     mt = str(model_type).lower()
     input_dim = int(seq_len) * int(vocab_size)
@@ -295,6 +306,18 @@ def save_checkpoint(
     torch.save(payload, tmp)
     os.replace(tmp, ckpt_path)
     logging.info(f"Saved checkpoint step={global_step} -> {ckpt_path}")
+
+    latest_path = os.path.join(os.path.dirname(ckpt_path), "latest.pt")
+    try:
+        if os.path.lexists(latest_path):
+            os.remove(latest_path)
+        os.symlink(os.path.basename(ckpt_path), latest_path)
+        logging.info("Updated latest checkpoint symlink -> %s", latest_path)
+    except (OSError, NotImplementedError):
+        import shutil
+
+        shutil.copy2(ckpt_path, latest_path)
+        logging.info("Updated latest checkpoint copy -> %s", latest_path)
 
 def vae_loss(
     recon_logits: "torch.Tensor",
