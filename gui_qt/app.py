@@ -5,7 +5,7 @@ import sys
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QSettings
-from PySide6.QtGui import QFont, QTextCursor, QPainter, QPen, QColor, QPdfWriter
+from PySide6.QtGui import QFont, QTextCursor, QPainter, QPen, QColor, QPdfWriter, QFontMetrics
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
 from shiboken6 import isValid
@@ -22,7 +22,7 @@ from .theme import apply_dark_mode
 from .runner import ProcessRunner
 from perceptrome.config import load_full_config, extract_configs
 from perceptrome.io_utils import ensure_dirs
-from perceptrome.ncbi_fetch import fetch_fasta
+from perceptrome.ncbi_fetch import fetch_fasta, fetch_genbank
 
 
 PCT_RE = re.compile(r"(\d{1,3})\s*%")
@@ -483,7 +483,7 @@ class PerceptromeQt(QMainWindow):
                 seq_parts.append(line)
         return "".join(seq_parts)
 
-    def _resolve_genome_sequence(self) -> tuple[str, str]:
+    def _resolve_genome_sequence(self) -> tuple[str, str, list[dict[str, object]]]:
         accession = self.view_accession.text().strip()
         fasta_path = self.view_fasta_path.text().strip()
         if accession:
@@ -492,14 +492,175 @@ class PerceptromeQt(QMainWindow):
             ncbi_cfg, _, io_cfg = extract_configs(cfg)
             ensure_dirs(io_cfg)
             fasta_path = fetch_fasta(accession, io_cfg, ncbi_cfg, force=False)
+            genbank_path = fetch_genbank(accession, io_cfg, ncbi_cfg, force=False)
             seq = self._read_fasta_sequence(fasta_path)
-            return seq, f"accession {accession}"
+            annotations = self._parse_genbank_annotations(genbank_path)
+            return seq, f"accession {accession}", annotations
         if fasta_path:
             seq = self._read_fasta_sequence(fasta_path)
-            return seq, f"fasta {fasta_path}"
+            return seq, f"fasta {fasta_path}", []
         raise ValueError("Provide a genome accession or FASTA path.")
 
-    def _write_circular_pdf(self, seq: str, output_path: str, title: str) -> None:
+    def _split_top_level_commas(self, s: str) -> list[str]:
+        parts = []
+        depth = 0
+        buf = []
+        for ch in s:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth = max(0, depth - 1)
+            if ch == "," and depth == 0:
+                part = "".join(buf).strip()
+                if part:
+                    parts.append(part)
+                buf = []
+            else:
+                buf.append(ch)
+        if buf:
+            part = "".join(buf).strip()
+            if part:
+                parts.append(part)
+        return parts
+
+    def _parse_loc_range(self, token: str) -> tuple[int, int]:
+        t = token.strip().replace("<", "").replace(">", "")
+        if "^" in t:
+            a, b = t.split("^", 1)
+            return int(a.strip()), int(b.strip())
+        if ".." in t:
+            a, b = t.split("..", 1)
+            return int(a.strip()), int(b.strip())
+        return int(t), int(t)
+
+    def _parse_location_segments(self, loc: str, strand: str = "+") -> list[dict[str, object]]:
+        expr = loc.strip().replace(" ", "")
+        if expr.startswith("complement(") and expr.endswith(")"):
+            inner = expr[len("complement("):-1]
+            flipped = "-" if strand == "+" else "+"
+            return self._parse_location_segments(inner, flipped)
+        if (expr.startswith("join(") or expr.startswith("order(")) and expr.endswith(")"):
+            inner = expr[expr.find("(") + 1:-1]
+            segments: list[dict[str, object]] = []
+            for part in self._split_top_level_commas(inner):
+                segments.extend(self._parse_location_segments(part, strand))
+            return segments
+        start, end = self._parse_loc_range(expr)
+        if start < 1 or end < 1:
+            return []
+        if end < start:
+            start, end = end, start
+        return [{"start": start, "end": end, "strand": strand}]
+
+    def _parse_genbank_annotations(self, path: str) -> list[dict[str, object]]:
+        if not os.path.exists(path):
+            return []
+        annotations: list[dict[str, object]] = []
+        in_features = False
+        in_origin = False
+        cur_key = None
+        cur_loc = None
+        cur_gene = None
+        cur_product = None
+        reading_qualifier = None
+        qual_buf: list[str] = []
+
+        def flush():
+            nonlocal cur_key, cur_loc, cur_gene, cur_product, reading_qualifier, qual_buf
+            if cur_key == "CDS" and cur_loc:
+                label = cur_gene or cur_product or "CDS"
+                segments = self._parse_location_segments(cur_loc)
+                if segments:
+                    annotations.append(
+                        {
+                            "label": label,
+                            "segments": segments,
+                            "gene": cur_gene,
+                            "product": cur_product,
+                        }
+                    )
+            cur_key = None
+            cur_loc = None
+            cur_gene = None
+            cur_product = None
+            reading_qualifier = None
+            qual_buf = []
+
+        with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+            for line in handle:
+                if line.startswith("FEATURES"):
+                    in_features = True
+                    continue
+                if line.startswith("ORIGIN"):
+                    in_origin = True
+                    in_features = False
+                    flush()
+                    continue
+                if in_origin:
+                    continue
+                if not in_features:
+                    continue
+
+                if line.startswith("     ") and len(line) > 5 and line[5] != " ":
+                    if reading_qualifier and qual_buf:
+                        value = "".join(qual_buf)
+                        if reading_qualifier == "gene":
+                            cur_gene = value
+                        elif reading_qualifier == "product":
+                            cur_product = value
+                        reading_qualifier = None
+                        qual_buf = []
+                    flush()
+                    cur_key = line[5:21].strip()
+                    cur_loc = line[21:].strip()
+                    continue
+
+                if cur_key == "CDS" and line.startswith("                     "):
+                    q = line.strip()
+                    if reading_qualifier:
+                        if q.endswith('"'):
+                            qual_buf.append(q.rstrip('"'))
+                            value = "".join(qual_buf)
+                            if reading_qualifier == "gene":
+                                cur_gene = value
+                            elif reading_qualifier == "product":
+                                cur_product = value
+                            reading_qualifier = None
+                            qual_buf = []
+                        else:
+                            qual_buf.append(q)
+                        continue
+                    if q.startswith("/gene="):
+                        value = q.split("=", 1)[1].lstrip()
+                        if value.startswith('"'):
+                            value = value[1:]
+                        if value.endswith('"'):
+                            cur_gene = value.rstrip('"')
+                        else:
+                            reading_qualifier = "gene"
+                            qual_buf = [value]
+                        continue
+                    if q.startswith("/product="):
+                        value = q.split("=", 1)[1].lstrip()
+                        if value.startswith('"'):
+                            value = value[1:]
+                        if value.endswith('"'):
+                            cur_product = value.rstrip('"')
+                        else:
+                            reading_qualifier = "product"
+                            qual_buf = [value]
+                        continue
+
+        if reading_qualifier and qual_buf:
+            value = "".join(qual_buf)
+            if reading_qualifier == "gene":
+                cur_gene = value
+            elif reading_qualifier == "product":
+                cur_product = value
+        flush()
+        return annotations
+
+    def _write_circular_pdf(self, seq: str, output_path: str, title: str, annotations: list[dict[str, object]]) -> None:
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         writer = QPdfWriter(output_path)
         writer.setResolution(150)
@@ -530,23 +691,98 @@ class PerceptromeQt(QMainWindow):
                 y_inner = cy + int(radius * 0.92 * math.sin(angle))
                 painter.drawLine(x_inner, y_inner, x_outer, y_outer)
 
+            annotation_pen = QPen(QColor("#f7b731"), 3)
+            reverse_pen = QPen(QColor("#eb3b5a"), 3)
+            text_pen = QPen(QColor("#e6e9ef"), 1)
+            painter.setPen(text_pen)
+            label_font = QFont()
+            label_font.setPointSize(8)
+            painter.setFont(label_font)
+            metrics = QFontMetrics(label_font)
+            label_rects: list[tuple[int, int, int, int]] = []
+
+            def place_label(text: str, angle_rad: float):
+                base_r = radius * 1.12
+                for step in range(7):
+                    r = base_r + step * 12
+                    x = cx + int(r * math.cos(angle_rad))
+                    y = cy + int(r * math.sin(angle_rad))
+                    w = metrics.horizontalAdvance(text) + 6
+                    h = metrics.height() + 2
+                    rect = (x - w // 2, y - h // 2, w, h)
+                    collision = any(
+                        rect[0] < r0 + w0
+                        and rect[0] + rect[2] > r0
+                        and rect[1] < c0 + h0
+                        and rect[1] + rect[3] > c0
+                        for r0, c0, w0, h0 in label_rects
+                    )
+                    if not collision:
+                        label_rects.append(rect)
+                        painter.drawText(rect[0], rect[1], rect[2], rect[3], Qt.AlignCenter, text)
+                        return
+
+            if seq_len and annotations:
+                arc_rect = (
+                    cx - int(radius * 1.04),
+                    cy - int(radius * 1.04),
+                    int(radius * 2.08),
+                    int(radius * 2.08),
+                )
+                for ann in annotations:
+                    label = str(ann.get("label", "CDS"))
+                    segments = ann.get("segments", [])
+                    label_positions: list[float] = []
+                    for segment in segments:
+                        start = int(segment.get("start", 0))
+                        end = int(segment.get("end", 0))
+                        strand = segment.get("strand", "+")
+                        if end < start:
+                            start, end = end, start
+                        if start < 1 or end < 1 or end > seq_len:
+                            continue
+                        start_angle = ((start - 1) / seq_len) * 360.0
+                        end_angle = (end / seq_len) * 360.0
+                        span = end_angle - start_angle
+                        qt_start = (90.0 - start_angle) * 16.0
+                        qt_span = -span * 16.0
+                        painter.setPen(reverse_pen if strand == "-" else annotation_pen)
+                        painter.drawArc(*arc_rect, int(qt_start), int(qt_span))
+                        label_positions.append(math.radians(start_angle + span / 2.0))
+                    if label_positions:
+                        painter.setPen(text_pen)
+                        place_label(label, label_positions[0] - math.pi / 2.0)
+
             painter.setPen(QPen(QColor("#d9d9d9"), 2))
             painter.drawText(cx - radius, cy - radius - 40, radius * 2, 30, Qt.AlignCenter, title or "Circular genome view")
 
             info = f"Length: {seq_len:,} bp    GC: {gc * 100:.2f}%"
             painter.setPen(QPen(QColor("#a8b0b8"), 1))
             painter.drawText(cx - radius, cy + radius + 12, radius * 2, 30, Qt.AlignCenter, info)
+
+            legend_x = cx + radius + 40
+            legend_y = cy - radius + 10
+            painter.setPen(QPen(QColor("#e6e9ef"), 1))
+            painter.drawText(legend_x, legend_y, 140, 20, Qt.AlignLeft, "Legend")
+            painter.setPen(annotation_pen)
+            painter.drawLine(legend_x, legend_y + 26, legend_x + 24, legend_y + 26)
+            painter.setPen(QPen(QColor("#cbd0d8"), 1))
+            painter.drawText(legend_x + 30, legend_y + 18, 120, 20, Qt.AlignLeft, "CDS (+)")
+            painter.setPen(reverse_pen)
+            painter.drawLine(legend_x, legend_y + 46, legend_x + 24, legend_y + 46)
+            painter.setPen(QPen(QColor("#cbd0d8"), 1))
+            painter.drawText(legend_x + 30, legend_y + 38, 120, 20, Qt.AlignLeft, "CDS (-)")
         finally:
             painter.end()
 
     def _view_generate_pdf(self):
         self.view_log.clear()
         try:
-            seq, source = self._resolve_genome_sequence()
+            seq, source, annotations = self._resolve_genome_sequence()
             output_path = self.view_pdf_path.text().strip() or "generated/circular_genome.pdf"
             title = self.view_title.text().strip() or f"Circular genome ({source})"
             self._append_log(self.view_log, f"[{now_str()}] Generating PDF from {source}\n")
-            self._write_circular_pdf(seq, output_path, title)
+            self._write_circular_pdf(seq, output_path, title, annotations)
             self._append_log(self.view_log, f"[{now_str()}] Saved PDF -> {output_path}\n")
             self._add_history("view_pdf", output_path)
             self._load_pdf(output_path)
