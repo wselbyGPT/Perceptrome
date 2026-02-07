@@ -43,17 +43,18 @@ class PerceptromeQt(QMainWindow):
 
         container = QWidget()
         root = QVBoxLayout(container)
-        root.setContentsMargins(14, 14, 14, 14)
-        root.setSpacing(10)
+        root.setContentsMargins(18, 18, 18, 18)
+        root.setSpacing(12)
         self.setCentralWidget(container)
 
         logo = QLabel("perceptrome")
         logo.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+        logo.setObjectName("Logo")
         f = QFont()
-        f.setPointSize(28)
+        f.setPointSize(30)
         f.setBold(True)
         logo.setFont(f)
-        logo.setStyleSheet("QLabel { padding: 10px 0px; letter-spacing: 1px; }")
+        logo.setStyleSheet("QLabel { padding: 12px 0px; letter-spacing: 1.5px; }")
 
         self.tabs = QTabWidget()
         root.addWidget(logo)
@@ -139,7 +140,7 @@ class PerceptromeQt(QMainWindow):
         form = QFormLayout()
         self.train_cmd = QLineEdit()
         self.train_cmd.setPlaceholderText('Example: python stream_train.py train --help')
-        self.train_cmd.setMinimumHeight(32)
+        self.train_cmd.setMinimumHeight(36)
         self.train_cmd.setStyleSheet("QLineEdit { font-family: monospace; }")
         form.addRow("Command:", self.train_cmd)
 
@@ -178,7 +179,7 @@ class PerceptromeQt(QMainWindow):
         form = QFormLayout()
         self.gen_cmd = QLineEdit()
         self.gen_cmd.setPlaceholderText('Example: python stream_train.py generate --help')
-        self.gen_cmd.setMinimumHeight(32)
+        self.gen_cmd.setMinimumHeight(36)
         self.gen_cmd.setStyleSheet("QLineEdit { font-family: monospace; }")
         form.addRow("Command:", self.gen_cmd)
 
