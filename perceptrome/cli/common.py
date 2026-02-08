@@ -95,6 +95,25 @@ def _get_protein_opts(args, train_cfg):
         "protein_max_aa": int(getattr(args, "max_protein_aa", None) if getattr(args, "max_protein_aa", None) is not None else getattr(train_cfg, "protein_max_aa", 5000)),
     }
 
+def _resolve_tensorboard(args: argparse.Namespace, train_cfg, io_cfg) -> dict[str, Any]:
+    """Resolve tensorboard settings (CLI overrides config)."""
+    enabled = getattr(args, "tensorboard", None)
+    log_dir = getattr(args, "tensorboard_logdir", None)
+    run_name = getattr(args, "tensorboard_run_name", None)
+
+    if enabled is None:
+        enabled = bool(getattr(train_cfg, "tensorboard_enabled", False))
+    if log_dir is None:
+        log_dir = getattr(train_cfg, "tensorboard_log_dir", os.path.join(io_cfg.logs_dir, "tensorboard"))
+    if run_name is None:
+        run_name = getattr(train_cfg, "tensorboard_run_name", "perceptrome")
+
+    return {
+        "tensorboard_enabled": bool(enabled),
+        "tensorboard_log_dir": str(log_dir),
+        "tensorboard_run_name": str(run_name),
+    }
+
 
 def _get_source(args, tok: str) -> str:
     v = getattr(args, "source", None)
@@ -216,4 +235,3 @@ def _resolve_proteome_params(args: argparse.Namespace, train_cfg, state, tok: st
         pol["span_mask_len"] = int(getattr(args, "span_mask_len"))
 
     return pol
-

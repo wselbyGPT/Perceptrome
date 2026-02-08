@@ -57,6 +57,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "aa_span_mask_prob": 0.05,
         "aa_span_mask_len": 12,
 
+        # tensorboard (optional)
+        "tensorboard_enabled": False,
+        "tensorboard_log_dir": "logs/tensorboard",
+        "tensorboard_run_name": "perceptrome",
+
         # (optional) balance + filters (safe if unused)
         "max_windows_per_protein": 4,
         "protein_len_min": None,
@@ -154,6 +159,11 @@ class TrainingConfig:
     aa_mask_prob: float
     aa_span_mask_prob: float
     aa_span_mask_len: int
+
+    # optional tensorboard
+    tensorboard_enabled: bool
+    tensorboard_log_dir: str
+    tensorboard_run_name: str
 
     # optional balance / filters
     max_windows_per_protein: int
@@ -288,6 +298,10 @@ def extract_configs(cfg: Dict[str, Any]) -> Tuple[NCBIConfig, TrainingConfig, IO
         aa_mask_prob=float(t.get("aa_mask_prob", 0.10)),
         aa_span_mask_prob=float(t.get("aa_span_mask_prob", 0.05)),
         aa_span_mask_len=int(t.get("aa_span_mask_len", 12)),
+
+        tensorboard_enabled=bool(t.get("tensorboard_enabled", False)),
+        tensorboard_log_dir=str(t.get("tensorboard_log_dir", "logs/tensorboard")),
+        tensorboard_run_name=str(t.get("tensorboard_run_name", "perceptrome")),
 
         max_windows_per_protein=int(t.get("max_windows_per_protein", 4)),
         protein_len_min=_opt_int(t.get("protein_len_min", None)),

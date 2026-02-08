@@ -5,6 +5,7 @@ ncbi:
   backoff_seconds: 2.0
 
 training:
+  # CLI flags override values in this section.
   # small, just to smoke-test
   steps_per_plasmid: 25
   batch_size: 32
@@ -42,6 +43,11 @@ training:
   protein_x_free: true
   protein_min_aa: 90
   protein_max_aa: 5000
+
+  # tensorboard (optional)
+  tensorboard_enabled: false
+  tensorboard_log_dir: "logs/tensorboard"
+  tensorboard_run_name: "perceptrome"
 
 io:
   cache_fasta_dir: "cache/fasta"

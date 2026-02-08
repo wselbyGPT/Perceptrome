@@ -91,6 +91,9 @@ def train_on_encoded(
     mask_prob: Optional[float] = None,
     span_mask_prob: Optional[float] = None,
     span_mask_len: Optional[int] = None,
+    tensorboard_enabled: Optional[bool] = None,
+    tensorboard_log_dir: Optional[str] = None,
+    tensorboard_run_name: Optional[str] = None,
 ) -> float:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -108,6 +111,20 @@ def train_on_encoded(
     mp = float(mask_prob) if mask_prob is not None else float(getattr(train_cfg, 'aa_mask_prob', 0.05 if str(tokenizer).lower() == 'aa' else 0.0))
     sp = float(span_mask_prob) if span_mask_prob is not None else float(getattr(train_cfg, 'aa_span_mask_prob', 0.0))
     sl = int(span_mask_len) if span_mask_len is not None else int(getattr(train_cfg, 'aa_span_mask_len', 0))
+
+    tb_enabled = bool(tensorboard_enabled) if tensorboard_enabled is not None else bool(getattr(train_cfg, "tensorboard_enabled", False))
+    tb_log_dir = tensorboard_log_dir if tensorboard_log_dir is not None else getattr(train_cfg, "tensorboard_log_dir", os.path.join(io_cfg.logs_dir, "tensorboard"))
+    tb_run_name = tensorboard_run_name if tensorboard_run_name is not None else getattr(train_cfg, "tensorboard_run_name", "perceptrome")
+    writer = None
+    if tb_enabled:
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+        except ImportError:
+            logging.warning("TensorBoard requested but torch.utils.tensorboard is unavailable; continuing without it.")
+        else:
+            run_dir = os.path.join(tb_log_dir, tb_run_name) if tb_run_name else tb_log_dir
+            os.makedirs(run_dir, exist_ok=True)
+            writer = SummaryWriter(log_dir=run_dir)
 
     model, optimizer, global_step, ckpt_path = load_or_init_model(
         io_cfg=io_cfg,
@@ -142,48 +159,58 @@ def train_on_encoded(
     last_total = 0.0
     it = iter(dataloader)
 
-    while step_count < steps:
-        try:
-            (batch,) = next(it)
-        except StopIteration:
-            it = iter(dataloader)
-            (batch,) = next(it)
+    try:
+        while step_count < steps:
+            try:
+                (batch,) = next(it)
+            except StopIteration:
+                it = iter(dataloader)
+                (batch,) = next(it)
 
-        batch = batch.to(device)         # (B, L, V)
-        # Denoising/inpainting (AA only): corrupt *input*, keep target clean.
-        x_in = batch
-        if str(tokenizer).lower() == "aa":
-            if sp > 0 and sl > 0:
-                x_in = _apply_aa_span_mask(x_in, sp, sl)
-            if mp > 0:
-                x_in = _apply_aa_mask(x_in, mp)
-        x_flat = x_in.view(x_in.size(0), -1)
-        x_target_flat = batch.view(batch.size(0), -1)
+            batch = batch.to(device)         # (B, L, V)
+            # Denoising/inpainting (AA only): corrupt *input*, keep target clean.
+            x_in = batch
+            if str(tokenizer).lower() == "aa":
+                if sp > 0 and sl > 0:
+                    x_in = _apply_aa_span_mask(x_in, sp, sl)
+                if mp > 0:
+                    x_in = _apply_aa_mask(x_in, mp)
+            x_flat = x_in.view(x_in.size(0), -1)
+            x_target_flat = batch.view(batch.size(0), -1)
 
-        if train_cfg.kl_warmup_steps > 0:
-            warm = min(1.0, (global_step + 1) / float(train_cfg.kl_warmup_steps))
-            beta = train_cfg.beta_kl * warm
-        else:
-            beta = train_cfg.beta_kl
+            if train_cfg.kl_warmup_steps > 0:
+                warm = min(1.0, (global_step + 1) / float(train_cfg.kl_warmup_steps))
+                beta = train_cfg.beta_kl * warm
+            else:
+                beta = train_cfg.beta_kl
 
-        optimizer.zero_grad(set_to_none=True)
-        recon_logits, mu, logvar = model(x_flat)
-        total, recon, kl = vae_loss(recon_logits, x_target_flat, mu, logvar, beta, lt, seq_len, vocab_size)
-        total.backward()
+            optimizer.zero_grad(set_to_none=True)
+            recon_logits, mu, logvar = model(x_flat)
+            total, recon, kl = vae_loss(recon_logits, x_target_flat, mu, logvar, beta, lt, seq_len, vocab_size)
+            total.backward()
 
-        if train_cfg.max_grad_norm and train_cfg.max_grad_norm > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.max_grad_norm)
+            if train_cfg.max_grad_norm and train_cfg.max_grad_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.max_grad_norm)
 
-        optimizer.step()
+            optimizer.step()
 
-        step_count += 1
-        global_step += 1
-        last_total = float(total.item())
+            step_count += 1
+            global_step += 1
+            last_total = float(total.item())
 
-        if step_count % 10 == 0 or step_count == steps:
-            logging.info(
-                f"{accession}: step {step_count}/{steps} total={total.item():.6f} recon={recon.item():.6f} kl={kl.item():.6f} beta={beta:.3g} loss={lt} mask={mp:.3g} span={sp:.3g}/{sl}"
-            )
+            if writer is not None:
+                writer.add_scalar("loss/total", float(total.item()), global_step)
+                writer.add_scalar("loss/recon", float(recon.item()), global_step)
+                writer.add_scalar("loss/kl", float(kl.item()), global_step)
+                writer.add_scalar("loss/beta", float(beta), global_step)
+
+            if step_count % 10 == 0 or step_count == steps:
+                logging.info(
+                    f"{accession}: step {step_count}/{steps} total={total.item():.6f} recon={recon.item():.6f} kl={kl.item():.6f} beta={beta:.3g} loss={lt} mask={mp:.3g} span={sp:.3g}/{sl}"
+                )
+    finally:
+        if writer is not None:
+            writer.close()
 
     state["total_steps"] = int(state.get("total_steps", 0)) + step_count
 

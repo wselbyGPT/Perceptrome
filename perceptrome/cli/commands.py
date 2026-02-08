@@ -15,7 +15,7 @@ from perceptrome.cli.common import (
     curses,
     run_scope_ui, run_scope_stream_ui, ScopeStreamContext,
     _get_tok, _get_frame, _get_min_orf, _get_grounded, _get_protein_opts,
-    _get_source, _ensure_record,
+    _get_source, _ensure_record, _resolve_tensorboard,
 )
 
 
@@ -204,6 +204,7 @@ def cmd_train_one(args: argparse.Namespace) -> int:
     src = _get_source(args, tok)
     pol = _resolve_proteome_params(args, train_cfg, state=state, tok=tok, src=src)
     protein_opts = pol.get("protein_opts") or {}
+    tb = _resolve_tensorboard(args, train_cfg, io_cfg)
 
     batch_size = args.batch_size or train_cfg.batch_size
     steps = args.steps or train_cfg.steps_per_plasmid
@@ -241,6 +242,9 @@ def cmd_train_one(args: argparse.Namespace) -> int:
         mask_prob=pol.get("mask_prob"),
         span_mask_prob=pol.get("span_mask_prob"),
         span_mask_len=pol.get("span_mask_len"),
+        tensorboard_enabled=tb.get("tensorboard_enabled"),
+        tensorboard_log_dir=tb.get("tensorboard_log_dir"),
+        tensorboard_run_name=tb.get("tensorboard_run_name"),
     )
 
     pvc = state["plasmid_visit_counts"]
@@ -435,6 +439,7 @@ def cmd_stream(args: argparse.Namespace) -> int:
     _validate_tok_params(tok, window_size, stride, frame)
 
     src = _get_source(args, tok)
+    tb = _resolve_tensorboard(args, train_cfg, io_cfg)
 
     batch_size = args.batch_size or train_cfg.batch_size
     steps_per_plasmid = args.steps_per_plasmid or train_cfg.steps_per_plasmid
@@ -484,6 +489,9 @@ def cmd_stream(args: argparse.Namespace) -> int:
                 mask_prob=pol.get("mask_prob"),
                 span_mask_prob=pol.get("span_mask_prob"),
                 span_mask_len=pol.get("span_mask_len"),
+                tensorboard_enabled=tb.get("tensorboard_enabled"),
+                tensorboard_log_dir=tb.get("tensorboard_log_dir"),
+                tensorboard_run_name=tb.get("tensorboard_run_name"),
             )
 
             pvc = state["plasmid_visit_counts"]
