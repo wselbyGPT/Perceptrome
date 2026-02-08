@@ -6,10 +6,15 @@ import numpy as np
 try:
     import torch
     from torch.utils.data import DataLoader, TensorDataset
+    try:
+        from torch.utils.tensorboard import SummaryWriter
+    except ImportError:
+        SummaryWriter = None  # type: ignore
 except ImportError:
     torch = None  # type: ignore
     DataLoader = None  # type: ignore
     TensorDataset = None  # type: ignore
+    SummaryWriter = None  # type: ignore
 
 from .config import IOConfig, TrainingConfig
 from .model import get_device, load_or_init_model, save_checkpoint, vae_loss
@@ -125,6 +130,30 @@ def train_on_encoded(
         transformer_dropout=transformer_dropout,
     )
 
+    writer = None
+    if SummaryWriter is not None:
+        log_dir = os.path.join(io_cfg.logs_dir, "tensorboard")
+        writer = SummaryWriter(log_dir=log_dir)
+        hparams = {
+            "tokenizer": str(tokenizer),
+            "model_type": str(model_type),
+            "hidden_dim": int(hidden_dim),
+            "seq_len": int(seq_len),
+            "vocab_size": int(vocab_size),
+            "loss_type": str(lt),
+            "transformer_d_model": int(transformer_d_model),
+            "transformer_nhead": int(transformer_nhead),
+            "transformer_layers": int(transformer_layers),
+            "transformer_dropout": float(transformer_dropout),
+            "mask_prob": float(mp),
+            "span_mask_prob": float(sp),
+            "span_mask_len": int(sl),
+        }
+        try:
+            writer.add_hparams(hparams, {})
+        except Exception as exc:
+            logging.warning(f"{accession}: failed to log hparams to TensorBoard: {exc}")
+
     windows_tensor = torch.from_numpy(encoded)  # (N, L, V)
     dataset = TensorDataset(windows_tensor)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False)
@@ -132,6 +161,14 @@ def train_on_encoded(
     if len(dataloader) == 0:
         logging.warning(f"{accession}: no windows to train on (shape={encoded.shape})")
         return 0.0
+
+    if writer is not None:
+        try:
+            sample = windows_tensor[:1].to(device)
+            sample_input = sample.view(sample.size(0), -1)
+            writer.add_graph(model, sample_input)
+        except Exception as exc:
+            logging.warning(f"{accession}: failed to log model graph to TensorBoard: {exc}")
 
     logging.info(
         f"{accession}: train tokenizer={tokenizer} windows={encoded.shape[0]} "
@@ -203,6 +240,10 @@ def train_on_encoded(
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
     )
+
+    if writer is not None:
+        writer.flush()
+        writer.close()
 
     return last_total
 
