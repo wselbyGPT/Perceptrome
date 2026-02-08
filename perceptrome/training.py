@@ -1,3 +1,4 @@
+import importlib.util
 import logging, os
 from typing import Dict, Any, Optional
 
@@ -77,6 +78,22 @@ def _apply_aa_span_mask(batch_onehot: "torch.Tensor", span_prob: float, span_len
         x[b, s:e, X_IDX] = 1.0
     return x
 
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _maybe_summary_writer(logs_dir: str, accession: str):
+    """Return a TensorBoard SummaryWriter if enabled and available."""
+    if not _env_flag("PERCEPTROME_TENSORBOARD"):
+        return None
+    if importlib.util.find_spec("tensorboard") is None:
+        logging.warning("TensorBoard requested but not installed; skipping logging.")
+        return None
+    from torch.utils.tensorboard import SummaryWriter
+    log_dir = os.path.join(logs_dir, "tensorboard", accession)
+    return SummaryWriter(log_dir=log_dir)
+
 def train_on_encoded(
     accession: str,
     encoded: np.ndarray,
@@ -141,49 +158,60 @@ def train_on_encoded(
     step_count = 0
     last_total = 0.0
     it = iter(dataloader)
+    writer = _maybe_summary_writer(io_cfg.logs_dir, accession)
 
-    while step_count < steps:
-        try:
-            (batch,) = next(it)
-        except StopIteration:
-            it = iter(dataloader)
-            (batch,) = next(it)
+    try:
+        while step_count < steps:
+            try:
+                (batch,) = next(it)
+            except StopIteration:
+                it = iter(dataloader)
+                (batch,) = next(it)
 
-        batch = batch.to(device)         # (B, L, V)
-        # Denoising/inpainting (AA only): corrupt *input*, keep target clean.
-        x_in = batch
-        if str(tokenizer).lower() == "aa":
-            if sp > 0 and sl > 0:
-                x_in = _apply_aa_span_mask(x_in, sp, sl)
-            if mp > 0:
-                x_in = _apply_aa_mask(x_in, mp)
-        x_flat = x_in.view(x_in.size(0), -1)
-        x_target_flat = batch.view(batch.size(0), -1)
+            batch = batch.to(device)         # (B, L, V)
+            # Denoising/inpainting (AA only): corrupt *input*, keep target clean.
+            x_in = batch
+            if str(tokenizer).lower() == "aa":
+                if sp > 0 and sl > 0:
+                    x_in = _apply_aa_span_mask(x_in, sp, sl)
+                if mp > 0:
+                    x_in = _apply_aa_mask(x_in, mp)
+            x_flat = x_in.view(x_in.size(0), -1)
+            x_target_flat = batch.view(batch.size(0), -1)
 
-        if train_cfg.kl_warmup_steps > 0:
-            warm = min(1.0, (global_step + 1) / float(train_cfg.kl_warmup_steps))
-            beta = train_cfg.beta_kl * warm
-        else:
-            beta = train_cfg.beta_kl
+            if train_cfg.kl_warmup_steps > 0:
+                warm = min(1.0, (global_step + 1) / float(train_cfg.kl_warmup_steps))
+                beta = train_cfg.beta_kl * warm
+            else:
+                beta = train_cfg.beta_kl
 
-        optimizer.zero_grad(set_to_none=True)
-        recon_logits, mu, logvar = model(x_flat)
-        total, recon, kl = vae_loss(recon_logits, x_target_flat, mu, logvar, beta, lt, seq_len, vocab_size)
-        total.backward()
+            optimizer.zero_grad(set_to_none=True)
+            recon_logits, mu, logvar = model(x_flat)
+            total, recon, kl = vae_loss(recon_logits, x_target_flat, mu, logvar, beta, lt, seq_len, vocab_size)
+            total.backward()
 
-        if train_cfg.max_grad_norm and train_cfg.max_grad_norm > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.max_grad_norm)
+            if train_cfg.max_grad_norm and train_cfg.max_grad_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.max_grad_norm)
 
-        optimizer.step()
+            optimizer.step()
 
-        step_count += 1
-        global_step += 1
-        last_total = float(total.item())
+            step_count += 1
+            global_step += 1
+            last_total = float(total.item())
 
-        if step_count % 10 == 0 or step_count == steps:
-            logging.info(
-                f"{accession}: step {step_count}/{steps} total={total.item():.6f} recon={recon.item():.6f} kl={kl.item():.6f} beta={beta:.3g} loss={lt} mask={mp:.3g} span={sp:.3g}/{sl}"
-            )
+            if writer is not None:
+                writer.add_scalar("loss/total", total.item(), global_step)
+                writer.add_scalar("loss/recon", recon.item(), global_step)
+                writer.add_scalar("loss/kl", kl.item(), global_step)
+                writer.add_scalar("loss/beta", beta, global_step)
+
+            if step_count % 10 == 0 or step_count == steps:
+                logging.info(
+                    f"{accession}: step {step_count}/{steps} total={total.item():.6f} recon={recon.item():.6f} kl={kl.item():.6f} beta={beta:.3g} loss={lt} mask={mp:.3g} span={sp:.3g}/{sl}"
+                )
+    finally:
+        if writer is not None:
+            writer.close()
 
     state["total_steps"] = int(state.get("total_steps", 0)) + step_count
 
