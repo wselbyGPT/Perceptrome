@@ -6,10 +6,15 @@ import numpy as np
 try:
     import torch
     from torch.utils.data import DataLoader, TensorDataset
+    try:
+        from torch.utils.tensorboard import SummaryWriter
+    except Exception:
+        SummaryWriter = None  # type: ignore
 except ImportError:
     torch = None  # type: ignore
     DataLoader = None  # type: ignore
     TensorDataset = None  # type: ignore
+    SummaryWriter = None  # type: ignore
 
 from .config import IOConfig, TrainingConfig
 from .model import get_device, load_or_init_model, save_checkpoint, vae_loss
@@ -91,6 +96,8 @@ def train_on_encoded(
     mask_prob: Optional[float] = None,
     span_mask_prob: Optional[float] = None,
     span_mask_len: Optional[int] = None,
+    run_id: Optional[str] = None,
+    tensorboard_log_every: Optional[int] = None,
 ) -> float:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -138,52 +145,82 @@ def train_on_encoded(
         f"L={encoded.shape[1]} V={encoded.shape[2]} steps={steps} batch={batch_size}"
     )
 
+    tb_log_every = tensorboard_log_every
+    if tb_log_every is None:
+        tb_log_every = int(getattr(train_cfg, "tensorboard_log_every", 0) or 0)
+    tb_run_id = run_id or getattr(train_cfg, "tensorboard_run_id", None) or accession
+    writer = None
+    if SummaryWriter is not None and tb_log_every > 0:
+        log_root = os.path.join(io_cfg.logs_dir, "tensorboard")
+        log_dir = os.path.join(log_root, str(tb_run_id)) if tb_run_id else log_root
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+            writer = SummaryWriter(log_dir=log_dir)
+        except Exception as exc:
+            logging.warning(f"{accession}: failed to init TensorBoard writer ({exc})")
+            writer = None
+
     step_count = 0
     last_total = 0.0
     it = iter(dataloader)
 
-    while step_count < steps:
-        try:
-            (batch,) = next(it)
-        except StopIteration:
-            it = iter(dataloader)
-            (batch,) = next(it)
+    try:
+        while step_count < steps:
+            try:
+                (batch,) = next(it)
+            except StopIteration:
+                it = iter(dataloader)
+                (batch,) = next(it)
 
-        batch = batch.to(device)         # (B, L, V)
-        # Denoising/inpainting (AA only): corrupt *input*, keep target clean.
-        x_in = batch
-        if str(tokenizer).lower() == "aa":
-            if sp > 0 and sl > 0:
-                x_in = _apply_aa_span_mask(x_in, sp, sl)
-            if mp > 0:
-                x_in = _apply_aa_mask(x_in, mp)
-        x_flat = x_in.view(x_in.size(0), -1)
-        x_target_flat = batch.view(batch.size(0), -1)
+            batch = batch.to(device)         # (B, L, V)
+            # Denoising/inpainting (AA only): corrupt *input*, keep target clean.
+            x_in = batch
+            if str(tokenizer).lower() == "aa":
+                if sp > 0 and sl > 0:
+                    x_in = _apply_aa_span_mask(x_in, sp, sl)
+                if mp > 0:
+                    x_in = _apply_aa_mask(x_in, mp)
+            x_flat = x_in.view(x_in.size(0), -1)
+            x_target_flat = batch.view(batch.size(0), -1)
 
-        if train_cfg.kl_warmup_steps > 0:
-            warm = min(1.0, (global_step + 1) / float(train_cfg.kl_warmup_steps))
-            beta = train_cfg.beta_kl * warm
-        else:
-            beta = train_cfg.beta_kl
+            if train_cfg.kl_warmup_steps > 0:
+                warm = min(1.0, (global_step + 1) / float(train_cfg.kl_warmup_steps))
+                beta = train_cfg.beta_kl * warm
+            else:
+                beta = train_cfg.beta_kl
 
-        optimizer.zero_grad(set_to_none=True)
-        recon_logits, mu, logvar = model(x_flat)
-        total, recon, kl = vae_loss(recon_logits, x_target_flat, mu, logvar, beta, lt, seq_len, vocab_size)
-        total.backward()
+            optimizer.zero_grad(set_to_none=True)
+            recon_logits, mu, logvar = model(x_flat)
+            total, recon, kl = vae_loss(recon_logits, x_target_flat, mu, logvar, beta, lt, seq_len, vocab_size)
+            total.backward()
 
-        if train_cfg.max_grad_norm and train_cfg.max_grad_norm > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.max_grad_norm)
+            grad_norm = None
+            if train_cfg.max_grad_norm and train_cfg.max_grad_norm > 0:
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.max_grad_norm)
 
-        optimizer.step()
+            optimizer.step()
 
-        step_count += 1
-        global_step += 1
-        last_total = float(total.item())
+            step_count += 1
+            global_step += 1
+            last_total = float(total.item())
 
-        if step_count % 10 == 0 or step_count == steps:
-            logging.info(
-                f"{accession}: step {step_count}/{steps} total={total.item():.6f} recon={recon.item():.6f} kl={kl.item():.6f} beta={beta:.3g} loss={lt} mask={mp:.3g} span={sp:.3g}/{sl}"
-            )
+            if writer is not None and (global_step % tb_log_every == 0 or step_count == steps):
+                writer.add_scalar("loss/total", float(total.item()), global_step)
+                writer.add_scalar("loss/recon", float(recon.item()), global_step)
+                writer.add_scalar("loss/kl", float(kl.item()), global_step)
+                writer.add_scalar("train/beta", float(beta), global_step)
+                writer.add_scalar("train/learning_rate", float(optimizer.param_groups[0]["lr"]), global_step)
+                if grad_norm is not None:
+                    writer.add_scalar("train/grad_norm", float(grad_norm), global_step)
+
+            if step_count % 10 == 0 or step_count == steps:
+                logging.info(
+                    f"{accession}: step {step_count}/{steps} total={total.item():.6f} recon={recon.item():.6f} kl={kl.item():.6f} beta={beta:.3g} loss={lt} mask={mp:.3g} span={sp:.3g}/{sl}"
+                )
+    finally:
+        if writer is not None:
+            writer.flush()
+            writer.close()
 
     state["total_steps"] = int(state.get("total_steps", 0)) + step_count
 

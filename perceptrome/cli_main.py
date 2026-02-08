@@ -56,6 +56,10 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--span-mask-prob", type=float, default=None, help="AA tokenizer: probability to apply a contiguous span mask per sequence")
         sp.add_argument("--span-mask-len", type=int, default=None, help="AA tokenizer: length (aa) of the contiguous span mask")
 
+    def add_tensorboard_args(sp):
+        sp.add_argument("--tb-run-id", default=None, help="TensorBoard run id (default: accession or config)")
+        sp.add_argument("--tb-log-every", type=int, default=None, help="TensorBoard logging interval in steps (default from config)")
+
     s = sub.add_parser("encode-one")
     s.add_argument("accession")
     s.add_argument("--window-size", type=int, default=None)
@@ -72,6 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reencode", action="store_true")
     add_tok_args(s)
     add_loss_args(s)
+    add_tensorboard_args(s)
     s.set_defaults(func=cmd_train_one)
 
     s = sub.add_parser("scope-one")
@@ -95,6 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reencode", action="store_true")
     add_tok_args(s)
     add_loss_args(s)
+    add_tensorboard_args(s)
     s.set_defaults(func=cmd_scope_stream)
 
     s = sub.add_parser("stream")
@@ -107,6 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--delete-cache", action="store_true")
     add_tok_args(s)
     add_loss_args(s)
+    add_tensorboard_args(s)
     s.set_defaults(func=cmd_stream)
 
     s = sub.add_parser("generate-plasmid")
