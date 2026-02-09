@@ -29,6 +29,7 @@ Run `python3 stream_train.py --help` for the full list of subcommands. Common wo
 - `encode-one`: encode sequence windows (base/codon/aa)
 - `train-one`: train on one accession
 - `scope-one`: view reconstruction errors in a curses UI
+- `validate`: export reconstruction metrics to CSV/JSON
 - `stream`: iterate through a catalog file
 - `generate-plasmid` / `generate-protein`: sample sequences from the model
 

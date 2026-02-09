@@ -27,6 +27,7 @@ python3 stream_train.py --config path/to/config.yaml <command>
 | `train-one <accession>` | Train on a single accession. |
 | `scope-one <accession>` | Visualize reconstruction error + GC content in a curses UI. |
 | `scope-stream <accession>` | Train and update scope UI while streaming steps. |
+| `validate <accession>` | Export per-window loss/GC (or hydrophobic proxy) to CSV/JSON. |
 | `stream --catalog <path>` | Iterate over a catalog file with streaming training. |
 | `generate-plasmid` | Sample DNA windows from the model and emit FASTA. |
 | `generate-protein` | Sample amino acids from the model and emit FASTA. |
@@ -66,6 +67,11 @@ These are only relevant when `--tokenizer aa` and `--source genbank`:
 - `--loss-type {mse,ce}`: reconstruction loss override.
 - `--mask-prob`: random AA masking probability (input corruption).
 - `--span-mask-prob` / `--span-mask-len`: contiguous span mask probability/length.
+
+### Validation output
+
+- `--output`: output path for validation report (default: `generated/validation.csv`).
+- `--format {csv,json}`: output format for validation report.
 
 ## Configuration schema
 

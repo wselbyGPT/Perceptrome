@@ -1,4 +1,6 @@
 import argparse
+import csv
+import json
 import logging
 import os
 from typing import Any, Dict, Optional, Tuple
@@ -414,6 +416,95 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
         update_every=args.update_every,
         ctx=ctx,
     )
+    return 0
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    cfg = load_full_config(args.config)
+    ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
+    ensure_dirs(io_cfg)
+    setup_logging(io_cfg.logs_dir)
+
+    tok = _get_tok(args, train_cfg)
+    frame = _get_frame(args, train_cfg)
+    min_orf = _get_min_orf(args, train_cfg)
+    window_size, stride = _pick_window_stride(args, train_cfg, tok)
+    _validate_tok_params(tok, window_size, stride, frame)
+
+    src = _get_source(args, tok)
+    pol = _resolve_proteome_params(args, train_cfg, state=None, tok=tok, src=src)
+    protein_opts = pol.get("protein_opts") or {}
+
+    _ensure_record(args.accession, src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=False)
+
+    enc_path = encoded_cache_path(
+        io_cfg, args.accession, tok, window_size, stride, frame,
+        source=src,
+        **_cache_kwargs(tok, min_orf, pol),
+    )
+
+    if os.path.exists(enc_path) and not args.reencode:
+        encoded = np.load(enc_path)
+    else:
+        encoded = encode_accession(
+            args.accession, io_cfg, window_size, stride,
+            tokenizer=tok, frame_offset=frame, min_orf_aa=min_orf,
+            source=src,
+            max_windows_per_protein=pol.get("max_windows_per_protein"),
+            protein_len_min=pol.get("protein_len_min"),
+            protein_len_max=pol.get("protein_len_max"),
+            translation_only=bool(pol.get("translation_only", False)),
+            protein_opts=protein_opts,
+            save_to_disk=True, out_path=enc_path,
+        )
+
+    errors = compute_window_errors(
+        args.accession,
+        encoded,
+        io_cfg=io_cfg,
+        train_cfg=train_cfg,
+        tokenizer=tok,
+        window_size_bp=window_size,
+        loss_type=getattr(args, "loss_type", None),
+    )
+    metric = compute_gc_from_encoded(encoded, tokenizer=tok)
+
+    output_path = args.output
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+
+    rows = []
+    for idx, (loss, score) in enumerate(zip(errors.tolist(), metric.tolist())):
+        start = idx * stride
+        end = start + window_size
+        rows.append({
+            "window_index": idx,
+            "start": start,
+            "end": end,
+            "loss": float(loss),
+            "gc_or_hydro": float(score),
+        })
+
+    fmt = str(args.format).lower()
+    if fmt == "json":
+        with open(output_path, "w", encoding="utf-8") as handle:
+            json.dump({
+                "accession": args.accession,
+                "tokenizer": tok,
+                "source": src,
+                "window_size": window_size,
+                "stride": stride,
+                "metric": "gc" if tok in ("base", "codon") else "hydrophobic",
+                "windows": rows,
+            }, handle, indent=2)
+    elif fmt == "csv":
+        with open(output_path, "w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["window_index", "start", "end", "loss", "gc_or_hydro"])
+            writer.writeheader()
+            writer.writerows(rows)
+    else:
+        raise ValueError(f"Unknown format: {args.format}")
+
+    print(f"Wrote validation report: {output_path}")
     return 0
 
 
