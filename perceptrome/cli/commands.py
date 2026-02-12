@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import os
 from typing import Any, Dict, Optional, Tuple
@@ -17,6 +18,7 @@ from perceptrome.cli.common import (
     _get_tok, _get_frame, _get_min_orf, _get_grounded, _get_protein_opts,
     _get_source, _ensure_record,
 )
+from perceptrome.encoding.parse import parse_fasta_sequence
 
 
 # -----------------------------
@@ -560,3 +562,118 @@ def cmd_generate_protein(args: argparse.Namespace) -> int:
     )
     print(f"[generate-protein] wrote {len(seq)} aa -> {args.output}")
     return 0
+
+
+def _normalized_identity(a: str, b: str) -> float:
+    if not a or not b:
+        return 0.0
+    n = min(len(a), len(b))
+    if n <= 0:
+        return 0.0
+    matches = sum(1 for i in range(n) if a[i] == b[i])
+    return float(matches) / float(n)
+
+
+def _base_probs(seq: str) -> Dict[str, float]:
+    bases = "ACGT"
+    total = 0
+    counts = {b: 0 for b in bases}
+    for ch in seq.upper():
+        if ch in counts:
+            counts[ch] += 1
+            total += 1
+    if total == 0:
+        return {b: 0.25 for b in bases}
+    eps = 1e-12
+    return {b: max(float(counts[b]) / float(total), eps) for b in bases}
+
+
+def _kl_divergence(p: Dict[str, float], q: Dict[str, float]) -> float:
+    import math
+
+    return float(sum(p[k] * math.log(p[k] / q[k]) for k in p.keys()))
+
+
+def cmd_validate_plasmid(args: argparse.Namespace) -> int:
+    cfg = load_full_config(args.config)
+    ncbi_cfg, _, io_cfg = extract_configs(cfg)
+    ensure_dirs(io_cfg)
+    setup_logging(io_cfg.logs_dir)
+
+    generated_path = str(args.generated)
+    if not os.path.exists(generated_path):
+        raise FileNotFoundError(f"Generated FASTA not found: {generated_path}")
+
+    generated_seq = parse_fasta_sequence(generated_path)
+    if not generated_seq:
+        raise ValueError(f"Generated FASTA has no sequence: {generated_path}")
+
+    accessions = read_catalog(args.reference_catalog)
+    max_references = int(args.max_references) if args.max_references is not None else len(accessions)
+    if max_references > 0:
+        accessions = accessions[:max_references]
+
+    if not accessions:
+        raise ValueError(f"Reference catalog has no accessions: {args.reference_catalog}")
+
+    p_gen = _base_probs(generated_seq)
+    per_reference = []
+
+    for acc in accessions:
+        fasta_path = _ensure_record(acc, "fasta", io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=bool(args.force_fetch))
+        ref_seq = parse_fasta_sequence(fasta_path)
+        ident = _normalized_identity(generated_seq, ref_seq)
+        kld = _kl_divergence(p_gen, _base_probs(ref_seq))
+        per_reference.append(
+            {
+                "accession": acc,
+                "identity": ident,
+                "kld": kld,
+                "length_bp": len(ref_seq),
+                "passes": (ident >= float(args.min_identity) and kld <= float(args.max_kld)),
+            }
+        )
+
+    best_identity = max((r["identity"] for r in per_reference), default=0.0)
+    best_kld = min((r["kld"] for r in per_reference), default=float("inf"))
+    pass_count = sum(1 for r in per_reference if r["passes"])
+
+    thresholds = {
+        "min_identity": float(args.min_identity),
+        "max_kld": float(args.max_kld),
+        "min_pass_count": int(args.min_pass_count),
+    }
+    results = {
+        "generated": generated_path,
+        "generated_length_bp": len(generated_seq),
+        "reference_catalog": args.reference_catalog,
+        "reference_count": len(per_reference),
+        "best_identity": best_identity,
+        "best_kld": best_kld,
+        "pass_count": pass_count,
+        "thresholds": thresholds,
+        "pass": (
+            best_identity >= thresholds["min_identity"]
+            and best_kld <= thresholds["max_kld"]
+            and pass_count >= thresholds["min_pass_count"]
+        ),
+        "references": per_reference,
+    }
+
+    print(
+        "[validate-plasmid] "
+        f"generated={generated_path} refs={len(per_reference)} "
+        f"best_identity={best_identity:.4f} best_kld={best_kld:.6f} "
+        f"pass_count={pass_count} pass={results['pass']}"
+    )
+
+    if args.output_json:
+        out_path = str(args.output_json)
+        out_dir = os.path.dirname(out_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2, sort_keys=True)
+        print(f"[validate-plasmid] wrote report: {out_path}")
+
+    return 0 if results["pass"] else 1

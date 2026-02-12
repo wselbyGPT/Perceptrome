@@ -5,6 +5,7 @@ from typing import Any
 from perceptrome.cli.commands import (
     cmd_init, cmd_catalog_show, cmd_fetch_one, cmd_encode_one, cmd_train_one,
     cmd_scope_one, cmd_scope_stream, cmd_stream, cmd_generate_plasmid, cmd_generate_protein,
+    cmd_validate_plasmid,
 )
 
 def build_parser() -> argparse.ArgumentParser:
@@ -136,6 +137,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reject-max-run", type=int, default=10, help="Reject if any AA repeats longer than this")
     s.add_argument("--reject-max-x-frac", type=float, default=0.15, help="Reject if fraction of 'X' exceeds this")
     s.set_defaults(func=cmd_generate_protein)
+
+    s = sub.add_parser("validate-plasmid", help="Validate a generated plasmid against a reference accession catalog")
+    s.add_argument("--generated", required=True, help="Path to generated FASTA")
+    s.add_argument("--reference-catalog", default="accessions/plasmid_accessions.txt", help="Path to reference accession catalog")
+    s.add_argument("--max-references", type=int, default=25, help="Maximum number of references to fetch/compare")
+    s.add_argument("--force-fetch", action="store_true", help="Refetch reference FASTA records even when cached")
+    s.add_argument("--min-identity", type=float, default=0.80, help="Minimum best normalized identity threshold")
+    s.add_argument("--max-kld", type=float, default=0.20, help="Maximum best nucleotide-distribution KL-divergence")
+    s.add_argument("--min-pass-count", type=int, default=1, help="Minimum number of reference matches passing both per-reference thresholds")
+    s.add_argument("--output-json", default=None, help="Optional path to write machine-readable JSON validation report")
+    s.set_defaults(func=cmd_validate_plasmid)
 
     return p
 
