@@ -81,7 +81,7 @@ The configuration file mirrors the defaults in `perceptrome/config.py`, with ove
 
 | Key | Type | Description |
 | --- | --- | --- |
-| `email` | string | Your email for NCBI queries. |
+| `email` | string | Your email for NCBI queries (set a real address). |
 | `api_key` | string or null | Optional NCBI API key. |
 | `max_retries` | int | Retry count for NCBI calls. |
 | `backoff_seconds` | float | Backoff between retries. |

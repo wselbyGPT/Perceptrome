@@ -253,6 +253,9 @@ def extract_configs(cfg: Dict[str, Any]) -> Tuple[NCBIConfig, TrainingConfig, IO
         backoff_seconds=float(n.get("backoff_seconds", 2.0)),
     )
 
+    if not ncbi_cfg.email or ncbi_cfg.email.strip().lower() in {"you@example.com", "you@example.org"}:
+        print("[config] WARNING: Set ncbi.email to a real address to comply with NCBI usage guidelines.")
+
     train_cfg = TrainingConfig(
         steps_per_plasmid=int(t.get("steps_per_plasmid", 50)),
         batch_size=int(t.get("batch_size", 16)),
