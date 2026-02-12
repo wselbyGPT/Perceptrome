@@ -12,7 +12,7 @@ from shiboken6 import isValid
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget,
     QVBoxLayout, QHBoxLayout, QFormLayout,
-    QLabel, QLineEdit, QPushButton,
+    QLabel, QLineEdit, QPushButton, QCheckBox,
     QPlainTextEdit, QProgressBar,
     QSpinBox, QDoubleSpinBox, QGroupBox,
     QTableWidget, QTableWidgetItem, QHeaderView
@@ -21,8 +21,9 @@ from PySide6.QtWidgets import (
 from .theme import apply_dark_mode
 from .runner import ProcessRunner
 from perceptrome.config import load_full_config, extract_configs
+from perceptrome.encoding.parse import parse_genbank_dna
 from perceptrome.io_utils import ensure_dirs
-from perceptrome.ncbi_fetch import fetch_fasta
+from perceptrome.ncbi_fetch import fetch_fasta, fetch_genbank
 
 
 PCT_RE = re.compile(r"(\d{1,3})\s*%")
@@ -243,8 +244,11 @@ class PerceptromeQt(QMainWindow):
         self.view_accession.setPlaceholderText("Example: NC_000913.3")
         self.view_fasta_path = QLineEdit()
         self.view_fasta_path.setPlaceholderText("generated/novel_plasmid.fasta")
+        self.view_prefer_genbank = QCheckBox("Prefer GenBank annotations")
+        self.view_prefer_genbank.setChecked(True)
         source_layout.addRow("Genome accession:", self.view_accession)
         source_layout.addRow("FASTA path:", self.view_fasta_path)
+        source_layout.addRow("", self.view_prefer_genbank)
 
         output_group = QGroupBox("PDF output")
         output_layout = QFormLayout(output_group)
@@ -295,6 +299,7 @@ class PerceptromeQt(QMainWindow):
         self.settings.setValue("gen_cmd", self.gen_cmd.text().strip())
         self.settings.setValue("view_accession", self.view_accession.text().strip())
         self.settings.setValue("view_fasta_path", self.view_fasta_path.text().strip())
+        self.settings.setValue("view_prefer_genbank", self.view_prefer_genbank.isChecked())
         self.settings.setValue("view_pdf_path", self.view_pdf_path.text().strip())
         self.settings.setValue("view_title", self.view_title.text().strip())
         self.settings.sync()
@@ -315,6 +320,7 @@ class PerceptromeQt(QMainWindow):
         self.gen_cmd.setText(self.settings.value("gen_cmd", "python stream_train.py generate --help"))
         self.view_accession.setText(self.settings.value("view_accession", ""))
         self.view_fasta_path.setText(self.settings.value("view_fasta_path", "generated/novel_plasmid.fasta"))
+        self.view_prefer_genbank.setChecked(self.settings.value("view_prefer_genbank", True, type=bool))
         self.view_pdf_path.setText(self.settings.value("view_pdf_path", "generated/circular_genome.pdf"))
         self.view_title.setText(self.settings.value("view_title", ""))
 
@@ -491,12 +497,26 @@ class PerceptromeQt(QMainWindow):
             cfg = load_full_config(cfg_path)
             ncbi_cfg, _, io_cfg = extract_configs(cfg)
             ensure_dirs(io_cfg)
+            prefer_genbank = self.view_prefer_genbank.isChecked()
+
+            if prefer_genbank:
+                try:
+                    genbank_path = fetch_genbank(accession, io_cfg, ncbi_cfg, force=False)
+                    seq = parse_genbank_dna(genbank_path)
+                    return seq, f"accession {accession} [genbank]"
+                except Exception as exc:
+                    self._append_log(
+                        self.view_log,
+                        f"[{now_str()}] WARNING: GenBank fetch/parse failed for {accession}; "
+                        f"falling back to FASTA ({exc})\n",
+                    )
+
             fasta_path = fetch_fasta(accession, io_cfg, ncbi_cfg, force=False)
             seq = self._read_fasta_sequence(fasta_path)
-            return seq, f"accession {accession}"
+            return seq, f"accession {accession} [fasta]"
         if fasta_path:
             seq = self._read_fasta_sequence(fasta_path)
-            return seq, f"fasta {fasta_path}"
+            return seq, f"fasta {fasta_path} [fasta]"
         raise ValueError("Provide a genome accession or FASTA path.")
 
     def _write_circular_pdf(self, seq: str, output_path: str, title: str) -> None:
