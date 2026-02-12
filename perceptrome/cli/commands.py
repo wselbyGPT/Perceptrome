@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import random
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -17,6 +18,20 @@ from perceptrome.cli.common import (
     _get_tok, _get_frame, _get_min_orf, _get_grounded, _get_protein_opts,
     _get_source, _ensure_record,
 )
+
+
+CATALOG_CATEGORY_FILES: Dict[str, str] = {
+    "plasmids": "plasmid_accessions.txt",
+    "viruses": "virus_accessions.txt",
+    "eukaryotes": "eukaryote_accessions.txt",
+    "viroids": "viroid_accessions.txt",
+    "bacteria": "bacteria_accessions.txt",
+    "archaea": "archaea_accessions.txt",
+    "metagenomes": "metagenome_accessions.txt",
+    "synthetic-constructs": "synthetic_construct_accessions.txt",
+    "chloroplasts": "chloroplast_accessions.txt",
+    "mitochondria": "mitochondrion_accessions.txt",
+}
 
 
 # -----------------------------
@@ -132,6 +147,75 @@ def cmd_catalog_show(args: argparse.Namespace) -> int:
         print(f"    {acc}")
     if len(accessions) > 10:
         print(f"    ... (+{len(accessions)-10} more)")
+    return 0
+
+
+def cmd_catalog_generate(args: argparse.Namespace) -> int:
+    requested_counts: Dict[str, int] = {}
+    for category in CATALOG_CATEGORY_FILES:
+        attr = category.replace("-", "_")
+        count = int(getattr(args, attr, 0) or 0)
+        if count < 0:
+            raise ValueError(f"--{category} must be >= 0 (got {count})")
+        if count > 0:
+            requested_counts[category] = count
+
+    if not requested_counts:
+        raise ValueError("No category counts requested. Set one or more --<category> flags.")
+
+    accessions_dir = "accessions"
+    rng = random.Random(args.seed) if args.seed is not None else random.Random()
+    selected: list[str] = []
+    written_set: set[str] = set()
+    per_category_written: Dict[str, int] = {}
+
+    for category, requested in requested_counts.items():
+        filename = CATALOG_CATEGORY_FILES[category]
+        path = os.path.join(accessions_dir, filename)
+
+        if category == "viruses" and not os.path.exists(path):
+            fallback = os.path.join(accessions_dir, "viroid_accessions.txt")
+            if os.path.exists(fallback):
+                path = fallback
+
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Missing accession source file for {category}: {path}")
+
+        pool = read_catalog(path)
+        if not args.allow_duplicates:
+            pool = [acc for acc in pool if acc not in written_set]
+
+        if not pool:
+            per_category_written[category] = 0
+            continue
+
+        if args.allow_duplicates:
+            choices = [rng.choice(pool) for _ in range(requested)]
+        else:
+            take = min(requested, len(pool))
+            choices = rng.sample(pool, take)
+
+        selected.extend(choices)
+        if not args.allow_duplicates:
+            written_set.update(choices)
+        per_category_written[category] = len(choices)
+
+    out_path = args.out
+    with open(out_path, "w", encoding="utf-8") as f:
+        for accession in selected:
+            f.write(f"{accession}\n")
+
+    deterministic = args.seed is not None
+    print("Catalog generation summary")
+    print(f"  output: {out_path}")
+    print(f"  deterministic: {'yes' if deterministic else 'no'}")
+    if deterministic:
+        print(f"  seed: {args.seed}")
+    print(f"  allow_duplicates: {'yes' if args.allow_duplicates else 'no'}")
+    print("  counts (requested -> written):")
+    for category, requested in requested_counts.items():
+        print(f"    {category}: {requested} -> {per_category_written.get(category, 0)}")
+    print(f"  total written: {len(selected)}")
     return 0
 
 

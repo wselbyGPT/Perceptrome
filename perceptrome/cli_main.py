@@ -5,6 +5,7 @@ from typing import Any
 from perceptrome.cli.commands import (
     cmd_init, cmd_catalog_show, cmd_fetch_one, cmd_encode_one, cmd_train_one,
     cmd_scope_one, cmd_scope_stream, cmd_stream, cmd_generate_plasmid, cmd_generate_protein,
+    cmd_catalog_generate, CATALOG_CATEGORY_FILES,
 )
 
 def build_parser() -> argparse.ArgumentParser:
@@ -14,6 +15,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("init"); s.set_defaults(func=cmd_init)
     s = sub.add_parser("catalog-show"); s.add_argument("path"); s.set_defaults(func=cmd_catalog_show)
+    s = sub.add_parser("catalog-generate")
+    s.add_argument("--out", default="custom_catalog.txt", help="Output catalog path (default: custom_catalog.txt)")
+    s.add_argument("--seed", type=int, default=None, help="Optional RNG seed for deterministic sampling")
+    s.add_argument("--allow-duplicates", action="store_true", help="Allow duplicate accession rows in output")
+    for category in CATALOG_CATEGORY_FILES:
+        s.add_argument(
+            f"--{category}",
+            type=int,
+            default=0,
+            help=f"Number of accessions to sample from {category}",
+        )
+    s.set_defaults(func=cmd_catalog_generate)
 
     s = sub.add_parser("fetch-one")
     s.add_argument("accession"); s.add_argument("--force", action="store_true")
