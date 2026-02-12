@@ -2,7 +2,9 @@ import math
 import os
 import re
 import sys
+import hashlib
 from datetime import datetime
+from typing import Any
 
 from PySide6.QtCore import Qt, QSettings
 from PySide6.QtGui import QFont, QTextCursor, QPainter, QPen, QColor, QPdfWriter
@@ -499,7 +501,54 @@ class PerceptromeQt(QMainWindow):
             return seq, f"fasta {fasta_path}"
         raise ValueError("Provide a genome accession or FASTA path.")
 
-    def _write_circular_pdf(self, seq: str, output_path: str, title: str) -> None:
+    def _stable_feature_color(self, key: str) -> QColor:
+        digest = hashlib.sha256(key.encode("utf-8")).digest()
+        hue = int(digest[0]) % 360
+        sat = 165 + (int(digest[1]) % 70)
+        val = 170 + (int(digest[2]) % 80)
+        return QColor.fromHsv(hue, min(sat, 255), min(val, 255))
+
+    def _normalize_feature(self, feature: Any, seq_len: int) -> dict[str, Any] | None:
+        if not isinstance(feature, dict):
+            return None
+        try:
+            start = int(feature.get("start", 0))
+            end = int(feature.get("end", 0))
+        except (TypeError, ValueError):
+            return None
+        if seq_len <= 0:
+            return None
+        start = max(0, min(seq_len - 1, start))
+        end = max(0, min(seq_len - 1, end))
+        if end < start:
+            start, end = end, start
+        feature_type = (feature.get("type") or "CDS").upper()
+        if feature_type != "CDS":
+            return None
+        gene = (feature.get("gene") or "").strip()
+        product = (feature.get("product") or "").strip()
+        strand = str(feature.get("strand") or "+").strip()
+        if strand not in {"+", "-"}:
+            strand = "+"
+        label = product or gene or "CDS"
+        return {
+            "start": start,
+            "end": end,
+            "gene": gene,
+            "product": product,
+            "strand": strand,
+            "label": label,
+            "length": end - start + 1,
+        }
+
+    def _write_circular_pdf(
+        self,
+        seq: str,
+        output_path: str,
+        title: str,
+        parsed_features: list[dict[str, Any]] | None = None,
+        tick_step_bp: int = 1000,
+    ) -> None:
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         writer = QPdfWriter(output_path)
         writer.setResolution(150)
@@ -508,8 +557,8 @@ class PerceptromeQt(QMainWindow):
         painter.setRenderHint(QPainter.Antialiasing)
         try:
             rect = painter.viewport()
-            side = int(min(rect.width(), rect.height()) * 0.72)
-            cx = rect.width() // 2
+            side = int(min(rect.width(), rect.height()) * 0.64)
+            cx = int(rect.width() * 0.36)
             cy = rect.height() // 2
             radius = side // 2
 
@@ -518,17 +567,139 @@ class PerceptromeQt(QMainWindow):
             if seq_len:
                 gc = (seq.count("G") + seq.count("C")) / float(seq_len)
 
-            painter.setPen(QPen(QColor("#68d5ff"), 4))
-            painter.drawEllipse(cx - radius, cy - radius, radius * 2, radius * 2)
+            norm_features = []
+            for feature in parsed_features or []:
+                norm = self._normalize_feature(feature, seq_len)
+                if norm:
+                    norm_features.append(norm)
 
+            ring_w = max(6, radius // 34)
+            track_gap = max(3, ring_w // 2)
+            track_count = max(1, min(4, math.ceil(len(norm_features) / 70) if norm_features else 1))
+            outer_radius = radius
+            feature_outer_radius = outer_radius - (ring_w + track_gap)
+            label_anchor_radius = feature_outer_radius - (track_count * (ring_w + track_gap)) - 8
+
+            painter.setPen(QPen(QColor("#68d5ff"), ring_w))
+            painter.drawEllipse(cx - outer_radius, cy - outer_radius, outer_radius * 2, outer_radius * 2)
+
+            if seq_len and tick_step_bp > 0:
+                painter.setPen(QPen(QColor("#5a6169"), 1))
+                tick_n = max(1, seq_len // tick_step_bp)
+                for i in range(tick_n + 1):
+                    bp = min(i * tick_step_bp, seq_len)
+                    angle = ((bp / seq_len) * 360.0) - 90.0
+                    rad = math.radians(angle)
+                    tick_len = 12 if bp % max(tick_step_bp * 5, 1) == 0 else 7
+                    x_outer = cx + int((outer_radius + 4) * math.cos(rad))
+                    y_outer = cy + int((outer_radius + 4) * math.sin(rad))
+                    x_inner = cx + int((outer_radius + 4 - tick_len) * math.cos(rad))
+                    y_inner = cy + int((outer_radius + 4 - tick_len) * math.sin(rad))
+                    painter.drawLine(x_inner, y_inner, x_outer, y_outer)
+                    if bp % max(tick_step_bp * 5, 1) == 0:
+                        txt = f"{bp // 1000} kb"
+                        tx = cx + int((outer_radius + 18) * math.cos(rad)) - 20
+                        ty = cy + int((outer_radius + 18) * math.sin(rad)) - 8
+                        painter.drawText(tx, ty, 40, 16, Qt.AlignCenter, txt)
+
+            legend_entries: dict[str, tuple[QColor, str]] = {}
+            label_seen: set[str] = set()
+            callouts: list[tuple[float, str, str, QColor]] = []
+
+            for idx, feature in enumerate(sorted(norm_features, key=lambda x: (x["start"], x["end"]))):
+                track_idx = idx % track_count
+                track_outer = feature_outer_radius - track_idx * (ring_w + track_gap)
+                arc_radius = track_outer - (ring_w // 2)
+                start_a = ((feature["start"] / seq_len) * 360.0) - 90.0
+                span = max(1.4, (feature["length"] / seq_len) * 360.0)
+                end_a = start_a + span
+                color_key = feature["product"] or feature["gene"] or feature["label"]
+                color = self._stable_feature_color(color_key)
+                painter.setPen(QPen(color, ring_w, Qt.SolidLine, Qt.RoundCap))
+                painter.drawArc(
+                    int(cx - arc_radius),
+                    int(cy - arc_radius),
+                    int(arc_radius * 2),
+                    int(arc_radius * 2),
+                    int(start_a * 16),
+                    int(span * 16),
+                )
+
+                arrow_angle = end_a if feature["strand"] == "+" else start_a
+                arrow_rad = math.radians(arrow_angle)
+                tip_r = arc_radius + (ring_w * 0.4)
+                base_r = arc_radius - (ring_w * 0.4)
+                tip = (cx + tip_r * math.cos(arrow_rad), cy + tip_r * math.sin(arrow_rad))
+                left = (
+                    cx + base_r * math.cos(arrow_rad + math.radians(7.5)),
+                    cy + base_r * math.sin(arrow_rad + math.radians(7.5)),
+                )
+                right = (
+                    cx + base_r * math.cos(arrow_rad - math.radians(7.5)),
+                    cy + base_r * math.sin(arrow_rad - math.radians(7.5)),
+                )
+                painter.setPen(QPen(color, 2))
+                painter.drawLine(int(left[0]), int(left[1]), int(tip[0]), int(tip[1]))
+                painter.drawLine(int(right[0]), int(right[1]), int(tip[0]), int(tip[1]))
+
+                full_label = feature["label"]
+                legend_entries.setdefault(
+                    full_label,
+                    (color, f"{full_label} ({feature['gene'] or '-'}; {feature['product'] or '-'})"),
+                )
+                label_key = f"{full_label}|{feature['strand']}"
+                if label_key in label_seen:
+                    continue
+                label_seen.add(label_key)
+
+                mid = start_a + (span / 2.0)
+                mid_rad = math.radians(mid)
+                trunc = full_label if len(full_label) <= 18 else f"{full_label[:15]}..."
+                if span >= 12.0:
+                    tx = cx + int((arc_radius - ring_w - 8) * math.cos(mid_rad)) - 35
+                    ty = cy + int((arc_radius - ring_w - 8) * math.sin(mid_rad)) - 8
+                    painter.setPen(QPen(QColor("#d9d9d9"), 1))
+                    painter.drawText(tx, ty, 70, 16, Qt.AlignCenter, trunc)
+                else:
+                    callouts.append((mid, trunc, full_label, color))
+
+            if callouts:
+                painter.setPen(QPen(QColor("#a8b0b8"), 1))
+                placed_y: list[int] = []
+                for mid, trunc, _full, _color in sorted(callouts, key=lambda t: t[0]):
+                    rad = math.radians(mid)
+                    anchor_x = cx + int(label_anchor_radius * math.cos(rad))
+                    anchor_y = cy + int(label_anchor_radius * math.sin(rad))
+                    out_x = cx + int((label_anchor_radius + 50) * math.cos(rad))
+                    out_y = cy + int((label_anchor_radius + 50) * math.sin(rad))
+                    target_y = out_y
+                    while any(abs(target_y - py) < 18 for py in placed_y):
+                        target_y += 18 if target_y >= cy else -18
+                    placed_y.append(target_y)
+                    text_w = 102
+                    text_x = out_x if out_x >= cx else out_x - text_w
+                    painter.drawLine(anchor_x, anchor_y, out_x, target_y)
+                    painter.drawText(text_x, target_y - 8, text_w, 16, Qt.AlignLeft | Qt.AlignVCenter, trunc)
+
+            legend_x = int(rect.width() * 0.66)
+            legend_y = int(rect.height() * 0.20)
+            legend_w = int(rect.width() * 0.31)
+            legend_h = int(rect.height() * 0.62)
             painter.setPen(QPen(QColor("#3b3f46"), 1))
-            for i in range(12):
-                angle = (i / 12.0) * 2.0 * math.pi
-                x_outer = cx + int(radius * 1.02 * math.cos(angle))
-                y_outer = cy + int(radius * 1.02 * math.sin(angle))
-                x_inner = cx + int(radius * 0.92 * math.cos(angle))
-                y_inner = cy + int(radius * 0.92 * math.sin(angle))
-                painter.drawLine(x_inner, y_inner, x_outer, y_outer)
+            painter.drawRect(legend_x, legend_y, legend_w, legend_h)
+            painter.setPen(QPen(QColor("#d9d9d9"), 1))
+            painter.drawText(legend_x + 10, legend_y + 8, legend_w - 20, 20, Qt.AlignLeft | Qt.AlignVCenter, "Legend")
+
+            row_y = legend_y + 30
+            for _label, (color, detail) in sorted(legend_entries.items(), key=lambda item: item[0].lower())[:24]:
+                painter.setPen(QPen(color, 5))
+                painter.drawLine(legend_x + 12, row_y + 8, legend_x + 28, row_y + 8)
+                painter.setPen(QPen(QColor("#b9c2cc"), 1))
+                txt = detail if len(detail) <= 52 else f"{detail[:49]}..."
+                painter.drawText(legend_x + 34, row_y, legend_w - 42, 16, Qt.AlignLeft | Qt.AlignVCenter, txt)
+                row_y += 18
+                if row_y > legend_y + legend_h - 20:
+                    break
 
             painter.setPen(QPen(QColor("#d9d9d9"), 2))
             painter.drawText(cx - radius, cy - radius - 40, radius * 2, 30, Qt.AlignCenter, title or "Circular genome view")
