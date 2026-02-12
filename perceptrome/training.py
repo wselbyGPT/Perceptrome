@@ -103,6 +103,7 @@ def train_on_encoded(
     transformer_nhead = train_cfg.transformer_nhead
     transformer_layers = train_cfg.transformer_layers
     transformer_dropout = train_cfg.transformer_dropout
+    dnabert_kmer = train_cfg.dnabert_kmer
 
     lt = _default_loss_type(tokenizer) if loss_type is None else str(loss_type).lower()
     mp = float(mask_prob) if mask_prob is not None else float(getattr(train_cfg, 'aa_mask_prob', 0.05 if str(tokenizer).lower() == 'aa' else 0.0))
@@ -123,6 +124,7 @@ def train_on_encoded(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        dnabert_kmer=dnabert_kmer,
     )
 
     windows_tensor = torch.from_numpy(encoded)  # (N, L, V)
@@ -202,6 +204,7 @@ def train_on_encoded(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        dnabert_kmer=dnabert_kmer,
     )
 
     return last_total
@@ -237,6 +240,7 @@ def compute_window_errors(
     transformer_nhead = train_cfg.transformer_nhead
     transformer_layers = train_cfg.transformer_layers
     transformer_dropout = train_cfg.transformer_dropout
+    dnabert_kmer = train_cfg.dnabert_kmer
 
     lt = _default_loss_type(tokenizer) if loss_type is None else str(loss_type).lower()
 
@@ -254,6 +258,7 @@ def compute_window_errors(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        dnabert_kmer=dnabert_kmer,
     )
 
     model.eval()

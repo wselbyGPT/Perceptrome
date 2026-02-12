@@ -375,6 +375,7 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
     transformer_nhead = train_cfg.transformer_nhead
     transformer_layers = train_cfg.transformer_layers
     transformer_dropout = train_cfg.transformer_dropout
+    dnabert_kmer = train_cfg.dnabert_kmer
 
     lt = (args.loss_type if getattr(args, "loss_type", None) is not None else ("ce" if tok == "aa" else "mse"))
 
@@ -387,6 +388,7 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        dnabert_kmer=dnabert_kmer,
     )
 
     windows_tensor = torch.from_numpy(encoded)

@@ -12,6 +12,12 @@ training:
   max_stream_epochs: 10
   shuffle_catalog: true
   hidden_dim: 512
+  model_type: cnn      # mlp|cnn|transformer|dnabert
+  transformer_d_model: 256
+  transformer_nhead: 8
+  transformer_layers: 4
+  transformer_dropout: 0.1
+  dnabert_kmer: 6
   learning_rate: 1.0e-3
   beta_kl: 1.0e-3
   kl_warmup_steps: 5000

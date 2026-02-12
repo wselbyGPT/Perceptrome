@@ -25,11 +25,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_stream_epochs": 100,
         "shuffle_catalog": True,
         "hidden_dim": 512,
-        "model_type": "mlp",
+        "model_type": "cnn",
         "transformer_d_model": 256,
         "transformer_nhead": 8,
         "transformer_layers": 4,
         "transformer_dropout": 0.1,
+        "dnabert_kmer": 6,
         "learning_rate": 1e-3,
         "beta_kl": 1e-3,
         "kl_warmup_steps": 10000,
@@ -130,6 +131,7 @@ class TrainingConfig:
     transformer_nhead: int
     transformer_layers: int
     transformer_dropout: float
+    dnabert_kmer: int
     learning_rate: float
     beta_kl: float
     kl_warmup_steps: int
@@ -266,6 +268,7 @@ def extract_configs(cfg: Dict[str, Any]) -> Tuple[NCBIConfig, TrainingConfig, IO
         transformer_nhead=int(t.get("transformer_nhead", 8)),
         transformer_layers=int(t.get("transformer_layers", 4)),
         transformer_dropout=float(t.get("transformer_dropout", 0.1)),
+        dnabert_kmer=int(t.get("dnabert_kmer", 6)),
         learning_rate=float(t.get("learning_rate", 1e-3)),
         beta_kl=float(t.get("beta_kl", 1e-3)),
         kl_warmup_steps=int(t.get("kl_warmup_steps", 10000)),

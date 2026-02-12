@@ -83,7 +83,8 @@ def generate_plasmid_sequence(
     transformer_nhead = train_cfg.transformer_nhead
     transformer_layers = train_cfg.transformer_layers
     transformer_dropout = train_cfg.transformer_dropout
-    latent_dim = transformer_d_model if str(model_type).lower() == "transformer" else hidden_dim
+    dnabert_kmer = train_cfg.dnabert_kmer
+    latent_dim = transformer_d_model if str(model_type).lower() in ("transformer", "dnabert") else hidden_dim
 
     model, optimizer, global_step, ckpt_path = load_or_init_model(
         io_cfg=io_cfg,
@@ -99,6 +100,7 @@ def generate_plasmid_sequence(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        dnabert_kmer=dnabert_kmer,
     )
     model.eval()
 
@@ -187,7 +189,8 @@ def generate_protein_sequence(
     transformer_nhead = train_cfg.transformer_nhead
     transformer_layers = train_cfg.transformer_layers
     transformer_dropout = train_cfg.transformer_dropout
-    latent_dim = transformer_d_model if str(model_type).lower() == "transformer" else hidden_dim
+    dnabert_kmer = train_cfg.dnabert_kmer
+    latent_dim = transformer_d_model if str(model_type).lower() in ("transformer", "dnabert") else hidden_dim
 
     model, optimizer, global_step, ckpt_path = load_or_init_model(
         io_cfg=io_cfg,
@@ -203,6 +206,7 @@ def generate_protein_sequence(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        dnabert_kmer=dnabert_kmer,
     )
     model.eval()
 
