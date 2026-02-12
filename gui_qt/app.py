@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QPushButton,
     QPlainTextEdit, QProgressBar,
     QSpinBox, QDoubleSpinBox, QGroupBox,
-    QTableWidget, QTableWidgetItem, QHeaderView
+    QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox
 )
 
 from .theme import apply_dark_mode
@@ -23,6 +23,7 @@ from .runner import ProcessRunner
 from perceptrome.config import load_full_config, extract_configs
 from perceptrome.io_utils import ensure_dirs
 from perceptrome.ncbi_fetch import fetch_fasta
+from perceptrome.annotation import GenBankBuilderConfig, build_genbank_from_fasta_file
 
 
 PCT_RE = re.compile(r"(\d{1,3})\s*%")
@@ -248,12 +249,18 @@ class PerceptromeQt(QMainWindow):
 
         output_group = QGroupBox("PDF output")
         output_layout = QFormLayout(output_group)
+        self.view_generate_gb = QCheckBox("Generate GenBank (.gb) from FASTA before rendering PDF")
+        self.view_generate_gb.setChecked(False)
+        self.view_gb_path = QLineEdit()
+        self.view_gb_path.setPlaceholderText("generated/<name>.gb")
         self.view_pdf_path = QLineEdit()
         self.view_pdf_path.setPlaceholderText("generated/circular_genome.pdf")
         self.view_title = QLineEdit()
         self.view_title.setPlaceholderText("Optional title override")
         output_layout.addRow("Output PDF:", self.view_pdf_path)
         output_layout.addRow("Title:", self.view_title)
+        output_layout.addRow("", self.view_generate_gb)
+        output_layout.addRow("Output GenBank:", self.view_gb_path)
 
         btn_row = QHBoxLayout()
         self.btn_view_generate = QPushButton("Generate PDF")
@@ -297,6 +304,8 @@ class PerceptromeQt(QMainWindow):
         self.settings.setValue("view_fasta_path", self.view_fasta_path.text().strip())
         self.settings.setValue("view_pdf_path", self.view_pdf_path.text().strip())
         self.settings.setValue("view_title", self.view_title.text().strip())
+        self.settings.setValue("view_generate_gb", bool(self.view_generate_gb.isChecked()))
+        self.settings.setValue("view_gb_path", self.view_gb_path.text().strip())
         self.settings.sync()
 
         self.cfg_status.setText(f"Saved at {now_str()}")
@@ -317,6 +326,8 @@ class PerceptromeQt(QMainWindow):
         self.view_fasta_path.setText(self.settings.value("view_fasta_path", "generated/novel_plasmid.fasta"))
         self.view_pdf_path.setText(self.settings.value("view_pdf_path", "generated/circular_genome.pdf"))
         self.view_title.setText(self.settings.value("view_title", ""))
+        self.view_generate_gb.setChecked(str(self.settings.value("view_generate_gb", "false")).lower() in ("1", "true", "yes"))
+        self.view_gb_path.setText(self.settings.value("view_gb_path", ""))
 
         self.cfg_status.setText("Loaded saved config (if any).")
 
@@ -483,7 +494,7 @@ class PerceptromeQt(QMainWindow):
                 seq_parts.append(line)
         return "".join(seq_parts)
 
-    def _resolve_genome_sequence(self) -> tuple[str, str]:
+    def _resolve_genome_sequence(self) -> tuple[str, str, str]:
         accession = self.view_accession.text().strip()
         fasta_path = self.view_fasta_path.text().strip()
         if accession:
@@ -493,10 +504,10 @@ class PerceptromeQt(QMainWindow):
             ensure_dirs(io_cfg)
             fasta_path = fetch_fasta(accession, io_cfg, ncbi_cfg, force=False)
             seq = self._read_fasta_sequence(fasta_path)
-            return seq, f"accession {accession}"
+            return seq, f"accession {accession}", fasta_path
         if fasta_path:
             seq = self._read_fasta_sequence(fasta_path)
-            return seq, f"fasta {fasta_path}"
+            return seq, f"fasta {fasta_path}", fasta_path
         raise ValueError("Provide a genome accession or FASTA path.")
 
     def _write_circular_pdf(self, seq: str, output_path: str, title: str) -> None:
@@ -542,9 +553,15 @@ class PerceptromeQt(QMainWindow):
     def _view_generate_pdf(self):
         self.view_log.clear()
         try:
-            seq, source = self._resolve_genome_sequence()
+            seq, source, fasta_path = self._resolve_genome_sequence()
             output_path = self.view_pdf_path.text().strip() or "generated/circular_genome.pdf"
             title = self.view_title.text().strip() or f"Circular genome ({source})"
+            if self.view_generate_gb.isChecked():
+                gb_cfg = GenBankBuilderConfig(min_orf_aa=90, start_codons=("ATG",), include_partial_cds=True)
+                gb_path = self.view_gb_path.text().strip() or None
+                gb_out = build_genbank_from_fasta_file(fasta_path, output_path=gb_path, config=gb_cfg)
+                self._append_log(self.view_log, f"[{now_str()}] Saved GenBank -> {gb_out}\n")
+
             self._append_log(self.view_log, f"[{now_str()}] Generating PDF from {source}\n")
             self._write_circular_pdf(seq, output_path, title)
             self._append_log(self.view_log, f"[{now_str()}] Saved PDF -> {output_path}\n")

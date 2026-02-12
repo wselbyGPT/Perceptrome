@@ -5,6 +5,7 @@ from typing import Any
 from perceptrome.cli.commands import (
     cmd_init, cmd_catalog_show, cmd_fetch_one, cmd_encode_one, cmd_train_one,
     cmd_scope_one, cmd_scope_stream, cmd_stream, cmd_generate_plasmid, cmd_generate_protein,
+    cmd_build_genbank,
 )
 
 def build_parser() -> argparse.ArgumentParser:
@@ -121,6 +122,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--gc-bias", type=float, default=1.0)
     add_tok_args(s)
     s.set_defaults(func=cmd_generate_plasmid)
+
+    s = sub.add_parser("build-genbank")
+    s.add_argument("fasta_path", help="Input FASTA path")
+    s.add_argument("--output", default=None, help="Output GenBank path (default: generated/<name>.gb)")
+    s.add_argument("--min-orf-aa", type=int, default=90, help="Minimum ORF length (aa)")
+    s.add_argument("--start-codons", default="ATG", help="Comma-separated start codons (default: ATG)")
+    s.add_argument("--include-partial-cds", action="store_true", help="Include ORFs without terminal stop codon")
+    s.add_argument("--allow-no-start", action="store_true", help="Allow ORFs to start without a configured start codon")
+    s.set_defaults(func=cmd_build_genbank)
 
     s = sub.add_parser("generate-protein")
     s.add_argument("--length-aa", type=int, default=600)

@@ -5,6 +5,8 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
+from perceptrome.annotation import GenBankBuilderConfig, build_genbank_from_fasta_file
+
 from perceptrome.cli.common import (
     extract_configs, load_full_config,
     compute_gc_from_encoded, encode_accession,
@@ -559,4 +561,16 @@ def cmd_generate_protein(args: argparse.Namespace) -> int:
         reject_max_x_frac=float(getattr(args, "reject_max_x_frac", 0.15)),
     )
     print(f"[generate-protein] wrote {len(seq)} aa -> {args.output}")
+    return 0
+
+
+def cmd_build_genbank(args: argparse.Namespace) -> int:
+    cfg = GenBankBuilderConfig(
+        min_orf_aa=int(args.min_orf_aa),
+        start_codons=tuple(c.strip().upper() for c in args.start_codons.split(",") if c.strip()),
+        include_partial_cds=bool(args.include_partial_cds),
+        allow_no_start=bool(args.allow_no_start),
+    )
+    out = build_genbank_from_fasta_file(args.fasta_path, output_path=args.output, config=cfg)
+    print(f"[build-genbank] wrote {out}")
     return 0
