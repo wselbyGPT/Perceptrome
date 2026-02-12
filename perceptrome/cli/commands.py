@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import os
 from typing import Any, Dict, Optional, Tuple
@@ -559,4 +560,137 @@ def cmd_generate_protein(args: argparse.Namespace) -> int:
         reject_max_x_frac=float(getattr(args, "reject_max_x_frac", 0.15)),
     )
     print(f"[generate-protein] wrote {len(seq)} aa -> {args.output}")
+    return 0
+
+
+def _read_first_fasta_sequence(path: str) -> str:
+    seq_chunks = []
+    with open(path, "r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith(">"):
+                continue
+            seq_chunks.append(line)
+    return "".join(seq_chunks).upper()
+
+
+def _normalized_distance(a: str, b: str) -> float:
+    if not a and not b:
+        return 0.0
+    if not a or not b:
+        return 1.0
+    max_len = max(len(a), len(b))
+    matches = sum(1 for x, y in zip(a, b) if x == y)
+    return float(max_len - matches) / float(max_len)
+
+
+def cmd_validate_plasmid(args: argparse.Namespace) -> int:
+    cfg = load_full_config(args.config)
+    ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
+    ensure_dirs(io_cfg)
+    setup_logging(io_cfg.logs_dir)
+
+    train_logger = logging.getLogger()
+    fetch_logger = logging.getLogger("fetch")
+
+    generated_seq = _read_first_fasta_sequence(args.generated)
+    if not generated_seq:
+        raise ValueError(f"Generated FASTA contains no sequence: {args.generated}")
+
+    accessions = read_catalog(args.catalog)
+    max_refs = max(1, int(args.max_references))
+    selected = accessions[:max_refs]
+
+    train_logger.info(
+        "[validate-plasmid] generated=%s catalog=%s selected=%d/%d",
+        args.generated,
+        args.catalog,
+        len(selected),
+        len(accessions),
+    )
+    fetch_logger.info(
+        "[validate-plasmid] starting fetch for %d references (force=%s)",
+        len(selected),
+        bool(args.force_fetch),
+    )
+
+    metrics = []
+    for idx, accession in enumerate(selected, start=1):
+        train_logger.info("[validate-plasmid] (%d/%d) accession=%s", idx, len(selected), accession)
+        fetch_fasta(accession, io_cfg, ncbi_cfg, force=bool(args.force_fetch))
+
+        fasta_path = os.path.join(io_cfg.cache_fasta_dir, f"{accession}.fasta")
+        ref_seq = _read_first_fasta_sequence(fasta_path)
+        if not ref_seq:
+            train_logger.warning("[validate-plasmid] accession=%s has empty FASTA, skipping", accession)
+            continue
+
+        distance = _normalized_distance(generated_seq, ref_seq)
+        identity = 1.0 - distance
+        passed = bool(distance <= float(args.pass_threshold))
+        metrics.append({
+            "accession": accession,
+            "distance": distance,
+            "identity": identity,
+            "reference_length": len(ref_seq),
+            "generated_length": len(generated_seq),
+            "pass": passed,
+        })
+
+    if not metrics:
+        raise RuntimeError("No reference metrics were computed; all fetched FASTA files were empty or missing.")
+
+    metrics.sort(key=lambda x: x["distance"])
+    distances = np.array([m["distance"] for m in metrics], dtype=np.float64)
+    median_distance = float(np.median(distances))
+    best = metrics[0]
+    pass_count = int(sum(1 for m in metrics if m["pass"]))
+
+    for m in metrics:
+        d = m["distance"]
+        pct = float(np.mean(distances >= d) * 100.0)
+        m["percentile_rank"] = pct
+
+    summary = {
+        "generated_path": args.generated,
+        "catalog": args.catalog,
+        "references_requested": int(max_refs),
+        "references_compared": len(metrics),
+        "best_match": {
+            "accession": best["accession"],
+            "distance": float(best["distance"]),
+            "identity": float(best["identity"]),
+            "percentile_rank": float(best["percentile_rank"]),
+        },
+        "median_distance": median_distance,
+        "pass_threshold": float(args.pass_threshold),
+        "pass_count": pass_count,
+        "pass_rate": float(pass_count) / float(len(metrics)),
+        "overall_pass": bool(best["distance"] <= float(args.pass_threshold)),
+    }
+
+    print("[validate-plasmid] Summary")
+    print(f"  Generated: {args.generated}")
+    print(f"  Catalog: {args.catalog}")
+    print(f"  Compared references: {len(metrics)} (requested max {max_refs})")
+    print(f"  Best match: {best['accession']} (distance={best['distance']:.4f}, percentile={best['percentile_rank']:.1f})")
+    print(f"  Median distance: {median_distance:.4f}")
+    print(f"  Pass threshold: {float(args.pass_threshold):.4f}")
+    print(f"  Pass count: {pass_count}/{len(metrics)} ({summary['pass_rate']*100.0:.1f}%)")
+    print(f"  Overall pass: {'YES' if summary['overall_pass'] else 'NO'}")
+
+    train_logger.info("[validate-plasmid] best=%s median=%.4f pass=%d/%d overall=%s",
+                      best["accession"], median_distance, pass_count, len(metrics), summary["overall_pass"])
+    fetch_logger.info("[validate-plasmid] completed reference validation for %d accessions", len(metrics))
+
+    if args.json_report:
+        report = {
+            "summary": summary,
+            "accessions": metrics,
+        }
+        os.makedirs(os.path.dirname(args.json_report) or ".", exist_ok=True)
+        with open(args.json_report, "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=2)
+        print(f"  JSON report: {args.json_report}")
+
     return 0

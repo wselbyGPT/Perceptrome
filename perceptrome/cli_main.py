@@ -5,6 +5,7 @@ from typing import Any
 from perceptrome.cli.commands import (
     cmd_init, cmd_catalog_show, cmd_fetch_one, cmd_encode_one, cmd_train_one,
     cmd_scope_one, cmd_scope_stream, cmd_stream, cmd_generate_plasmid, cmd_generate_protein,
+    cmd_validate_plasmid,
 )
 
 def build_parser() -> argparse.ArgumentParser:
@@ -136,6 +137,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reject-max-run", type=int, default=10, help="Reject if any AA repeats longer than this")
     s.add_argument("--reject-max-x-frac", type=float, default=0.15, help="Reject if fraction of 'X' exceeds this")
     s.set_defaults(func=cmd_generate_protein)
+
+    s = sub.add_parser("validate-plasmid")
+    s.add_argument("--generated", required=True, help="Generated plasmid FASTA path")
+    s.add_argument("--catalog", required=True, help="Catalog of reference accessions")
+    s.add_argument("--max-references", type=int, default=25, help="Maximum number of catalog accessions to validate against")
+    s.add_argument("--pass-threshold", type=float, default=0.35, help="Distance threshold for accession/overall pass")
+    s.add_argument("--force-fetch", action="store_true", help="Force re-fetch from NCBI even if cached")
+    s.add_argument("--json-report", default=None, help="Optional JSON output path for detailed report")
+    s.set_defaults(func=cmd_validate_plasmid)
 
     return p
 
