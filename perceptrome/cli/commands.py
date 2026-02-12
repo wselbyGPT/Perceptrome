@@ -1,7 +1,8 @@
 import argparse
 import logging
 import os
-from typing import Any, Dict, Optional, Tuple
+import random
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -17,6 +18,23 @@ from perceptrome.cli.common import (
     _get_tok, _get_frame, _get_min_orf, _get_grounded, _get_protein_opts,
     _get_source, _ensure_record,
 )
+
+
+# User-facing accession categories used by catalog-build.
+# NOTE: "viruses" currently maps to the curated viroid list because this
+# repository does not yet include a dedicated accessions/virus_accessions.txt file.
+CATEGORY_ACCESSION_PATHS: Dict[str, str] = {
+    "archaea": "accessions/archaea_accessions.txt",
+    "bacteria": "accessions/bacteria_accessions.txt",
+    "chloroplast": "accessions/chloroplast_accessions.txt",
+    "eukaryote": "accessions/eukaryote_accessions.txt",
+    "metagenome": "accessions/metagenome_accessions.txt",
+    "mitochondrion": "accessions/mitochondrion_accessions.txt",
+    "plasmid": "accessions/plasmid_accessions.txt",
+    "synthetic_construct": "accessions/synthetic_construct_accessions.txt",
+    "viroid": "accessions/viroid_accessions.txt",
+    "viruses": "accessions/viroid_accessions.txt",
+}
 
 
 # -----------------------------
@@ -111,6 +129,76 @@ def _cache_kwargs(tok: str, min_orf: int, pol: Dict[str, Any]) -> Dict[str, Any]
     return kw
 
 
+def _read_normalized_unique_accessions(path: str) -> List[str]:
+    """Read one accession per line, skipping comments/blank lines and de-duplicating."""
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Accession source file not found: {path}")
+
+    seen = set()
+    accessions: List[str] = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            acc = line.split()[0]
+            if acc in seen:
+                continue
+            seen.add(acc)
+            accessions.append(acc)
+    return accessions
+
+
+def _parse_category_counts(raw_counts: List[str]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for raw in raw_counts:
+        if "=" not in raw:
+            raise ValueError(f"Invalid --count '{raw}'. Use --count <category>=<count>.")
+        category, value = raw.split("=", 1)
+        category = category.strip().lower()
+        value = value.strip()
+        if category not in CATEGORY_ACCESSION_PATHS:
+            available = ", ".join(sorted(CATEGORY_ACCESSION_PATHS))
+            raise ValueError(f"Unknown category '{category}'. Available categories: {available}.")
+        try:
+            count = int(value)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid count for category '{category}': '{value}'. Count must be a non-negative integer."
+            ) from exc
+        if count < 0:
+            raise ValueError(
+                f"Invalid count for category '{category}': {count}. Count must be a non-negative integer."
+            )
+        counts[category] = counts.get(category, 0) + count
+    return counts
+
+
+def _build_catalog_from_category_counts(
+    category_counts: Dict[str, int],
+    allow_duplicates: bool,
+    seed: Optional[int],
+) -> List[str]:
+    rng = random.Random(seed)
+    combined: List[str] = []
+    for category, requested_count in category_counts.items():
+        pool = _read_normalized_unique_accessions(CATEGORY_ACCESSION_PATHS[category])
+        available_count = len(pool)
+        if requested_count > available_count and not allow_duplicates:
+            raise ValueError(
+                "Requested count exceeds available unique accessions for "
+                f"category '{category}': requested={requested_count}, available={available_count}. "
+                "Either lower the count or pass --allow-duplicates."
+            )
+        if requested_count == 0 or available_count == 0:
+            continue
+        if allow_duplicates:
+            combined.extend(rng.choice(pool) for _ in range(requested_count))
+        else:
+            combined.extend(rng.sample(pool, requested_count))
+    return combined
+
+
 # -----------------------------
 # Commands
 # -----------------------------
@@ -132,6 +220,26 @@ def cmd_catalog_show(args: argparse.Namespace) -> int:
         print(f"    {acc}")
     if len(accessions) > 10:
         print(f"    ... (+{len(accessions)-10} more)")
+    return 0
+
+
+def cmd_catalog_build(args: argparse.Namespace) -> int:
+    category_counts = _parse_category_counts(args.count)
+    accessions = _build_catalog_from_category_counts(
+        category_counts,
+        allow_duplicates=bool(args.allow_duplicates),
+        seed=args.seed,
+    )
+
+    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+    with open(args.output, "w", encoding="utf-8") as f:
+        for acc in accessions:
+            f.write(f"{acc}\n")
+
+    print(
+        f"Wrote {len(accessions)} accessions to {args.output} "
+        f"from categories: {', '.join(f'{k}={v}' for k, v in category_counts.items())}"
+    )
     return 0
 
 
