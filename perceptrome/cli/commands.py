@@ -531,6 +531,10 @@ def cmd_generate_plasmid(args: argparse.Namespace) -> int:
         name=args.name,
         output_path=args.output,
         tokenizer=tok,
+        generator_mode=(getattr(args, "generator_mode", None) or getattr(train_cfg, "generation_mode", "vae")),
+        diffusion_steps=int(getattr(args, "diffusion_steps", None) if getattr(args, "diffusion_steps", None) is not None else getattr(train_cfg, "generation_diffusion_steps", 24)),
+        diffusion_eta=float(getattr(args, "diffusion_eta", None) if getattr(args, "diffusion_eta", None) is not None else getattr(train_cfg, "generation_diffusion_eta", 0.35)),
+        diffusion_noise=float(getattr(args, "diffusion_noise", None) if getattr(args, "diffusion_noise", None) is not None else getattr(train_cfg, "generation_diffusion_noise", 0.10)),
     )
     print(f"[generate-plasmid] tokenizer={tok} wrote {len(seq)} bp -> {args.output}")
     return 0
@@ -559,6 +563,10 @@ def cmd_generate_protein(args: argparse.Namespace) -> int:
         reject_tries=int(getattr(args, "reject_tries", 40)),
         reject_max_run=int(getattr(args, "reject_max_run", 10)),
         reject_max_x_frac=float(getattr(args, "reject_max_x_frac", 0.15)),
+        generator_mode=(getattr(args, "generator_mode", None) or getattr(train_cfg, "generation_mode", "vae")),
+        diffusion_steps=int(getattr(args, "diffusion_steps", None) if getattr(args, "diffusion_steps", None) is not None else getattr(train_cfg, "generation_diffusion_steps", 24)),
+        diffusion_eta=float(getattr(args, "diffusion_eta", None) if getattr(args, "diffusion_eta", None) is not None else getattr(train_cfg, "generation_diffusion_eta", 0.35)),
+        diffusion_noise=float(getattr(args, "diffusion_noise", None) if getattr(args, "diffusion_noise", None) is not None else getattr(train_cfg, "generation_diffusion_noise", 0.10)),
     )
     print(f"[generate-protein] wrote {len(seq)} aa -> {args.output}")
     return 0

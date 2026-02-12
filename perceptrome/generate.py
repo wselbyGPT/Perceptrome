@@ -47,6 +47,46 @@ def _passes_protein_filters(seq: str, max_run: int, max_x_frac: float) -> bool:
             return False
     return True
 
+
+def _latent_diffusion_refine(
+    model,
+    latent_dim: int,
+    seq_len: int,
+    vocab_size: int,
+    device: "torch.device",
+    loss_type: str,
+    latent_scale: float,
+    diffusion_steps: int,
+    diffusion_eta: float,
+    diffusion_noise: float,
+) -> "torch.Tensor":
+    """Diffusion-like latent refinement using the trained VAE as denoiser.
+
+    Start from Gaussian noise (VAE baseline), then iteratively decode->re-encode
+    to pull the sample toward high-density latent regions while injecting annealed
+    noise for novelty.
+    """
+    if torch is None:
+        raise RuntimeError("PyTorch not installed.")
+
+    steps = max(1, int(diffusion_steps))
+    eta = float(diffusion_eta)
+    noise = max(0.0, float(diffusion_noise))
+
+    z = torch.randn(1, int(latent_dim), device=device) * float(latent_scale)
+    for t in range(steps):
+        frac = 1.0 - (t / float(max(1, steps - 1)))
+        logits = model.decode(z).view(1, int(seq_len), int(vocab_size))
+        if str(loss_type).lower() == "ce":
+            probs = torch.softmax(logits, dim=-1)
+        else:
+            probs = torch.sigmoid(logits)
+        mu, _ = model.encode(probs.view(1, -1))
+        z = (1.0 - eta) * z + eta * mu
+        if noise > 0:
+            z = z + torch.randn_like(z) * (noise * frac)
+    return z
+
 def generate_plasmid_sequence(
     train_cfg: TrainingConfig,
     io_cfg: IOConfig,
@@ -60,6 +100,10 @@ def generate_plasmid_sequence(
     name: str,
     output_path: str,
     tokenizer: str,
+    generator_mode: str = "vae",
+    diffusion_steps: int = 24,
+    diffusion_eta: float = 0.35,
+    diffusion_noise: float = 0.10,
 ) -> str:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -119,7 +163,21 @@ def generate_plasmid_sequence(
 
     with torch.no_grad():
         for _ in range(n_windows):
-            z = torch.randn(1, latent_dim, device=device) * latent_scale
+            if str(generator_mode).lower() == "diffusion":
+                z = _latent_diffusion_refine(
+                    model=model,
+                    latent_dim=latent_dim,
+                    seq_len=seq_len,
+                    vocab_size=vocab_size,
+                    device=device,
+                    loss_type="mse",
+                    latent_scale=latent_scale,
+                    diffusion_steps=diffusion_steps,
+                    diffusion_eta=diffusion_eta,
+                    diffusion_noise=diffusion_noise,
+                )
+            else:
+                z = torch.randn(1, latent_dim, device=device) * latent_scale
             logits_flat = model.decode(z)   # (1, seq_len*vocab)
             logits = logits_flat.view(seq_len, vocab_size).cpu().numpy()
 
@@ -170,6 +228,10 @@ def generate_protein_sequence(
     reject_tries: int = 40,
     reject_max_run: int = 10,
     reject_max_x_frac: float = 0.15,
+    generator_mode: str = "vae",
+    diffusion_steps: int = 24,
+    diffusion_eta: float = 0.35,
+    diffusion_noise: float = 0.10,
 ) -> str:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -224,7 +286,21 @@ def generate_protein_sequence(
         aa_chars: List[str] = []
         with torch.no_grad():
             for _ in range(n_windows):
-                z = torch.randn(1, latent_dim, device=device) * latent_scale
+                if str(generator_mode).lower() == "diffusion":
+                    z = _latent_diffusion_refine(
+                        model=model,
+                        latent_dim=latent_dim,
+                        seq_len=seq_len,
+                        vocab_size=vocab_size,
+                        device=device,
+                        loss_type="ce",
+                        latent_scale=latent_scale,
+                        diffusion_steps=diffusion_steps,
+                        diffusion_eta=diffusion_eta,
+                        diffusion_noise=diffusion_noise,
+                    )
+                else:
+                    z = torch.randn(1, latent_dim, device=device) * latent_scale
                 logits_flat = model.decode(z)
                 logits = logits_flat.view(seq_len, vocab_size).cpu().numpy()
                 for j in range(seq_len):

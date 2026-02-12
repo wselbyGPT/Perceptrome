@@ -14,8 +14,9 @@ except ImportError:
 
 from .config import IOConfig
 
+_TORCH_MODULE_BASE = nn.Module if nn is not None else object
 
-class TransformerVAE(nn.Module):  # type: ignore[misc]
+class TransformerVAE(_TORCH_MODULE_BASE):  # type: ignore[misc]
     def __init__(
         self,
         seq_len: int,
@@ -93,7 +94,7 @@ class TransformerVAE(nn.Module):  # type: ignore[misc]
         return self.decode(z), mu, logvar
 
 
-class CNNVAE(nn.Module):  # type: ignore[misc]
+class CNNVAE(_TORCH_MODULE_BASE):  # type: ignore[misc]
     def __init__(self, seq_len: int, vocab_size: int, hidden_dim: int, dropout: float = 0.1):
         if torch is None or nn is None:
             raise RuntimeError("PyTorch is required for CNNVAE.")
@@ -162,7 +163,7 @@ class CNNVAE(nn.Module):  # type: ignore[misc]
         return self.decode(z), mu, logvar
 
 
-class DNABertVAE(nn.Module):  # type: ignore[misc]
+class DNABertVAE(_TORCH_MODULE_BASE):  # type: ignore[misc]
     def __init__(
         self,
         seq_len: int,
@@ -278,7 +279,7 @@ class DNABertVAE(nn.Module):  # type: ignore[misc]
         return self.decode(z), mu, logvar
 
 
-class PlasmidVAE(nn.Module):  # type: ignore[misc]
+class PlasmidVAE(_TORCH_MODULE_BASE):  # type: ignore[misc]
     def __init__(self, input_dim: int, hidden_dim: int):
         if torch is None or nn is None:
             raise RuntimeError("PyTorch is required for PlasmidVAE.")

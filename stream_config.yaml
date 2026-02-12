@@ -18,6 +18,10 @@ training:
   transformer_layers: 4
   transformer_dropout: 0.1
   dnabert_kmer: 6
+  generation_mode: vae
+  generation_diffusion_steps: 24
+  generation_diffusion_eta: 0.35
+  generation_diffusion_noise: 0.10
   learning_rate: 1.0e-3
   beta_kl: 1.0e-3
   kl_warmup_steps: 5000
