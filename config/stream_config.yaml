@@ -1,3 +1,8 @@
+# Catalog tip: generate one with
+#   perceptrome catalog-generate --categories plasmid bacteria --output config/custom_catalog.txt
+# then stream with
+#   perceptrome stream --catalog config/custom_catalog.txt
+
 ncbi:
   email: "you@example.com"   # put your real email if you want to be nice to NCBI
   api_key: null

@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import random
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -132,6 +133,58 @@ def cmd_catalog_show(args: argparse.Namespace) -> int:
         print(f"    {acc}")
     if len(accessions) > 10:
         print(f"    ... (+{len(accessions)-10} more)")
+    return 0
+
+
+def cmd_catalog_generate(args: argparse.Namespace) -> int:
+    base_dir = getattr(args, "accessions_dir", "accessions")
+    category_map = {
+        "archaea": "archaea_accessions.txt",
+        "bacteria": "bacteria_accessions.txt",
+        "chloroplast": "chloroplast_accessions.txt",
+        "eukaryote": "eukaryote_accessions.txt",
+        "metagenome": "metagenome_accessions.txt",
+        "mitochondrion": "mitochondrion_accessions.txt",
+        "plasmid": "plasmid_accessions.txt",
+        "synthetic_construct": "synthetic_construct_accessions.txt",
+        # NOTE: this project currently uses viroid accessions for "viruses".
+        "viruses": "viroid_accessions.txt",
+        "viroid": "viroid_accessions.txt",
+    }
+
+    categories = [c.strip().lower() for c in args.categories if str(c).strip()]
+    if not categories:
+        raise ValueError("No categories provided; pass one or more categories.")
+
+    combined = []
+    seen = set()
+    for cat in categories:
+        if cat not in category_map:
+            choices = ", ".join(sorted(category_map.keys()))
+            raise ValueError(f"Unknown category '{cat}'. Valid categories: {choices}")
+        path = os.path.join(base_dir, category_map[cat])
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Category source file missing: {path}")
+        for acc in read_catalog(path):
+            if acc not in seen:
+                seen.add(acc)
+                combined.append(acc)
+
+    if getattr(args, "shuffle", False):
+        random.Random(args.seed).shuffle(combined)
+
+    if getattr(args, "limit", None):
+        combined = combined[: int(args.limit)]
+
+    out_path = args.output
+    out_dir = os.path.dirname(out_path) or "."
+    os.makedirs(out_dir, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        for acc in combined:
+            f.write(acc + "\n")
+
+    print(f"Wrote {len(combined)} accessions to {out_path}")
+    print(f"Categories: {', '.join(categories)}")
     return 0
 
 

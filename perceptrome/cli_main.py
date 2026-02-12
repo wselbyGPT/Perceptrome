@@ -5,6 +5,7 @@ from typing import Any
 from perceptrome.cli.commands import (
     cmd_init, cmd_catalog_show, cmd_fetch_one, cmd_encode_one, cmd_train_one,
     cmd_scope_one, cmd_scope_stream, cmd_stream, cmd_generate_plasmid, cmd_generate_protein,
+    cmd_catalog_generate,
 )
 
 def build_parser() -> argparse.ArgumentParser:
@@ -14,6 +15,37 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("init"); s.set_defaults(func=cmd_init)
     s = sub.add_parser("catalog-show"); s.add_argument("path"); s.set_defaults(func=cmd_catalog_show)
+
+    s = sub.add_parser(
+        "catalog-generate",
+        help="Build a training catalog by combining accession category files.",
+        description=(
+            "Generate a catalog file by merging one or more category lists from the accessions directory. "
+            "Use the resulting file with 'perceptrome stream --catalog <path>'."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  perceptrome catalog-generate --categories plasmid bacteria --output custom_catalog.txt\n"
+            "  perceptrome catalog-generate --categories viruses --output catalogs/virus_like.txt\n"
+            "  perceptrome stream --catalog custom_catalog.txt --max-epochs 3"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    s.add_argument(
+        "--categories",
+        nargs="+",
+        required=True,
+        help=(
+            "Categories to include. Supported: archaea, bacteria, chloroplast, eukaryote, "
+            "metagenome, mitochondrion, plasmid, synthetic_construct, viruses (alias of viroid), viroid."
+        ),
+    )
+    s.add_argument("--output", default="config/custom_catalog.txt", help="Output catalog path.")
+    s.add_argument("--accessions-dir", default="accessions", help="Directory containing *_accessions.txt files.")
+    s.add_argument("--shuffle", action="store_true", help="Shuffle combined accessions before saving.")
+    s.add_argument("--seed", type=int, default=0, help="Random seed used with --shuffle.")
+    s.add_argument("--limit", type=int, default=None, help="Optional max number of accessions to keep.")
+    s.set_defaults(func=cmd_catalog_generate)
 
     s = sub.add_parser("fetch-one")
     s.add_argument("accession"); s.add_argument("--force", action="store_true")
