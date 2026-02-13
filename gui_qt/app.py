@@ -4,7 +4,7 @@ import re
 import sys
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QSettings
+from PySide6.QtCore import Qt, QSettings, QObject, QThread, Signal, Slot
 from PySide6.QtGui import QFont, QTextCursor, QPainter, QPen, QColor, QPdfWriter
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
@@ -31,6 +31,120 @@ EPOCH_RE = re.compile(r"(?:epoch|Epoch)\s*[:=]?\s*(\d+)\s*/\s*(\d+)")
 
 def now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+class ViewPdfWorker(QObject):
+    started = Signal()
+    progress = Signal(str)
+    finished = Signal(str)
+    failed = Signal(str)
+    cancelled = Signal()
+
+    def __init__(self, cfg_path: str, accession: str, fasta_path: str, output_path: str, title: str):
+        super().__init__()
+        self.cfg_path = cfg_path
+        self.accession = accession
+        self.fasta_path = fasta_path
+        self.output_path = output_path
+        self.title = title
+        self._cancelled = False
+
+    def request_cancel(self):
+        self._cancelled = True
+
+    def _check_cancelled(self):
+        if self._cancelled:
+            raise InterruptedError("Cancelled by user.")
+
+    def _read_fasta_sequence(self, path: str) -> str:
+        seq_parts = []
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                self._check_cancelled()
+                line = line.strip()
+                if not line or line.startswith(">"):
+                    continue
+                seq_parts.append(line)
+        return "".join(seq_parts)
+
+    def _resolve_genome_sequence(self) -> tuple[str, str]:
+        accession = self.accession.strip()
+        fasta_path = self.fasta_path.strip()
+        if accession:
+            self.progress.emit("fetch")
+            cfg_path = self.cfg_path or "stream_config.yaml"
+            cfg = load_full_config(cfg_path)
+            ncbi_cfg, _, io_cfg = extract_configs(cfg)
+            ensure_dirs(io_cfg)
+            self._check_cancelled()
+            fasta_path = fetch_fasta(accession, io_cfg, ncbi_cfg, force=False)
+            self._check_cancelled()
+            self.progress.emit("parse")
+            seq = self._read_fasta_sequence(fasta_path)
+            return seq, f"accession {accession}"
+        if fasta_path:
+            self.progress.emit("parse")
+            seq = self._read_fasta_sequence(fasta_path)
+            return seq, f"fasta {fasta_path}"
+        raise ValueError("Provide a genome accession or FASTA path.")
+
+    def _write_circular_pdf(self, seq: str, output_path: str, title: str) -> None:
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        writer = QPdfWriter(output_path)
+        writer.setResolution(150)
+
+        painter = QPainter(writer)
+        painter.setRenderHint(QPainter.Antialiasing)
+        try:
+            self._check_cancelled()
+            rect = painter.viewport()
+            side = int(min(rect.width(), rect.height()) * 0.72)
+            cx = rect.width() // 2
+            cy = rect.height() // 2
+            radius = side // 2
+
+            seq_len = len(seq)
+            gc = 0.0
+            if seq_len:
+                gc = (seq.count("G") + seq.count("C")) / float(seq_len)
+
+            painter.setPen(QPen(QColor("#68d5ff"), 4))
+            painter.drawEllipse(cx - radius, cy - radius, radius * 2, radius * 2)
+
+            painter.setPen(QPen(QColor("#3b3f46"), 1))
+            for i in range(12):
+                self._check_cancelled()
+                angle = (i / 12.0) * 2.0 * math.pi
+                x_outer = cx + int(radius * 1.02 * math.cos(angle))
+                y_outer = cy + int(radius * 1.02 * math.sin(angle))
+                x_inner = cx + int(radius * 0.92 * math.cos(angle))
+                y_inner = cy + int(radius * 0.92 * math.sin(angle))
+                painter.drawLine(x_inner, y_inner, x_outer, y_outer)
+
+            painter.setPen(QPen(QColor("#d9d9d9"), 2))
+            painter.drawText(cx - radius, cy - radius - 40, radius * 2, 30, Qt.AlignCenter, title or "Circular genome view")
+
+            info = f"Length: {seq_len:,} bp    GC: {gc * 100:.2f}%"
+            painter.setPen(QPen(QColor("#a8b0b8"), 1))
+            painter.drawText(cx - radius, cy + radius + 12, radius * 2, 30, Qt.AlignCenter, info)
+        finally:
+            painter.end()
+
+    @Slot()
+    def run(self):
+        self.started.emit()
+        try:
+            seq, source = self._resolve_genome_sequence()
+            self._check_cancelled()
+            self.progress.emit("render")
+            title = self.title or f"Circular genome ({source})"
+            self._write_circular_pdf(seq, self.output_path, title)
+            self._check_cancelled()
+            self.finished.emit(self.output_path)
+        except InterruptedError:
+            self.cancelled.emit()
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class PerceptromeQt(QMainWindow):
@@ -64,6 +178,8 @@ class PerceptromeQt(QMainWindow):
         self.gen_runner = ProcessRunner(self)
 
         self._closing = False
+        self._view_worker = None
+        self._view_thread = None
 
         # Build tabs
         self.tab_home = self._build_home_tab()
@@ -258,8 +374,11 @@ class PerceptromeQt(QMainWindow):
         btn_row = QHBoxLayout()
         self.btn_view_generate = QPushButton("Generate PDF")
         self.btn_view_open = QPushButton("Open PDF")
+        self.btn_view_cancel = QPushButton("Cancel")
+        self.btn_view_cancel.setEnabled(False)
         btn_row.addWidget(self.btn_view_generate)
         btn_row.addWidget(self.btn_view_open)
+        btn_row.addWidget(self.btn_view_cancel)
         btn_row.addStretch(1)
 
         self.view_log = QPlainTextEdit()
@@ -279,6 +398,7 @@ class PerceptromeQt(QMainWindow):
 
         self.btn_view_generate.clicked.connect(self._view_generate_pdf)
         self.btn_view_open.clicked.connect(self._view_open_pdf)
+        self.btn_view_cancel.clicked.connect(self._view_cancel_pdf)
         return w
 
     # -------------------------
@@ -471,87 +591,79 @@ class PerceptromeQt(QMainWindow):
     # -------------------------
     # View actions
     # -------------------------
-    def _read_fasta_sequence(self, path: str) -> str:
-        seq_parts = []
-        with open(path, "r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                if line.startswith(">"):
-                    continue
-                seq_parts.append(line)
-        return "".join(seq_parts)
-
-    def _resolve_genome_sequence(self) -> tuple[str, str]:
-        accession = self.view_accession.text().strip()
-        fasta_path = self.view_fasta_path.text().strip()
-        if accession:
-            cfg_path = self.cfg_stream_yaml.text().strip() or "stream_config.yaml"
-            cfg = load_full_config(cfg_path)
-            ncbi_cfg, _, io_cfg = extract_configs(cfg)
-            ensure_dirs(io_cfg)
-            fasta_path = fetch_fasta(accession, io_cfg, ncbi_cfg, force=False)
-            seq = self._read_fasta_sequence(fasta_path)
-            return seq, f"accession {accession}"
-        if fasta_path:
-            seq = self._read_fasta_sequence(fasta_path)
-            return seq, f"fasta {fasta_path}"
-        raise ValueError("Provide a genome accession or FASTA path.")
-
-    def _write_circular_pdf(self, seq: str, output_path: str, title: str) -> None:
-        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-        writer = QPdfWriter(output_path)
-        writer.setResolution(150)
-
-        painter = QPainter(writer)
-        painter.setRenderHint(QPainter.Antialiasing)
-        try:
-            rect = painter.viewport()
-            side = int(min(rect.width(), rect.height()) * 0.72)
-            cx = rect.width() // 2
-            cy = rect.height() // 2
-            radius = side // 2
-
-            seq_len = len(seq)
-            gc = 0.0
-            if seq_len:
-                gc = (seq.count("G") + seq.count("C")) / float(seq_len)
-
-            painter.setPen(QPen(QColor("#68d5ff"), 4))
-            painter.drawEllipse(cx - radius, cy - radius, radius * 2, radius * 2)
-
-            painter.setPen(QPen(QColor("#3b3f46"), 1))
-            for i in range(12):
-                angle = (i / 12.0) * 2.0 * math.pi
-                x_outer = cx + int(radius * 1.02 * math.cos(angle))
-                y_outer = cy + int(radius * 1.02 * math.sin(angle))
-                x_inner = cx + int(radius * 0.92 * math.cos(angle))
-                y_inner = cy + int(radius * 0.92 * math.sin(angle))
-                painter.drawLine(x_inner, y_inner, x_outer, y_outer)
-
-            painter.setPen(QPen(QColor("#d9d9d9"), 2))
-            painter.drawText(cx - radius, cy - radius - 40, radius * 2, 30, Qt.AlignCenter, title or "Circular genome view")
-
-            info = f"Length: {seq_len:,} bp    GC: {gc * 100:.2f}%"
-            painter.setPen(QPen(QColor("#a8b0b8"), 1))
-            painter.drawText(cx - radius, cy + radius + 12, radius * 2, 30, Qt.AlignCenter, info)
-        finally:
-            painter.end()
+    def _set_view_actions_enabled(self, enabled: bool):
+        self.btn_view_generate.setEnabled(enabled)
+        self.btn_view_open.setEnabled(enabled)
+        self.btn_view_cancel.setEnabled(not enabled)
 
     def _view_generate_pdf(self):
+        if hasattr(self, "_view_thread") and self._view_thread is not None:
+            self._append_log(self.view_log, f"[{now_str()}] A job is already running.\n")
+            return
+
         self.view_log.clear()
+        output_path = self.view_pdf_path.text().strip() or "generated/circular_genome.pdf"
+        worker = ViewPdfWorker(
+            cfg_path=self.cfg_stream_yaml.text().strip(),
+            accession=self.view_accession.text().strip(),
+            fasta_path=self.view_fasta_path.text().strip(),
+            output_path=output_path,
+            title=self.view_title.text().strip(),
+        )
+        thread = QThread(self)
+        worker.moveToThread(thread)
+
+        worker.started.connect(lambda: self._append_log(self.view_log, f"[{now_str()}] start\n"))
+        worker.progress.connect(self._on_view_progress)
+        worker.finished.connect(self._on_view_finished)
+        worker.failed.connect(self._on_view_failed)
+        worker.cancelled.connect(self._on_view_cancelled)
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.cancelled.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._on_view_thread_finished)
+
+        self._view_worker = worker
+        self._view_thread = thread
+        self._set_view_actions_enabled(False)
+        thread.start()
+
+    def _view_cancel_pdf(self):
+        if hasattr(self, "_view_worker") and self._view_worker is not None:
+            self._append_log(self.view_log, f"[{now_str()}] cancellation requested\n")
+            self._view_worker.request_cancel()
+
+    @Slot(str)
+    def _on_view_progress(self, stage: str):
+        self._append_log(self.view_log, f"[{now_str()}] {stage}\n")
+
+    @Slot(str)
+    def _on_view_finished(self, output_path: str):
+        self._append_log(self.view_log, f"[{now_str()}] complete\n")
+        self._append_log(self.view_log, f"[{now_str()}] Saved PDF -> {output_path}\n")
+        self._add_history("view_pdf", output_path)
         try:
-            seq, source = self._resolve_genome_sequence()
-            output_path = self.view_pdf_path.text().strip() or "generated/circular_genome.pdf"
-            title = self.view_title.text().strip() or f"Circular genome ({source})"
-            self._append_log(self.view_log, f"[{now_str()}] Generating PDF from {source}\n")
-            self._write_circular_pdf(seq, output_path, title)
-            self._append_log(self.view_log, f"[{now_str()}] Saved PDF -> {output_path}\n")
-            self._add_history("view_pdf", output_path)
             self._load_pdf(output_path)
         except Exception as exc:
             self._append_log(self.view_log, f"[{now_str()}] ERROR: {exc}\n")
+
+    @Slot(str)
+    def _on_view_failed(self, err: str):
+        self._append_log(self.view_log, f"[{now_str()}] ERROR: {err}\n")
+
+    @Slot()
+    def _on_view_cancelled(self):
+        self._append_log(self.view_log, f"[{now_str()}] cancelled\n")
+
+    @Slot()
+    def _on_view_thread_finished(self):
+        self._set_view_actions_enabled(True)
+        self._view_worker = None
+        self._view_thread = None
 
     def _load_pdf(self, path: str):
         if not os.path.exists(path):
@@ -599,6 +711,14 @@ class PerceptromeQt(QMainWindow):
             pass
         try:
             self.gen_runner.stop(None)
+        except Exception:
+            pass
+        try:
+            if self._view_worker is not None:
+                self._view_worker.request_cancel()
+            if self._view_thread is not None:
+                self._view_thread.quit()
+                self._view_thread.wait(1500)
         except Exception:
             pass
 
