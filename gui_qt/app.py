@@ -593,6 +593,8 @@ class PerceptromeQt(QMainWindow):
         if self._closing:
             return
         self._closing = True
+        # Intentionally pass None during shutdown: logs may already be tearing down,
+        # but stop() must still terminate/kill child processes safely.
         try:
             self.train_runner.stop(None)
         except Exception:
