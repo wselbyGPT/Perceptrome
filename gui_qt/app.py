@@ -15,7 +15,8 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QPushButton,
     QPlainTextEdit, QProgressBar,
     QSpinBox, QDoubleSpinBox, QGroupBox,
-    QTableWidget, QTableWidgetItem, QHeaderView
+    QTableWidget, QTableWidgetItem, QHeaderView,
+    QFileDialog, QFileSystemModel, QTreeView, QMessageBox
 )
 
 from .theme import apply_dark_mode
@@ -107,12 +108,44 @@ class PerceptromeQt(QMainWindow):
         self.cfg_lr.setSingleStep(0.0005)
         self.cfg_lr.setValue(0.001)
 
-        form.addRow("Project dir:", self.cfg_project_dir)
-        form.addRow("stream_config.yaml:", self.cfg_stream_yaml)
-        form.addRow("Dataset list file:", self.cfg_dataset_list)
+        project_row_widget = QWidget()
+        project_row = QHBoxLayout(project_row_widget)
+        project_row.setContentsMargins(0, 0, 0, 0)
+        self.btn_browse_project_dir = QPushButton("Browse")
+        project_row.addWidget(self.cfg_project_dir, 1)
+        project_row.addWidget(self.btn_browse_project_dir)
+
+        stream_row_widget = QWidget()
+        stream_row = QHBoxLayout(stream_row_widget)
+        stream_row.setContentsMargins(0, 0, 0, 0)
+        self.btn_browse_stream_yaml = QPushButton("Browse")
+        stream_row.addWidget(self.cfg_stream_yaml, 1)
+        stream_row.addWidget(self.btn_browse_stream_yaml)
+
+        dataset_row_widget = QWidget()
+        dataset_row = QHBoxLayout(dataset_row_widget)
+        dataset_row.setContentsMargins(0, 0, 0, 0)
+        self.btn_browse_dataset_list = QPushButton("Browse")
+        dataset_row.addWidget(self.cfg_dataset_list, 1)
+        dataset_row.addWidget(self.btn_browse_dataset_list)
+
+        form.addRow("Project dir:", project_row_widget)
+        form.addRow("stream_config.yaml:", stream_row_widget)
+        form.addRow("Dataset list file:", dataset_row_widget)
         form.addRow("Epochs:", self.cfg_epochs)
         form.addRow("Batch size:", self.cfg_batch)
         form.addRow("Learning rate:", self.cfg_lr)
+
+        browser_group = QGroupBox("Project tree browser (optional)")
+        browser_layout = QVBoxLayout(browser_group)
+        self.project_fs_model = QFileSystemModel(browser_group)
+        self.project_fs_model.setRootPath("")
+        self.project_tree = QTreeView(browser_group)
+        self.project_tree.setModel(self.project_fs_model)
+        self.project_tree.setAlternatingRowColors(True)
+        self.project_tree.setHeaderHidden(False)
+        self.project_tree.setMinimumHeight(180)
+        browser_layout.addWidget(self.project_tree)
 
         btn_row = QHBoxLayout()
         self.btn_save_cfg = QPushButton("Save config")
@@ -124,12 +157,18 @@ class PerceptromeQt(QMainWindow):
         self.cfg_status = QLabel("Config not saved yet.")
 
         layout.addLayout(form)
+        layout.addWidget(browser_group)
         layout.addLayout(btn_row)
         layout.addWidget(self.cfg_status)
         layout.addStretch(1)
 
         self.btn_save_cfg.clicked.connect(self._save_config)
         self.btn_go_train.clicked.connect(lambda: self.tabs.setCurrentWidget(self.tab_train))
+        self.btn_browse_project_dir.clicked.connect(self._browse_project_dir)
+        self.btn_browse_stream_yaml.clicked.connect(self._browse_stream_yaml)
+        self.btn_browse_dataset_list.clicked.connect(self._browse_dataset_list)
+        self.project_tree.clicked.connect(self._on_project_tree_selected)
+        self.cfg_project_dir.editingFinished.connect(self._sync_project_tree_root)
         return w
 
     def _build_train_tab(self) -> QWidget:
@@ -285,6 +324,8 @@ class PerceptromeQt(QMainWindow):
     # Config persistence
     # -------------------------
     def _save_config(self):
+        if not self._validate_home_paths(show_message=True):
+            return
         self.settings.setValue("project_dir", self.cfg_project_dir.text().strip())
         self.settings.setValue("stream_yaml", self.cfg_stream_yaml.text().strip())
         self.settings.setValue("dataset_list", self.cfg_dataset_list.text().strip())
@@ -317,6 +358,7 @@ class PerceptromeQt(QMainWindow):
         self.view_fasta_path.setText(self.settings.value("view_fasta_path", "generated/novel_plasmid.fasta"))
         self.view_pdf_path.setText(self.settings.value("view_pdf_path", "generated/circular_genome.pdf"))
         self.view_title.setText(self.settings.value("view_title", ""))
+        self._sync_project_tree_root()
 
         self.cfg_status.setText("Loaded saved config (if any).")
 
@@ -326,6 +368,82 @@ class PerceptromeQt(QMainWindow):
     def _workdir(self) -> str:
         wd = self.cfg_project_dir.text().strip()
         return wd if wd else "."
+
+    def _show_validation_message(self, title: str, message: str):
+        QMessageBox.warning(self, title, message)
+
+    def _validate_home_paths(self, show_message: bool = False) -> bool:
+        stream_path = self.cfg_stream_yaml.text().strip()
+        dataset_path = self.cfg_dataset_list.text().strip()
+
+        if stream_path and not stream_path.lower().endswith((".yaml", ".yml")):
+            if show_message:
+                self._show_validation_message(
+                    "Invalid stream config",
+                    "stream_config must use .yaml or .yml extension.",
+                )
+            return False
+
+        if dataset_path and not dataset_path.lower().endswith(".txt"):
+            if show_message:
+                self._show_validation_message(
+                    "Invalid dataset list",
+                    "Dataset list file must use .txt extension.",
+                )
+            return False
+        return True
+
+    def _browse_project_dir(self):
+        start_dir = self.settings.value("last_dir_project", self.cfg_project_dir.text().strip() or ".")
+        selected = QFileDialog.getExistingDirectory(self, "Select project directory", start_dir)
+        if not selected:
+            return
+        self.cfg_project_dir.setText(selected)
+        self.settings.setValue("last_dir_project", selected)
+        self._sync_project_tree_root()
+
+    def _browse_stream_yaml(self):
+        start_dir = self.settings.value("last_dir_stream_yaml", self._workdir())
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select stream config",
+            start_dir,
+            "YAML files (*.yaml *.yml)",
+        )
+        if not selected:
+            return
+        self.cfg_stream_yaml.setText(selected)
+        self.settings.setValue("last_dir_stream_yaml", os.path.dirname(selected) or ".")
+
+    def _browse_dataset_list(self):
+        start_dir = self.settings.value("last_dir_dataset_list", self._workdir())
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select dataset list",
+            start_dir,
+            "Text files (*.txt)",
+        )
+        if not selected:
+            return
+        self.cfg_dataset_list.setText(selected)
+        self.settings.setValue("last_dir_dataset_list", os.path.dirname(selected) or ".")
+
+    def _sync_project_tree_root(self):
+        project_dir = self.cfg_project_dir.text().strip() or "."
+        if not os.path.isdir(project_dir):
+            project_dir = "."
+        model_index = self.project_fs_model.index(project_dir)
+        self.project_tree.setRootIndex(model_index)
+
+    def _on_project_tree_selected(self, index):
+        path = self.project_fs_model.filePath(index)
+        if not os.path.isfile(path):
+            return
+        lowered = path.lower()
+        if lowered.endswith(".txt"):
+            self.cfg_dataset_list.setText(path)
+        elif lowered.endswith((".yaml", ".yml")):
+            self.cfg_stream_yaml.setText(path)
 
     def _append_log(self, box: QPlainTextEdit, text: str, max_lines: int = 5000):
         if not isValid(box) or self._closing:
@@ -379,6 +497,8 @@ class PerceptromeQt(QMainWindow):
         self.train_cmd.setText("python stream_train.py --help")
 
     def _train_start(self):
+        if not self._validate_home_paths(show_message=True):
+            return
         cmd = self.train_cmd.text().strip()
         wd = self._workdir()
 
@@ -427,6 +547,8 @@ class PerceptromeQt(QMainWindow):
         self.gen_cmd.setText("python stream_train.py --help")
 
     def _gen_start(self):
+        if not self._validate_home_paths(show_message=True):
+            return
         cmd = self.gen_cmd.text().strip()
         wd = self._workdir()
 
