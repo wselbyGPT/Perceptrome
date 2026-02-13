@@ -25,11 +25,23 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_stream_epochs": 100,
         "shuffle_catalog": True,
         "hidden_dim": 512,
-        "model_type": "mlp",
+        "model_type": "mlp",  # "mlp" | "transformer" | "rnn" | "hybrid" | "moe" | "gnn" | "tcn"
         "transformer_d_model": 256,
         "transformer_nhead": 8,
         "transformer_layers": 4,
         "transformer_dropout": 0.1,
+
+        # optional two-stage VAE pretraining
+        "pretrain_enabled": False,
+        "pretrain_steps": 0,
+        "pretrain_beta_kl": 1e-4,
+        "pretrain_mask_prob": 0.15,
+        "pretrain_span_mask_prob": 0.08,
+        "pretrain_span_mask_len": 16,
+
+        # optional uncertainty estimation (MC dropout)
+        "uncertainty_mc_samples": 8,
+
         "learning_rate": 1e-3,
         "beta_kl": 1e-3,
         "kl_warmup_steps": 10000,
@@ -130,6 +142,16 @@ class TrainingConfig:
     transformer_nhead: int
     transformer_layers: int
     transformer_dropout: float
+
+    pretrain_enabled: bool
+    pretrain_steps: int
+    pretrain_beta_kl: float
+    pretrain_mask_prob: float
+    pretrain_span_mask_prob: float
+    pretrain_span_mask_len: int
+
+    uncertainty_mc_samples: int
+
     learning_rate: float
     beta_kl: float
     kl_warmup_steps: int
@@ -266,6 +288,16 @@ def extract_configs(cfg: Dict[str, Any]) -> Tuple[NCBIConfig, TrainingConfig, IO
         transformer_nhead=int(t.get("transformer_nhead", 8)),
         transformer_layers=int(t.get("transformer_layers", 4)),
         transformer_dropout=float(t.get("transformer_dropout", 0.1)),
+
+        pretrain_enabled=bool(t.get("pretrain_enabled", False)),
+        pretrain_steps=int(t.get("pretrain_steps", 0)),
+        pretrain_beta_kl=float(t.get("pretrain_beta_kl", 1e-4)),
+        pretrain_mask_prob=float(t.get("pretrain_mask_prob", 0.15)),
+        pretrain_span_mask_prob=float(t.get("pretrain_span_mask_prob", 0.08)),
+        pretrain_span_mask_len=int(t.get("pretrain_span_mask_len", 16)),
+
+        uncertainty_mc_samples=int(t.get("uncertainty_mc_samples", 8)),
+
         learning_rate=float(t.get("learning_rate", 1e-3)),
         beta_kl=float(t.get("beta_kl", 1e-3)),
         kl_warmup_steps=int(t.get("kl_warmup_steps", 10000)),
