@@ -2,9 +2,10 @@ import math
 import os
 import re
 import sys
+import time
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QSettings
+from PySide6.QtCore import Qt, QSettings, QFileSystemWatcher, QTimer, QPointF
 from PySide6.QtGui import QFont, QTextCursor, QPainter, QPen, QColor, QPdfWriter
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
@@ -265,15 +266,35 @@ class PerceptromeQt(QMainWindow):
         self.view_log = QPlainTextEdit()
         self.view_log.setReadOnly(True)
         self.view_log.setPlaceholderText("PDF generation status will appear here...")
+        self.view_live_status = QLabel("Live: off")
 
         self.view_pdf_doc = QPdfDocument(self)
         self.view_pdf = QPdfView()
         self.view_pdf.setDocument(self.view_pdf_doc)
         self.view_pdf.setZoomMode(QPdfView.ZoomMode.FitInView)
 
+        self.view_pdf_watcher = QFileSystemWatcher(self)
+        self.view_pdf_watcher.fileChanged.connect(self._on_watched_pdf_changed)
+
+        self.view_reload_debounce = QTimer(self)
+        self.view_reload_debounce.setSingleShot(True)
+        self.view_reload_debounce.setInterval(300)
+        self.view_reload_debounce.timeout.connect(self._reload_watched_pdf)
+
+        self.view_poll_timer = QTimer(self)
+        self.view_poll_timer.setInterval(1000)
+        self.view_poll_timer.timeout.connect(self._poll_watched_pdf)
+        self.view_poll_timer.start()
+
+        self._watched_pdf_path = ""
+        self._pending_reload_pdf = ""
+        self._watched_pdf_mtime = None
+        self._last_live_error_at = 0.0
+
         layout.addWidget(source_group)
         layout.addWidget(output_group)
         layout.addLayout(btn_row)
+        layout.addWidget(self.view_live_status)
         layout.addWidget(self.view_log)
         layout.addWidget(self.view_pdf, 1)
 
@@ -553,12 +574,118 @@ class PerceptromeQt(QMainWindow):
         except Exception as exc:
             self._append_log(self.view_log, f"[{now_str()}] ERROR: {exc}\n")
 
-    def _load_pdf(self, path: str):
+    def _set_live_status(self, text: str):
+        self.view_live_status.setText(text)
+
+    def _capture_pdf_view_state(self) -> dict:
+        state = {
+            "zoom_mode": self.view_pdf.zoomMode(),
+            "zoom_factor": self.view_pdf.zoomFactor(),
+            "page": 0,
+        }
+        nav = self.view_pdf.pageNavigator()
+        if nav and hasattr(nav, "currentPage"):
+            state["page"] = nav.currentPage()
+        return state
+
+    def _restore_pdf_view_state(self, state: dict):
+        if not state:
+            return
+        self.view_pdf.setZoomMode(state.get("zoom_mode", QPdfView.ZoomMode.FitInView))
+        if hasattr(self.view_pdf, "setZoomFactor"):
+            self.view_pdf.setZoomFactor(state.get("zoom_factor", 1.0))
+
+        page = state.get("page")
+        nav = self.view_pdf.pageNavigator()
+        if nav and isinstance(page, int) and page >= 0:
+            try:
+                nav.jump(page, QPointF(0, 0), self.view_pdf.zoomFactor())
+            except TypeError:
+                try:
+                    nav.jump(page, QPointF(0, 0))
+                except TypeError:
+                    pass
+
+    def _watch_pdf_path(self, path: str):
+        normalized = os.path.abspath(path)
+        for old_path in list(self.view_pdf_watcher.files()):
+            self.view_pdf_watcher.removePath(old_path)
+
+        self._watched_pdf_path = normalized
+        self._pending_reload_pdf = ""
+        self._watched_pdf_mtime = os.path.getmtime(normalized) if os.path.exists(normalized) else None
+
+        if os.path.exists(normalized):
+            self.view_pdf_watcher.addPath(normalized)
+            self._set_live_status(f"Live: watching {normalized}")
+        else:
+            self._set_live_status(f"Live: waiting for {normalized}")
+
+    def _queue_pdf_reload(self, path: str):
+        self._pending_reload_pdf = os.path.abspath(path)
+        self.view_reload_debounce.start()
+
+    def _log_live_warning(self, message: str):
+        now = time.monotonic()
+        if now - self._last_live_error_at < 3.0:
+            return
+        self._last_live_error_at = now
+        self._append_log(self.view_log, f"[{now_str()}] {message}\n")
+
+    def _on_watched_pdf_changed(self, path: str):
+        if not self._watched_pdf_path:
+            return
+        if os.path.abspath(path) != self._watched_pdf_path:
+            return
+        self._queue_pdf_reload(path)
+
+    def _poll_watched_pdf(self):
+        path = self._watched_pdf_path
+        if not path:
+            return
+        exists = os.path.exists(path)
+        if not exists:
+            if self._watched_pdf_mtime is not None:
+                self._watched_pdf_mtime = None
+                self._queue_pdf_reload(path)
+            return
+
+        mtime = os.path.getmtime(path)
+        if self._watched_pdf_mtime is None:
+            self._watched_pdf_mtime = mtime
+            self._queue_pdf_reload(path)
+            return
+        if mtime != self._watched_pdf_mtime:
+            self._watched_pdf_mtime = mtime
+            self._queue_pdf_reload(path)
+
+    def _reload_watched_pdf(self):
+        path = self._pending_reload_pdf or self._watched_pdf_path
+        if not path:
+            return
+        self._load_pdf(path, preserve_view_state=True, live_reload=True)
+
+    def _load_pdf(self, path: str, preserve_view_state: bool = False, live_reload: bool = False):
+        path = os.path.abspath(path)
         if not os.path.exists(path):
+            if live_reload:
+                self._set_live_status(f"Live: waiting for {path}")
+                self._log_live_warning(f"Live reload: file not found yet -> {path}")
+                return False
             raise FileNotFoundError(path)
+
+        state = self._capture_pdf_view_state() if preserve_view_state else None
         status = self.view_pdf_doc.load(path)
         if status != QPdfDocument.Error.None_:
+            if live_reload:
+                self._log_live_warning(f"Live reload: PDF busy/unavailable (status {status}), retrying...")
+                return False
             raise RuntimeError(f"Failed to load PDF (status {status})")
+
+        self._watch_pdf_path(path)
+        if state:
+            self._restore_pdf_view_state(state)
+        return True
 
     def _view_open_pdf(self):
         path = self.view_pdf_path.text().strip()
@@ -599,6 +726,11 @@ class PerceptromeQt(QMainWindow):
             pass
         try:
             self.gen_runner.stop(None)
+        except Exception:
+            pass
+        try:
+            self.view_poll_timer.stop()
+            self.view_reload_debounce.stop()
         except Exception:
             pass
 
