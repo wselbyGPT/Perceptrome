@@ -80,12 +80,20 @@ class PerceptromeQt(QMainWindow):
 
         self._load_config()
 
+    def _make_section(self, title: str, margin: int = 10, spacing: int = 8) -> tuple[QGroupBox, QVBoxLayout]:
+        group = QGroupBox(title)
+        group_layout = QVBoxLayout(group)
+        group_layout.setContentsMargins(margin, margin, margin, margin)
+        group_layout.setSpacing(spacing)
+        return group, group_layout
+
     # -------------------------
     # Tabs
     # -------------------------
     def _build_home_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
+        layout.setSpacing(10)
 
         form = QFormLayout()
 
@@ -123,9 +131,15 @@ class PerceptromeQt(QMainWindow):
 
         self.cfg_status = QLabel("Config not saved yet.")
 
-        layout.addLayout(form)
-        layout.addLayout(btn_row)
-        layout.addWidget(self.cfg_status)
+        config_group, config_layout = self._make_section("Project Configuration")
+        config_layout.addLayout(form)
+
+        actions_group, actions_layout = self._make_section("Configuration Actions")
+        actions_layout.addLayout(btn_row)
+        actions_layout.addWidget(self.cfg_status)
+
+        layout.addWidget(config_group)
+        layout.addWidget(actions_group)
         layout.addStretch(1)
 
         self.btn_save_cfg.clicked.connect(self._save_config)
@@ -135,12 +149,13 @@ class PerceptromeQt(QMainWindow):
     def _build_train_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
+        layout.setSpacing(10)
 
         form = QFormLayout()
         self.train_cmd = QLineEdit()
         self.train_cmd.setPlaceholderText('Example: python stream_train.py train --help')
         self.train_cmd.setMinimumHeight(32)
-        self.train_cmd.setStyleSheet("QLineEdit { font-family: monospace; }")
+        self.train_cmd.setObjectName("monospaceInput")
         form.addRow("Command:", self.train_cmd)
 
         btn_row = QHBoxLayout()
@@ -159,12 +174,22 @@ class PerceptromeQt(QMainWindow):
 
         self.train_log = QPlainTextEdit()
         self.train_log.setReadOnly(True)
+        self.train_log.setObjectName("monospaceLog")
         self.train_log.setPlaceholderText("Live training output will appear here...")
 
-        layout.addLayout(form)
-        layout.addLayout(btn_row)
-        layout.addWidget(self.train_progress)
-        layout.addWidget(self.train_log, 1)
+        command_group, command_layout = self._make_section("Training Command")
+        command_layout.addLayout(form)
+
+        control_group, control_layout = self._make_section("Training Controls")
+        control_layout.addLayout(btn_row)
+        control_layout.addWidget(self.train_progress)
+
+        output_group, output_layout = self._make_section("Training Output")
+        output_layout.addWidget(self.train_log)
+
+        layout.addWidget(command_group)
+        layout.addWidget(control_group)
+        layout.addWidget(output_group, 1)
 
         self.btn_train_help.clicked.connect(self._train_help)
         self.btn_train_start.clicked.connect(self._train_start)
@@ -174,12 +199,13 @@ class PerceptromeQt(QMainWindow):
     def _build_generate_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
+        layout.setSpacing(10)
 
         form = QFormLayout()
         self.gen_cmd = QLineEdit()
         self.gen_cmd.setPlaceholderText('Example: python stream_train.py generate --help')
         self.gen_cmd.setMinimumHeight(32)
-        self.gen_cmd.setStyleSheet("QLineEdit { font-family: monospace; }")
+        self.gen_cmd.setObjectName("monospaceInput")
         form.addRow("Command:", self.gen_cmd)
 
         btn_row = QHBoxLayout()
@@ -198,12 +224,22 @@ class PerceptromeQt(QMainWindow):
 
         self.gen_out = QPlainTextEdit()
         self.gen_out.setReadOnly(True)
+        self.gen_out.setObjectName("monospaceLog")
         self.gen_out.setPlaceholderText("Live generate output will appear here...")
 
-        layout.addLayout(form)
-        layout.addLayout(btn_row)
-        layout.addWidget(self.gen_progress)
-        layout.addWidget(self.gen_out, 1)
+        command_group, command_layout = self._make_section("Generation Command")
+        command_layout.addLayout(form)
+
+        control_group, control_layout = self._make_section("Generation Controls")
+        control_layout.addLayout(btn_row)
+        control_layout.addWidget(self.gen_progress)
+
+        output_group, output_layout = self._make_section("Generation Output")
+        output_layout.addWidget(self.gen_out)
+
+        layout.addWidget(command_group)
+        layout.addWidget(control_group)
+        layout.addWidget(output_group, 1)
 
         self.btn_gen_help.clicked.connect(self._gen_help)
         self.btn_generate.clicked.connect(self._gen_start)
@@ -213,6 +249,7 @@ class PerceptromeQt(QMainWindow):
     def _build_history_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
+        layout.setSpacing(10)
 
         self.history_table = QTableWidget(0, 3)
         self.history_table.setHorizontalHeaderLabels(["Time", "Action", "Details"])
@@ -227,8 +264,14 @@ class PerceptromeQt(QMainWindow):
         btn_row.addWidget(self.btn_clear_history)
         btn_row.addStretch(1)
 
-        layout.addLayout(btn_row)
-        layout.addWidget(self.history_table, 1)
+        actions_group, actions_layout = self._make_section("History Actions")
+        actions_layout.addLayout(btn_row)
+
+        records_group, records_layout = self._make_section("History Records")
+        records_layout.addWidget(self.history_table)
+
+        layout.addWidget(actions_group)
+        layout.addWidget(records_group, 1)
 
         self.btn_clear_history.clicked.connect(self._clear_history)
         return w
@@ -236,6 +279,7 @@ class PerceptromeQt(QMainWindow):
     def _build_view_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
+        layout.setSpacing(10)
 
         source_group = QGroupBox("Genome source")
         source_layout = QFormLayout(source_group)
@@ -264,6 +308,7 @@ class PerceptromeQt(QMainWindow):
 
         self.view_log = QPlainTextEdit()
         self.view_log.setReadOnly(True)
+        self.view_log.setObjectName("monospaceLog")
         self.view_log.setPlaceholderText("PDF generation status will appear here...")
 
         self.view_pdf_doc = QPdfDocument(self)
@@ -271,11 +316,20 @@ class PerceptromeQt(QMainWindow):
         self.view_pdf.setDocument(self.view_pdf_doc)
         self.view_pdf.setZoomMode(QPdfView.ZoomMode.FitInView)
 
+        actions_group, actions_layout = self._make_section("PDF Actions")
+        actions_layout.addLayout(btn_row)
+
+        log_group, log_layout = self._make_section("PDF Generation Log")
+        log_layout.addWidget(self.view_log)
+
+        preview_group, preview_layout = self._make_section("PDF Preview")
+        preview_layout.addWidget(self.view_pdf)
+
         layout.addWidget(source_group)
         layout.addWidget(output_group)
-        layout.addLayout(btn_row)
-        layout.addWidget(self.view_log)
-        layout.addWidget(self.view_pdf, 1)
+        layout.addWidget(actions_group)
+        layout.addWidget(log_group)
+        layout.addWidget(preview_group, 1)
 
         self.btn_view_generate.clicked.connect(self._view_generate_pdf)
         self.btn_view_open.clicked.connect(self._view_open_pdf)
