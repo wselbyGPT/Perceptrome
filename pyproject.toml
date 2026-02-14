@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "perceptrome"
+version = "0.1.0"
+description = "Perceptrome streaming VAE trainer with CLI and Qt GUI."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [
+  { name = "Perceptrome contributors" }
+]
+dependencies = [
+  "numpy>=2.0",
+  "requests>=2.32",
+  "torch>=2.0",
+  "PyYAML>=6.0",
+  "PySide6>=6.6"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0"
+]
+
+[project.scripts]
+perceptrome = "perceptrome.cli_main:main"
+perceptrome-gui = "gui_qt.app:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["perceptrome*", "gui_qt*"]
