@@ -1,10 +1,116 @@
 import logging
 import os
-from typing import Optional
+import time
+from typing import Optional, Sequence
 
 import requests
 
 from .config import NCBIConfig, IOConfig
+
+
+def _ncbi_get_with_retries(
+    url: str,
+    params: dict,
+    ncbi_cfg: NCBIConfig,
+    *,
+    timeout: int = 30,
+    context: str,
+):
+    fetch_logger = logging.getLogger("fetch")
+    last_error: Optional[str] = None
+
+    for attempt in range(ncbi_cfg.max_retries + 1):
+        try:
+            resp = requests.get(url, params=params, timeout=timeout)
+            if resp.status_code == 200:
+                return resp
+            last_error = f"HTTP {resp.status_code}, first 80 chars: {resp.text[:80]!r}"
+        except Exception as e:  # noqa: BLE001
+            last_error = str(e)
+
+        if attempt < ncbi_cfg.max_retries:
+            delay = ncbi_cfg.backoff_seconds * (2 ** attempt)
+            fetch_logger.warning(
+                f"{context}: attempt {attempt+1} failed ({last_error}); retrying in {delay:.1f}s"
+            )
+            time.sleep(delay)
+
+    raise RuntimeError(f"Failed NCBI request for {context}: {last_error}")
+
+
+def search_nuccore_ids(term: str, retmax: int, ncbi_cfg: NCBIConfig) -> list[str]:
+    """Search NCBI nuccore with ESearch and return UID strings.
+
+    Returned IDs are stripped, non-empty, and capped to ``retmax``.
+    """
+    if retmax <= 0:
+        return []
+
+    url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+    params = {
+        "db": "nuccore",
+        "term": term,
+        "retmode": "json",
+        "retmax": retmax,
+        "email": ncbi_cfg.email,
+    }
+    if ncbi_cfg.api_key:
+        params["api_key"] = ncbi_cfg.api_key
+
+    resp = _ncbi_get_with_retries(
+        url, params, ncbi_cfg, context=f"nuccore search term={term!r}"
+    )
+    data = resp.json()
+    id_list = data.get("esearchresult", {}).get("idlist", [])
+    if not isinstance(id_list, list):
+        return []
+
+    clean_ids = [str(v).strip() for v in id_list if str(v).strip()]
+    return clean_ids[:retmax]
+
+
+def summarize_nuccore_accessions(ids: Sequence[str], ncbi_cfg: NCBIConfig) -> list[str]:
+    """Map NCBI nuccore UIDs (or mixed IDs) to accession.version via ESummary."""
+    clean_ids = [v.strip() for v in ids if v and v.strip()]
+    if not clean_ids:
+        return []
+
+    url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
+    params = {
+        "db": "nuccore",
+        "id": ",".join(clean_ids),
+        "retmode": "json",
+        "email": ncbi_cfg.email,
+    }
+    if ncbi_cfg.api_key:
+        params["api_key"] = ncbi_cfg.api_key
+
+    resp = _ncbi_get_with_retries(
+        url, params, ncbi_cfg, context=f"nuccore summary for {len(clean_ids)} ids"
+    )
+    data = resp.json()
+    result = data.get("result", {})
+    if not isinstance(result, dict):
+        return []
+
+    accessions: list[str] = []
+    seen: set[str] = set()
+    for uid in clean_ids:
+        doc = result.get(uid)
+        if not isinstance(doc, dict):
+            continue
+
+        raw_accession = (
+            doc.get("accessionversion")
+            or doc.get("accession_version")
+            or doc.get("caption")
+        )
+        accession = str(raw_accession).strip() if raw_accession is not None else ""
+        if accession and accession not in seen:
+            seen.add(accession)
+            accessions.append(accession)
+
+    return accessions
 
 
 def fetch_fasta(
@@ -33,36 +139,19 @@ def fetch_fasta(
         params["api_key"] = ncbi_cfg.api_key  # type: ignore[assignment]
 
     fetch_logger.info(f"{accession}: fetching from NCBI {url}")
-    last_error: Optional[str] = None
-    for attempt in range(ncbi_cfg.max_retries + 1):
-        try:
-            resp = requests.get(url, params=params, timeout=30)
-            if resp.status_code == 200 and resp.text.strip().startswith(">"):
-                with open(out_path, "w", encoding="utf-8") as f:
-                    f.write(resp.text)
-                fetch_logger.info(
-                    f"{accession}: fetched and saved FASTA ({len(resp.text)} bytes)"
-                )
-                return out_path
-            else:
-                msg = (
-                    f"HTTP {resp.status_code}, "
-                    f"first 80 chars: {resp.text[:80]!r}"
-                )
-                last_error = msg
-        except Exception as e:  # noqa: BLE001
-            last_error = str(e)
-
-        if attempt < ncbi_cfg.max_retries:
-            delay = ncbi_cfg.backoff_seconds * (2 ** attempt)
-            fetch_logger.warning(
-                f"{accession}: fetch attempt {attempt+1} failed ({last_error}); "
-                f"retrying in {delay:.1f}s"
-            )
-            import time
-            time.sleep(delay)
-
-    raise RuntimeError(f"Failed to fetch {accession} from NCBI: {last_error}")
+    resp = _ncbi_get_with_retries(
+        url, params, ncbi_cfg, context=f"FASTA fetch for {accession}"
+    )
+    if resp.text.strip().startswith(">"):
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(resp.text)
+        fetch_logger.info(
+            f"{accession}: fetched and saved FASTA ({len(resp.text)} bytes)"
+        )
+        return out_path
+    raise RuntimeError(
+        f"Failed to fetch {accession} from NCBI: response did not look like FASTA"
+    )
 
 
 def fetch_genbank(
@@ -92,35 +181,18 @@ def fetch_genbank(
         params["api_key"] = ncbi_cfg.api_key  # type: ignore[assignment]
 
     fetch_logger.info(f"{accession}: fetching GenBank from NCBI {url}")
-    last_error: Optional[str] = None
-    for attempt in range(ncbi_cfg.max_retries + 1):
-        try:
-            resp = requests.get(url, params=params, timeout=30)
-            # GenBank flatfile usually begins with 'LOCUS'
-            if resp.status_code == 200 and resp.text.lstrip().startswith("LOCUS"):
-                os.makedirs(os.path.dirname(out_path), exist_ok=True)
-                with open(out_path, "w", encoding="utf-8") as f:
-                    f.write(resp.text)
-                fetch_logger.info(
-                    f"{accession}: fetched and saved GenBank ({len(resp.text)} bytes)"
-                )
-                return out_path
-            else:
-                msg = (
-                    f"HTTP {resp.status_code}, "
-                    f"first 80 chars: {resp.text[:80]!r}"
-                )
-                last_error = msg
-        except Exception as e:  # noqa: BLE001
-            last_error = str(e)
-
-        if attempt < ncbi_cfg.max_retries:
-            delay = ncbi_cfg.backoff_seconds * (2 ** attempt)
-            fetch_logger.warning(
-                f"{accession}: GenBank fetch attempt {attempt+1} failed ({last_error}); "
-                f"retrying in {delay:.1f}s"
-            )
-            import time
-            time.sleep(delay)
-
-    raise RuntimeError(f"Failed to fetch GenBank for {accession} from NCBI: {last_error}")
+    resp = _ncbi_get_with_retries(
+        url, params, ncbi_cfg, context=f"GenBank fetch for {accession}"
+    )
+    # GenBank flatfile usually begins with 'LOCUS'
+    if resp.text.lstrip().startswith("LOCUS"):
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(resp.text)
+        fetch_logger.info(
+            f"{accession}: fetched and saved GenBank ({len(resp.text)} bytes)"
+        )
+        return out_path
+    raise RuntimeError(
+        f"Failed to fetch GenBank for {accession} from NCBI: response did not look like GenBank"
+    )
