@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test/lint dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest ruff PyYAML
+
+      - name: Run lint
+        id: lint
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          ruff check perceptrome tests | tee lint.log
+
+      - name: Run tests
+        id: tests
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          pytest -q --junitxml=pytest-report.xml | tee pytest.log
+
+      - name: Upload failure artifacts
+        if: steps.lint.outcome == 'failure' || steps.tests.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-failure-artifacts
+          path: |
+            lint.log
+            pytest.log
+            pytest-report.xml
+          if-no-files-found: ignore
+
+      - name: Fail workflow if lint/tests failed
+        if: steps.lint.outcome == 'failure' || steps.tests.outcome == 'failure'
+        run: exit 1

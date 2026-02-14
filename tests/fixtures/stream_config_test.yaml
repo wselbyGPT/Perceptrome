@@ -1,0 +1,19 @@
+{
+  "ncbi": {"email": "fixture@example.com"},
+  "training": {
+    "tokenizer": "codon",
+    "frame_offset": 2,
+    "window_size": 600,
+    "stride": 300,
+    "curriculum_steps": [0, 1]
+  },
+  "io": {
+    "cache_fasta_dir": "fixture_cache/fasta",
+    "cache_genbank_dir": "fixture_cache/genbank",
+    "cache_encoded_dir": "fixture_cache/encoded",
+    "model_dir": "fixture_model",
+    "checkpoints_dir": "fixture_model/checkpoints",
+    "logs_dir": "fixture_logs",
+    "state_file": "fixture_state/progress.json"
+  }
+}
