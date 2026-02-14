@@ -1,7 +1,8 @@
 import json
 import logging
 import os
-from typing import Any, Dict, List
+import random
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .config import IOConfig
 
@@ -21,6 +22,70 @@ def read_catalog(path: str) -> List[str]:
     if not accessions:
         raise ValueError(f"Catalog {path} contained no accessions.")
     return accessions
+
+
+def write_catalog(path: str, accessions: Sequence[str], header: Optional[Sequence[str]] = None) -> None:
+    """Write a plain-text accession catalog.
+
+    Args:
+        path: Destination path for the catalog file.
+        accessions: Accessions to write (one per line).
+        header: Optional comment lines written before entries.
+    """
+    final_accessions = [str(acc).strip() for acc in accessions if str(acc).strip()]
+    if not final_accessions:
+        raise ValueError("Catalog write aborted: no accessions to write.")
+
+    out_dir = os.path.dirname(path) or "."
+    os.makedirs(out_dir, exist_ok=True)
+
+    with open(path, "w", encoding="utf-8") as f:
+        if header:
+            for line in header:
+                txt = str(line).strip()
+                if not txt:
+                    continue
+                f.write(txt if txt.startswith("#") else f"# {txt}")
+                f.write("\n")
+        for acc in final_accessions:
+            f.write(f"{acc}\n")
+
+
+def select_unique_accessions(
+    category_quotas: Iterable[Tuple[str, int]],
+    category_candidates: Mapping[str, Sequence[str]],
+    seed: Optional[int] = None,
+    shuffle_within_category: bool = False,
+) -> List[str]:
+    """Build a unique accession list across categories in deterministic order.
+
+    Categories are processed in the provided ``category_quotas`` order.
+    Duplicate accessions are removed globally across all categories.
+    """
+    seen: set[str] = set()
+    selected: List[str] = []
+    rng = random.Random(seed)
+
+    for category, quota in category_quotas:
+        q = max(0, int(quota))
+        if q == 0:
+            continue
+
+        candidates = [str(acc).strip() for acc in category_candidates.get(category, []) if str(acc).strip()]
+        if shuffle_within_category:
+            rng.shuffle(candidates)
+
+        picked = 0
+        for accession in candidates:
+            if accession in seen:
+                continue
+            seen.add(accession)
+            selected.append(accession)
+            picked += 1
+            if picked >= q:
+                break
+
+    return selected
 
 
 def ensure_dirs(io_cfg: IOConfig) -> None:
