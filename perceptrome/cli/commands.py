@@ -1,9 +1,14 @@
 import argparse
+import json
 import logging
 import os
-from typing import Any, Dict, Optional, Tuple
+import random
+import re
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+import requests
 
 from perceptrome.cli.common import (
     extract_configs, load_full_config,
@@ -132,6 +137,171 @@ def cmd_catalog_show(args: argparse.Namespace) -> int:
         print(f"    {acc}")
     if len(accessions) > 10:
         print(f"    ... (+{len(accessions)-10} more)")
+    return 0
+
+
+_CATALOG_CATEGORY_TERMS: Dict[str, str] = {
+    "plasmid": "plasmid[Filter]",
+    "virus": "Viruses[Organism]",
+    "eukaryote": "Eukaryota[Organism]",
+    "bacterium": "Bacteria[Organism]",
+    "archaea": "Archaea[Organism]",
+}
+
+
+def _normalize_category(raw: str) -> str:
+    c = (raw or "").strip().lower()
+    alias = {
+        "plasmids": "plasmid",
+        "viruses": "virus",
+        "eukaryotes": "eukaryote",
+        "bacteria": "bacterium",
+        "bacterial": "bacterium",
+        "archaea": "archaea",
+        "archaeal": "archaea",
+    }
+    c = alias.get(c, c)
+    if c not in _CATALOG_CATEGORY_TERMS:
+        raise ValueError(f"Unknown schema category: {raw!r}")
+    return c
+
+
+def _parse_catalog_schema(schema: str) -> List[Tuple[str, int]]:
+    tokens = [tok.strip() for tok in str(schema or "").split(",") if tok.strip()]
+    if not tokens:
+        raise ValueError("schema is empty")
+
+    out: List[Tuple[str, int]] = []
+    for tok in tokens:
+        m = re.fullmatch(r"(\d+)\s+([A-Za-z-]+)", tok)
+        if not m:
+            raise ValueError(f"Invalid schema token: {tok!r}; expected '<count> <category>'")
+        count = int(m.group(1))
+        if count <= 0:
+            raise ValueError(f"Non-positive count in schema token: {tok!r}")
+        out.append((_normalize_category(m.group(2)), count))
+    return out
+
+
+def _default_catalog_output(schema_items: List[Tuple[str, int]]) -> str:
+    name = "_".join(f"{cat}{count}" for cat, count in schema_items)
+    return os.path.join("config", f"{name}.txt")
+
+
+def _esearch_ids(term: str, retmax: int, ncbi_cfg, retstart: int = 0) -> List[str]:
+    url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+    params: Dict[str, Any] = {
+        "db": "nuccore",
+        "term": term,
+        "retmode": "json",
+        "retmax": int(retmax),
+        "retstart": int(retstart),
+        "email": ncbi_cfg.email,
+    }
+    if ncbi_cfg.api_key:
+        params["api_key"] = ncbi_cfg.api_key
+
+    last_error: Optional[str] = None
+    for attempt in range(ncbi_cfg.max_retries + 1):
+        try:
+            resp = requests.get(url, params=params, timeout=30)
+            resp.raise_for_status()
+            payload = json.loads(resp.text)
+            ids = payload.get("esearchresult", {}).get("idlist", [])
+            if not isinstance(ids, list):
+                raise RuntimeError("Invalid esearch payload: idlist missing")
+            return [str(x) for x in ids if str(x).strip()]
+        except Exception as e:  # noqa: BLE001
+            last_error = str(e)
+
+        if attempt < ncbi_cfg.max_retries:
+            delay = ncbi_cfg.backoff_seconds * (2 ** attempt)
+            time.sleep(delay)
+
+    raise RuntimeError(f"Failed NCBI esearch for term={term!r}: {last_error}")
+
+
+def _fetch_candidates_for_category(term: str, needed: int, ncbi_cfg, seed: Optional[int], idx: int) -> List[str]:
+    target = max(needed * 8, needed + 100)
+    target = min(target, 10000)
+    all_ids: List[str] = []
+    seen: set[str] = set()
+    retstart = 0
+    page_size = 500
+
+    while len(all_ids) < target:
+        ids = _esearch_ids(term, retmax=page_size, ncbi_cfg=ncbi_cfg, retstart=retstart)
+        if not ids:
+            break
+        for acc in ids:
+            if acc in seen:
+                continue
+            seen.add(acc)
+            all_ids.append(acc)
+        retstart += page_size
+
+    if seed is not None:
+        rng = random.Random(int(seed) + int(idx))
+        rng.shuffle(all_ids)
+    return all_ids
+
+
+def cmd_catalog_generate(args: argparse.Namespace) -> int:
+    cfg = load_full_config(args.config)
+    ncbi_cfg, _, io_cfg = extract_configs(cfg)
+    ensure_dirs(io_cfg)
+    setup_logging(io_cfg.logs_dir)
+
+    schema_items = _parse_catalog_schema(args.schema)
+    output_path = str(args.output or _default_catalog_output(schema_items))
+
+    requested_counts: Dict[str, int] = {}
+    category_order: List[str] = []
+    for category, count in schema_items:
+        if category not in requested_counts:
+            category_order.append(category)
+        requested_counts[category] = requested_counts.get(category, 0) + count
+
+    candidate_map: Dict[str, List[str]] = {}
+    for idx, category in enumerate(category_order):
+        term = _CATALOG_CATEGORY_TERMS[category]
+        candidate_map[category] = _fetch_candidates_for_category(term, requested_counts[category], ncbi_cfg, args.seed, idx)
+
+    selected_by_category: Dict[str, List[str]] = {cat: [] for cat in category_order}
+    seen_global: set[str] = set()
+
+    for category in category_order:
+        requested = requested_counts[category]
+        candidates = candidate_map.get(category, [])
+        for acc in candidates:
+            if args.dedupe and acc in seen_global:
+                continue
+            selected_by_category[category].append(acc)
+            if args.dedupe:
+                seen_global.add(acc)
+            if len(selected_by_category[category]) >= requested:
+                break
+
+        if len(selected_by_category[category]) < requested:
+            raise RuntimeError(
+                f"Not enough accessions for category {category!r}: "
+                f"requested={requested} available={len(selected_by_category[category])}"
+            )
+
+    combined: List[str] = []
+    for category in category_order:
+        combined.extend(selected_by_category[category])
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        for acc in combined:
+            f.write(f"{acc}\n")
+
+    print("[catalog-generate] Summary")
+    for category, requested in requested_counts.items():
+        print(f"  {category}: requested={requested} selected={len(selected_by_category[category])}")
+    print(f"  total={len(combined)}")
+    print(f"  output={output_path}")
     return 0
 
 
