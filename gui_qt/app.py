@@ -1,6 +1,7 @@
 import math
 import os
 import re
+import shlex
 import sys
 from datetime import datetime
 
@@ -15,7 +16,8 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QPushButton,
     QPlainTextEdit, QProgressBar,
     QSpinBox, QDoubleSpinBox, QGroupBox,
-    QTableWidget, QTableWidgetItem, QHeaderView
+    QTableWidget, QTableWidgetItem, QHeaderView,
+    QCheckBox, QComboBox
 )
 
 from .theme import apply_dark_mode
@@ -34,6 +36,9 @@ def now_str():
 
 
 class PerceptromeQt(QMainWindow):
+    TRAIN_TOKENIZERS = ["base", "codon", "aa"]
+    GENERATE_TOKENIZERS = ["base", "codon"]
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("perceptrome")
@@ -137,11 +142,38 @@ class PerceptromeQt(QMainWindow):
         layout = QVBoxLayout(w)
 
         form = QFormLayout()
+        self.train_dataset = QLineEdit()
+        self.train_dataset.setPlaceholderText("config/plasmids_10.txt")
+
+        self.train_epochs = QSpinBox()
+        self.train_epochs.setRange(1, 1_000_000)
+        self.train_epochs.setValue(10)
+
+        self.train_batch = QSpinBox()
+        self.train_batch.setRange(1, 1_000_000)
+        self.train_batch.setValue(256)
+
+        self.train_tokenizer = QComboBox()
+        self.train_tokenizer.addItems(self.TRAIN_TOKENIZERS)
+
+        self.train_raw_toggle = QCheckBox("Advanced: use raw command")
+
         self.train_cmd = QLineEdit()
-        self.train_cmd.setPlaceholderText('Example: python stream_train.py train --help')
+        self.train_cmd.setPlaceholderText('Example: python stream_train.py stream --catalog config/plasmids_10.txt')
         self.train_cmd.setMinimumHeight(32)
         self.train_cmd.setStyleSheet("QLineEdit { font-family: monospace; }")
-        form.addRow("Command:", self.train_cmd)
+        self.train_cmd.hide()
+
+        self.train_error = QLabel("")
+        self.train_error.setStyleSheet("QLabel { color: #ff7272; }")
+
+        form.addRow("Dataset / catalog:", self.train_dataset)
+        form.addRow("Epochs:", self.train_epochs)
+        form.addRow("Batch size:", self.train_batch)
+        form.addRow("Tokenizer:", self.train_tokenizer)
+        form.addRow("", self.train_raw_toggle)
+        form.addRow("Raw command:", self.train_cmd)
+        form.addRow("", self.train_error)
 
         btn_row = QHBoxLayout()
         self.btn_train_help = QPushButton("Help")
@@ -169,6 +201,7 @@ class PerceptromeQt(QMainWindow):
         self.btn_train_help.clicked.connect(self._train_help)
         self.btn_train_start.clicked.connect(self._train_start)
         self.btn_train_stop.clicked.connect(self._train_stop)
+        self.train_raw_toggle.toggled.connect(lambda checked: self.train_cmd.setVisible(checked))
         return w
 
     def _build_generate_tab(self) -> QWidget:
@@ -176,11 +209,28 @@ class PerceptromeQt(QMainWindow):
         layout = QVBoxLayout(w)
 
         form = QFormLayout()
+        self.gen_tokenizer = QComboBox()
+        self.gen_tokenizer.addItems(self.GENERATE_TOKENIZERS)
+
+        self.gen_output = QLineEdit()
+        self.gen_output.setPlaceholderText("generated/novel_plasmid.fasta")
+
+        self.gen_raw_toggle = QCheckBox("Advanced: use raw command")
+
         self.gen_cmd = QLineEdit()
-        self.gen_cmd.setPlaceholderText('Example: python stream_train.py generate --help')
+        self.gen_cmd.setPlaceholderText('Example: python stream_train.py generate-plasmid --output generated/novel_plasmid.fasta')
         self.gen_cmd.setMinimumHeight(32)
         self.gen_cmd.setStyleSheet("QLineEdit { font-family: monospace; }")
-        form.addRow("Command:", self.gen_cmd)
+        self.gen_cmd.hide()
+
+        self.gen_error = QLabel("")
+        self.gen_error.setStyleSheet("QLabel { color: #ff7272; }")
+
+        form.addRow("Tokenizer:", self.gen_tokenizer)
+        form.addRow("Output path:", self.gen_output)
+        form.addRow("", self.gen_raw_toggle)
+        form.addRow("Raw command:", self.gen_cmd)
+        form.addRow("", self.gen_error)
 
         btn_row = QHBoxLayout()
         self.btn_gen_help = QPushButton("Help")
@@ -208,6 +258,7 @@ class PerceptromeQt(QMainWindow):
         self.btn_gen_help.clicked.connect(self._gen_help)
         self.btn_generate.clicked.connect(self._gen_start)
         self.btn_gen_stop.clicked.connect(self._gen_stop)
+        self.gen_raw_toggle.toggled.connect(lambda checked: self.gen_cmd.setVisible(checked))
         return w
 
     def _build_history_tab(self) -> QWidget:
@@ -291,7 +342,16 @@ class PerceptromeQt(QMainWindow):
         self.settings.setValue("epochs", int(self.cfg_epochs.value()))
         self.settings.setValue("batch", int(self.cfg_batch.value()))
         self.settings.setValue("lr", float(self.cfg_lr.value()))
+        self.settings.setValue("train_dataset", self.train_dataset.text().strip())
+        self.settings.setValue("train_epochs", int(self.train_epochs.value()))
+        self.settings.setValue("train_batch", int(self.train_batch.value()))
+        self.settings.setValue("train_tokenizer", self.train_tokenizer.currentText())
+        self.settings.setValue("train_raw_enabled", bool(self.train_raw_toggle.isChecked()))
         self.settings.setValue("train_cmd", self.train_cmd.text().strip())
+
+        self.settings.setValue("gen_tokenizer", self.gen_tokenizer.currentText())
+        self.settings.setValue("gen_output", self.gen_output.text().strip())
+        self.settings.setValue("gen_raw_enabled", bool(self.gen_raw_toggle.isChecked()))
         self.settings.setValue("gen_cmd", self.gen_cmd.text().strip())
         self.settings.setValue("view_accession", self.view_accession.text().strip())
         self.settings.setValue("view_fasta_path", self.view_fasta_path.text().strip())
@@ -310,9 +370,18 @@ class PerceptromeQt(QMainWindow):
         self.cfg_batch.setValue(int(self.settings.value("batch", 256)))
         self.cfg_lr.setValue(float(self.settings.value("lr", 0.001)))
 
-        # sensible defaults: show subcommand help first; you can replace with real commands
-        self.train_cmd.setText(self.settings.value("train_cmd", "python stream_train.py train --help"))
-        self.gen_cmd.setText(self.settings.value("gen_cmd", "python stream_train.py generate --help"))
+        self.train_dataset.setText(self.settings.value("train_dataset", self.settings.value("dataset_list", "config/plasmids_10.txt")))
+        self.train_epochs.setValue(int(self.settings.value("train_epochs", self.settings.value("epochs", 10))))
+        self.train_batch.setValue(int(self.settings.value("train_batch", self.settings.value("batch", 256))))
+        self._set_combo_text(self.train_tokenizer, self.settings.value("train_tokenizer", "base"), default="base")
+        self.train_raw_toggle.setChecked(self._bool_setting("train_raw_enabled", False))
+        self.train_cmd.setText(self.settings.value("train_cmd", "python stream_train.py --help"))
+
+        self._set_combo_text(self.gen_tokenizer, self.settings.value("gen_tokenizer", "base"), default="base")
+        self.gen_output.setText(self.settings.value("gen_output", "generated/novel_plasmid.fasta"))
+        self.gen_raw_toggle.setChecked(self._bool_setting("gen_raw_enabled", False))
+        self.gen_cmd.setText(self.settings.value("gen_cmd", "python stream_train.py --help"))
+        self._load_last_success_presets()
         self.view_accession.setText(self.settings.value("view_accession", ""))
         self.view_fasta_path.setText(self.settings.value("view_fasta_path", "generated/novel_plasmid.fasta"))
         self.view_pdf_path.setText(self.settings.value("view_pdf_path", "generated/circular_genome.pdf"))
@@ -326,6 +395,88 @@ class PerceptromeQt(QMainWindow):
     def _workdir(self) -> str:
         wd = self.cfg_project_dir.text().strip()
         return wd if wd else "."
+
+    def _bool_setting(self, key: str, default: bool) -> bool:
+        raw = self.settings.value(key, default)
+        if isinstance(raw, bool):
+            return raw
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _set_combo_text(self, combo: QComboBox, value: str, default: str = ""):
+        target = str(value or "").strip().lower()
+        idx = combo.findText(target)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+            return
+        fallback = combo.findText(default)
+        combo.setCurrentIndex(fallback if fallback >= 0 else 0)
+
+    def _build_train_command(self) -> str:
+        dataset = self.train_dataset.text().strip()
+        tokenizer = self.train_tokenizer.currentText().strip().lower()
+        parts = [
+            "python", "stream_train.py", "stream",
+            "--catalog", dataset,
+            "--max-epochs", str(self.train_epochs.value()),
+            "--batch-size", str(self.train_batch.value()),
+            "--tokenizer", tokenizer,
+        ]
+        return " ".join(shlex.quote(p) for p in parts)
+
+    def _build_gen_command(self) -> str:
+        tokenizer = self.gen_tokenizer.currentText().strip().lower()
+        output_path = self.gen_output.text().strip()
+        parts = [
+            "python", "stream_train.py", "generate-plasmid",
+            "--tokenizer", tokenizer,
+            "--output", output_path,
+        ]
+        return " ".join(shlex.quote(p) for p in parts)
+
+    def _validate_train_inputs(self) -> str:
+        if self.train_raw_toggle.isChecked():
+            if not self.train_cmd.text().strip():
+                return "Raw command is required when advanced mode is enabled."
+            return ""
+
+        if not self.train_dataset.text().strip():
+            return "Dataset / catalog path is required."
+        return ""
+
+    def _validate_gen_inputs(self) -> str:
+        if self.gen_raw_toggle.isChecked():
+            if not self.gen_cmd.text().strip():
+                return "Raw command is required when advanced mode is enabled."
+            return ""
+
+        if not self.gen_output.text().strip():
+            return "Output path is required."
+        return ""
+
+    def _save_last_success_train_preset(self):
+        self.settings.setValue("last_success/train_dataset", self.train_dataset.text().strip())
+        self.settings.setValue("last_success/train_epochs", int(self.train_epochs.value()))
+        self.settings.setValue("last_success/train_batch", int(self.train_batch.value()))
+        self.settings.setValue("last_success/train_tokenizer", self.train_tokenizer.currentText().strip().lower())
+        self.settings.sync()
+
+    def _save_last_success_gen_preset(self):
+        self.settings.setValue("last_success/gen_tokenizer", self.gen_tokenizer.currentText().strip().lower())
+        self.settings.setValue("last_success/gen_output", self.gen_output.text().strip())
+        self.settings.sync()
+
+    def _load_last_success_presets(self):
+        train_dataset = self.settings.value("last_success/train_dataset", "")
+        if train_dataset:
+            self.train_dataset.setText(str(train_dataset))
+            self.train_epochs.setValue(int(self.settings.value("last_success/train_epochs", self.train_epochs.value())))
+            self.train_batch.setValue(int(self.settings.value("last_success/train_batch", self.train_batch.value())))
+            self._set_combo_text(self.train_tokenizer, self.settings.value("last_success/train_tokenizer", self.train_tokenizer.currentText()), default="base")
+
+        gen_output = self.settings.value("last_success/gen_output", "")
+        if gen_output:
+            self.gen_output.setText(str(gen_output))
+            self._set_combo_text(self.gen_tokenizer, self.settings.value("last_success/gen_tokenizer", self.gen_tokenizer.currentText()), default="base")
 
     def _append_log(self, box: QPlainTextEdit, text: str, max_lines: int = 5000):
         if not isValid(box) or self._closing:
@@ -376,10 +527,16 @@ class PerceptromeQt(QMainWindow):
     # Train actions (real QProcess)
     # -------------------------
     def _train_help(self):
-        self.train_cmd.setText("python stream_train.py --help")
+        self.train_raw_toggle.setChecked(True)
+        self.train_cmd.setText("python stream_train.py stream --help")
 
     def _train_start(self):
-        cmd = self.train_cmd.text().strip()
+        err = self._validate_train_inputs()
+        self.train_error.setText(err)
+        if err:
+            return
+
+        cmd = self.train_cmd.text().strip() if self.train_raw_toggle.isChecked() else self._build_train_command()
         wd = self._workdir()
 
         self.train_log.clear()
@@ -402,6 +559,8 @@ class PerceptromeQt(QMainWindow):
             self._append_log(self.train_log, f"\n[{now_str()}] [train] finished ({status})\n")
             self.btn_train_start.setEnabled(True)
             self.btn_train_stop.setEnabled(False)
+            if exit_code == 0:
+                self._save_last_success_train_preset()
             self._add_history("train_done", status)
 
         def on_error(msg: str):
@@ -424,10 +583,16 @@ class PerceptromeQt(QMainWindow):
     # Generate actions (real QProcess)
     # -------------------------
     def _gen_help(self):
-        self.gen_cmd.setText("python stream_train.py --help")
+        self.gen_raw_toggle.setChecked(True)
+        self.gen_cmd.setText("python stream_train.py generate-plasmid --help")
 
     def _gen_start(self):
-        cmd = self.gen_cmd.text().strip()
+        err = self._validate_gen_inputs()
+        self.gen_error.setText(err)
+        if err:
+            return
+
+        cmd = self.gen_cmd.text().strip() if self.gen_raw_toggle.isChecked() else self._build_gen_command()
         wd = self._workdir()
 
         self.gen_out.clear()
@@ -450,6 +615,8 @@ class PerceptromeQt(QMainWindow):
             self._append_log(self.gen_out, f"\n[{now_str()}] [generate] finished ({status})\n")
             self.btn_generate.setEnabled(True)
             self.btn_gen_stop.setEnabled(False)
+            if exit_code == 0:
+                self._save_last_success_gen_preset()
             self._add_history("generate_done", status)
 
         def on_error(msg: str):
