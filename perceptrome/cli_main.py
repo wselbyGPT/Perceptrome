@@ -5,6 +5,7 @@ from typing import Any
 from perceptrome.cli.commands import (
     cmd_init, cmd_catalog_show, cmd_fetch_one, cmd_encode_one, cmd_train_one,
     cmd_scope_one, cmd_scope_stream, cmd_stream, cmd_generate_plasmid, cmd_generate_protein,
+    cmd_doctor,
 )
 
 def build_parser() -> argparse.ArgumentParser:
@@ -13,6 +14,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     s = sub.add_parser("init"); s.set_defaults(func=cmd_init)
+    s = sub.add_parser("doctor", help="Validate config, directories, and runtime dependencies")
+    s.set_defaults(func=cmd_doctor)
     s = sub.add_parser("catalog-show"); s.add_argument("path"); s.set_defaults(func=cmd_catalog_show)
 
     s = sub.add_parser("fetch-one")

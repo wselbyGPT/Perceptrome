@@ -1,7 +1,6 @@
 import argparse, logging, os
 from typing import Any
 
-import numpy as np
 
 from ..config import extract_configs, load_full_config
 from ..encoding_main import compute_gc_from_encoded, encode_accession

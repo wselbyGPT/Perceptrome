@@ -1,9 +1,9 @@
 import argparse
+import importlib.util
 import logging
 import os
 from typing import Any, Dict, Optional, Tuple
 
-import numpy as np
 
 from perceptrome.cli.common import (
     extract_configs, load_full_config,
@@ -189,6 +189,7 @@ def cmd_encode_one(args: argparse.Namespace) -> int:
 
 
 def cmd_train_one(args: argparse.Namespace) -> int:
+    import numpy as np
     cfg = load_full_config(args.config)
     ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
     ensure_dirs(io_cfg)
@@ -252,6 +253,7 @@ def cmd_train_one(args: argparse.Namespace) -> int:
 
 
 def cmd_scope_one(args: argparse.Namespace) -> int:
+    import numpy as np
     if curses is None:
         raise RuntimeError("curses not available")
     cfg = load_full_config(args.config)
@@ -317,6 +319,7 @@ def cmd_scope_one(args: argparse.Namespace) -> int:
 
 
 def cmd_scope_stream(args: argparse.Namespace) -> int:
+    import numpy as np
     if curses is None:
         raise RuntimeError("curses not available")
     cfg = load_full_config(args.config)
@@ -418,6 +421,7 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
 
 
 def cmd_stream(args: argparse.Namespace) -> int:
+    import numpy as np
     import random
 
     cfg = load_full_config(args.config)
@@ -559,4 +563,86 @@ def cmd_generate_protein(args: argparse.Namespace) -> int:
         reject_max_x_frac=float(getattr(args, "reject_max_x_frac", 0.15)),
     )
     print(f"[generate-protein] wrote {len(seq)} aa -> {args.output}")
+    return 0
+
+
+def _dir_is_writable(path: str) -> Tuple[bool, str]:
+    if not path:
+        return False, "path is empty"
+
+    parent = path
+    while not os.path.exists(parent):
+        next_parent = os.path.dirname(parent)
+        if next_parent == parent:
+            break
+        parent = next_parent
+
+    if not os.path.isdir(parent):
+        return False, f"parent '{parent}' is not a directory"
+    if not os.access(parent, os.W_OK):
+        return False, f"parent '{parent}' is not writable"
+    return True, "ok"
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if not os.path.exists(args.config):
+        errors.append(f"Config file not found: {args.config}")
+        print("[doctor] ❌ config missing")
+    else:
+        print(f"[doctor] ✅ config found: {args.config}")
+
+    cfg = load_full_config(args.config)
+    _, _, io_cfg = extract_configs(cfg)
+
+    for label, path in (
+        ("cache_fasta_dir", io_cfg.cache_fasta_dir),
+        ("cache_genbank_dir", io_cfg.cache_genbank_dir),
+        ("cache_encoded_dir", io_cfg.cache_encoded_dir),
+        ("model_dir", io_cfg.model_dir),
+        ("checkpoints_dir", io_cfg.checkpoints_dir),
+        ("logs_dir", io_cfg.logs_dir),
+        ("state_dir", os.path.dirname(io_cfg.state_file) or "."),
+    ):
+        ok, reason = _dir_is_writable(path)
+        if ok:
+            print(f"[doctor] ✅ writable {label}: {path}")
+        else:
+            errors.append(f"{label} '{path}' is not writable ({reason})")
+            print(f"[doctor] ❌ non-writable {label}: {path} ({reason})")
+
+    required_modules = {
+        "numpy": "numpy",
+        "requests": "requests",
+        "torch": "torch",
+        "yaml (PyYAML)": "yaml",
+    }
+    for display, modname in required_modules.items():
+        if importlib.util.find_spec(modname) is None:
+            errors.append(f"Missing required package: {display}")
+            print(f"[doctor] ❌ missing package: {display}")
+        else:
+            print(f"[doctor] ✅ package available: {display}")
+
+    if importlib.util.find_spec("curses") is None:
+        warnings.append("Optional package unavailable: curses (scope commands may fail)")
+
+    if not errors:
+        ensure_dirs(io_cfg)
+        print("[doctor] ✅ directory creation check passed (ensure_dirs)")
+
+    if warnings:
+        print("[doctor] warnings:")
+        for w in warnings:
+            print(f"  - {w}")
+
+    if errors:
+        print("[doctor] actionable errors:")
+        for e in errors:
+            print(f"  - {e}")
+        return 1
+
+    print("[doctor] all checks passed.")
     return 0
