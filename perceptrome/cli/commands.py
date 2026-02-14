@@ -1,6 +1,11 @@
 import argparse
+import json
 import logging
 import os
+import shlex
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -22,6 +27,148 @@ from perceptrome.cli.common import (
 # -----------------------------
 # Small helpers
 # -----------------------------
+RUN_MANIFEST_SCHEMA_VERSION = "1.0"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def runs_dir(base_dir: Optional[str] = None) -> Path:
+    root = Path(base_dir or ".").resolve()
+    return root / "state" / "runs"
+
+
+def _run_manifest_path(run_id: str, base_dir: Optional[str] = None) -> Path:
+    return runs_dir(base_dir) / f"{run_id}.json"
+
+
+def _safe_split(command: str) -> list[str]:
+    try:
+        return shlex.split(command) if command else []
+    except ValueError:
+        return []
+
+
+def _extract_output_paths(command: str) -> Dict[str, str]:
+    output_paths: Dict[str, str] = {}
+    tokens = _safe_split(command)
+
+    capture_flags = {
+        "--output": "output",
+        "--out": "output",
+        "-o": "output",
+        "--log": "log",
+        "--log-file": "log",
+        "--state-file": "state_file",
+        "--checkpoint": "checkpoint",
+        "--save-dir": "save_dir",
+    }
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if "=" in tok and tok.startswith("--"):
+            key, value = tok.split("=", 1)
+            if key in capture_flags and value:
+                output_paths[capture_flags[key]] = value
+        elif tok in capture_flags and i + 1 < len(tokens):
+            output_paths[capture_flags[tok]] = tokens[i + 1]
+            i += 1
+        i += 1
+    return output_paths
+
+
+def create_run_manifest(
+    command: str,
+    *,
+    base_dir: Optional[str] = None,
+    source: str = "cli",
+    status: str = "starting",
+    workdir: Optional[str] = None,
+    output_paths: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"-{uuid.uuid4().hex[:8]}"
+    runs = runs_dir(base_dir)
+    runs.mkdir(parents=True, exist_ok=True)
+
+    now = _now_iso()
+    manifest = {
+        "schema_version": RUN_MANIFEST_SCHEMA_VERSION,
+        "run_id": run_id,
+        "source": source,
+        "status": status,
+        "exit_code": None,
+        "error": None,
+        "workdir": workdir or str(Path(base_dir or ".").resolve()),
+        "command": {
+            "raw": command,
+            "args": _safe_split(command),
+        },
+        "timestamps": {
+            "created_at": now,
+            "started_at": None,
+            "finished_at": None,
+            "updated_at": now,
+        },
+        "output_paths": {
+            **_extract_output_paths(command),
+            **(output_paths or {}),
+        },
+    }
+    _run_manifest_path(run_id, base_dir).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return manifest
+
+
+def update_run_manifest(
+    run_id: str,
+    *,
+    base_dir: Optional[str] = None,
+    status: Optional[str] = None,
+    exit_code: Optional[int] = None,
+    error: Optional[str] = None,
+    started: bool = False,
+    finished: bool = False,
+    output_paths: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    path = _run_manifest_path(run_id, base_dir)
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    now = _now_iso()
+
+    if status is not None:
+        manifest["status"] = status
+    if exit_code is not None:
+        manifest["exit_code"] = int(exit_code)
+    if error is not None:
+        manifest["error"] = error
+    if started:
+        manifest["timestamps"]["started_at"] = now
+    if finished:
+        manifest["timestamps"]["finished_at"] = now
+    if output_paths:
+        manifest.setdefault("output_paths", {}).update(output_paths)
+    manifest["timestamps"]["updated_at"] = now
+
+    path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return manifest
+
+
+def load_run_manifest(run_id: str, *, base_dir: Optional[str] = None) -> Dict[str, Any]:
+    return json.loads(_run_manifest_path(run_id, base_dir).read_text(encoding="utf-8"))
+
+
+def list_run_manifests(*, base_dir: Optional[str] = None) -> list[Dict[str, Any]]:
+    runs = runs_dir(base_dir)
+    if not runs.exists():
+        return []
+    manifests: list[Dict[str, Any]] = []
+    for path in sorted(runs.glob("*.json"), reverse=True):
+        try:
+            manifests.append(json.loads(path.read_text(encoding="utf-8")))
+        except Exception:
+            continue
+    return manifests
+
+
 def _pick_window_stride(args, train_cfg, tok: str) -> Tuple[int, int]:
     # Prefer CLI flags; fall back to config.
     if tok == "aa":
@@ -559,4 +706,32 @@ def cmd_generate_protein(args: argparse.Namespace) -> int:
         reject_max_x_frac=float(getattr(args, "reject_max_x_frac", 0.15)),
     )
     print(f"[generate-protein] wrote {len(seq)} aa -> {args.output}")
+    return 0
+
+
+def cmd_runs_list(args: argparse.Namespace) -> int:
+    records = list_run_manifests(base_dir=".")
+    if not records:
+        print("No run manifests found under state/runs.")
+        return 0
+
+    print(f"Found {len(records)} run(s):")
+    for item in records:
+        run_id = item.get("run_id", "?")
+        status = item.get("status", "?")
+        exit_code = item.get("exit_code")
+        started_at = item.get("timestamps", {}).get("started_at") or "-"
+        cmd = item.get("command", {}).get("raw", "")
+        print(f"- {run_id}  status={status}  exit={exit_code}  started={started_at}")
+        print(f"  cmd: {cmd}")
+    return 0
+
+
+def cmd_runs_show(args: argparse.Namespace) -> int:
+    try:
+        item = load_run_manifest(args.run_id, base_dir=".")
+    except FileNotFoundError:
+        print(f"Run manifest not found: {args.run_id}")
+        return 1
+    print(json.dumps(item, indent=2))
     return 0

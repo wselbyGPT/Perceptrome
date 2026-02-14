@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://perceptrome.local/state/runs/schema.json",
+  "title": "Perceptrome Run Manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "source",
+    "status",
+    "exit_code",
+    "command",
+    "timestamps",
+    "output_paths"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$"
+    },
+    "source": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["starting", "running", "succeeded", "failed", "stopped", "start_failed"]
+    },
+    "exit_code": {
+      "type": ["integer", "null"]
+    },
+    "error": {
+      "type": ["string", "null"]
+    },
+    "workdir": {
+      "type": "string"
+    },
+    "command": {
+      "type": "object",
+      "required": ["raw", "args"],
+      "properties": {
+        "raw": {"type": "string"},
+        "args": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "timestamps": {
+      "type": "object",
+      "required": ["created_at", "started_at", "finished_at", "updated_at"],
+      "properties": {
+        "created_at": {"type": "string", "format": "date-time"},
+        "started_at": {"type": ["string", "null"], "format": "date-time"},
+        "finished_at": {"type": ["string", "null"], "format": "date-time"},
+        "updated_at": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": false
+    },
+    "output_paths": {
+      "type": "object",
+      "additionalProperties": {"type": "string"}
+    }
+  },
+  "additionalProperties": false
+}

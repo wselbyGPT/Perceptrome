@@ -34,3 +34,10 @@ model/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Keep run manifest schema under state/ while ignoring runtime manifests
+!state/
+state/*
+!state/runs/
+state/runs/*
+!state/runs/schema.json

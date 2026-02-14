@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from .theme import apply_dark_mode
 from .runner import ProcessRunner
+from perceptrome.cli.commands import create_run_manifest, update_run_manifest
 from perceptrome.config import load_full_config, extract_configs
 from perceptrome.io_utils import ensure_dirs
 from perceptrome.ncbi_fetch import fetch_fasta
@@ -62,6 +63,8 @@ class PerceptromeQt(QMainWindow):
         # runners
         self.train_runner = ProcessRunner(self)
         self.gen_runner = ProcessRunner(self)
+        self.train_run_id = None
+        self.gen_run_id = None
 
         self._closing = False
 
@@ -387,10 +390,15 @@ class PerceptromeQt(QMainWindow):
         self._set_busy(self.train_progress, True)
         self.train_progress.setValue(0)
 
+        manifest = create_run_manifest(cmd, base_dir=wd, source="gui_train", status="starting", workdir=wd)
+        self.train_run_id = manifest["run_id"]
+
         def on_started():
             self.btn_train_start.setEnabled(False)
             self.btn_train_stop.setEnabled(True)
             self._add_history("train_start", cmd)
+            if self.train_run_id:
+                update_run_manifest(self.train_run_id, base_dir=wd, status="running", started=True)
 
         def on_line(s: str):
             self._append_log(self.train_log, s)
@@ -403,6 +411,9 @@ class PerceptromeQt(QMainWindow):
             self.btn_train_start.setEnabled(True)
             self.btn_train_stop.setEnabled(False)
             self._add_history("train_done", status)
+            if self.train_run_id:
+                final_status = "stopped" if self.train_runner.was_stop_requested() else ("succeeded" if exit_code == 0 else "failed")
+                update_run_manifest(self.train_run_id, base_dir=wd, status=final_status, exit_code=exit_code, finished=True)
 
         def on_error(msg: str):
             self._set_busy(self.train_progress, False)
@@ -410,6 +421,9 @@ class PerceptromeQt(QMainWindow):
             self.btn_train_start.setEnabled(True)
             self.btn_train_stop.setEnabled(False)
             self._add_history("train_error", msg)
+            if self.train_run_id:
+                err_status = "start_failed" if not self.train_runner.has_started() else "failed"
+                update_run_manifest(self.train_run_id, base_dir=wd, status=err_status, error=msg, finished=True)
 
         ok = self.train_runner.start(cmd, wd, on_started, on_line, on_finished, on_error)
         if not ok:
@@ -418,6 +432,8 @@ class PerceptromeQt(QMainWindow):
     def _train_stop(self):
         self.train_runner.stop(lambda s: self._append_log(self.train_log, s))
         self._add_history("train_stop", "requested")
+        if self.train_run_id:
+            update_run_manifest(self.train_run_id, base_dir=self._workdir(), status="stopped")
         self.btn_train_stop.setEnabled(False)
 
     # -------------------------
@@ -435,10 +451,15 @@ class PerceptromeQt(QMainWindow):
         self._set_busy(self.gen_progress, True)
         self.gen_progress.setValue(0)
 
+        manifest = create_run_manifest(cmd, base_dir=wd, source="gui_generate", status="starting", workdir=wd)
+        self.gen_run_id = manifest["run_id"]
+
         def on_started():
             self.btn_generate.setEnabled(False)
             self.btn_gen_stop.setEnabled(True)
             self._add_history("generate_start", cmd)
+            if self.gen_run_id:
+                update_run_manifest(self.gen_run_id, base_dir=wd, status="running", started=True)
 
         def on_line(s: str):
             self._append_log(self.gen_out, s)
@@ -451,6 +472,9 @@ class PerceptromeQt(QMainWindow):
             self.btn_generate.setEnabled(True)
             self.btn_gen_stop.setEnabled(False)
             self._add_history("generate_done", status)
+            if self.gen_run_id:
+                final_status = "stopped" if self.gen_runner.was_stop_requested() else ("succeeded" if exit_code == 0 else "failed")
+                update_run_manifest(self.gen_run_id, base_dir=wd, status=final_status, exit_code=exit_code, finished=True)
 
         def on_error(msg: str):
             self._set_busy(self.gen_progress, False)
@@ -458,6 +482,9 @@ class PerceptromeQt(QMainWindow):
             self.btn_generate.setEnabled(True)
             self.btn_gen_stop.setEnabled(False)
             self._add_history("generate_error", msg)
+            if self.gen_run_id:
+                err_status = "start_failed" if not self.gen_runner.has_started() else "failed"
+                update_run_manifest(self.gen_run_id, base_dir=wd, status=err_status, error=msg, finished=True)
 
         ok = self.gen_runner.start(cmd, wd, on_started, on_line, on_finished, on_error)
         if not ok:
@@ -466,6 +493,8 @@ class PerceptromeQt(QMainWindow):
     def _gen_stop(self):
         self.gen_runner.stop(lambda s: self._append_log(self.gen_out, s))
         self._add_history("generate_stop", "requested")
+        if self.gen_run_id:
+            update_run_manifest(self.gen_run_id, base_dir=self._workdir(), status="stopped")
         self.btn_gen_stop.setEnabled(False)
 
     # -------------------------

@@ -5,6 +5,7 @@ from typing import Any
 from perceptrome.cli.commands import (
     cmd_init, cmd_catalog_show, cmd_fetch_one, cmd_encode_one, cmd_train_one,
     cmd_scope_one, cmd_scope_stream, cmd_stream, cmd_generate_plasmid, cmd_generate_protein,
+    cmd_runs_list, cmd_runs_show,
 )
 
 def build_parser() -> argparse.ArgumentParser:
@@ -136,6 +137,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reject-max-run", type=int, default=10, help="Reject if any AA repeats longer than this")
     s.add_argument("--reject-max-x-frac", type=float, default=0.15, help="Reject if fraction of 'X' exceeds this")
     s.set_defaults(func=cmd_generate_protein)
+
+    s = sub.add_parser("runs", help="Inspect persisted run manifests")
+    runs_sub = s.add_subparsers(dest="runs_command", required=True)
+
+    rs = runs_sub.add_parser("list", help="List prior runs")
+    rs.set_defaults(func=cmd_runs_list)
+
+    rs = runs_sub.add_parser("show", help="Show one run manifest")
+    rs.add_argument("run_id", help="Run manifest id (file name without .json)")
+    rs.set_defaults(func=cmd_runs_show)
 
     return p
 
