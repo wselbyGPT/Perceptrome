@@ -14,6 +14,7 @@ from perceptrome.cli.common import (
     cleanup_accession_files, compute_window_errors, train_on_encoded,
     curses,
     run_scope_ui, run_scope_stream_ui, ScopeStreamContext,
+    start_run_logger,
     _get_tok, _get_frame, _get_min_orf, _get_grounded, _get_protein_opts,
     _get_source, _ensure_record,
 )
@@ -119,8 +120,12 @@ def cmd_init(args: argparse.Namespace) -> int:
     _, _, io_cfg = extract_configs(cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
+    runlog = start_run_logger(io_cfg, command="init")
+    runlog.emit("start")
     state = {"current_index": 0, "total_steps": 0, "plasmid_visit_counts": {}, "epoch": 0, "last_checkpoint": None}
     save_state(io_cfg.state_file, state)
+    runlog.emit("state_initialized", metric={"state_file": io_cfg.state_file})
+    runlog.finalize("ok")
     print(f"Initialized project. State file at: {io_cfg.state_file}")
     return 0
 
@@ -142,10 +147,14 @@ def cmd_fetch_one(args: argparse.Namespace) -> int:
     setup_logging(io_cfg.logs_dir)
 
     src = str(getattr(args, "source", None) or "fasta").lower()
+    runlog = start_run_logger(io_cfg, command="fetch-one", accession=args.accession)
+    runlog.emit("start", metric={"source": src})
     if src == "genbank":
         fetch_genbank(args.accession, io_cfg, ncbi_cfg, force=args.force)
     else:
         fetch_fasta(args.accession, io_cfg, ncbi_cfg, force=args.force)
+    runlog.emit("fetch_complete", metric={"source": src, "force": bool(args.force)})
+    runlog.finalize("ok")
     return 0
 
 
@@ -162,6 +171,8 @@ def cmd_encode_one(args: argparse.Namespace) -> int:
     _validate_tok_params(tok, window_size, stride, frame)
 
     src = _get_source(args, tok)
+    runlog = start_run_logger(io_cfg, command="encode-one", accession=args.accession, tokenizer=tok)
+    runlog.emit("start", metric={"source": src})
     pol = _resolve_proteome_params(args, train_cfg, state=None, tok=tok, src=src)
     protein_opts = pol.get("protein_opts") or {}
 
@@ -184,6 +195,8 @@ def cmd_encode_one(args: argparse.Namespace) -> int:
         protein_opts=protein_opts,
         save_to_disk=True, out_path=out_path,
     )
+    runlog.emit("encode_complete", metric={"shape": list(encoded.shape), "saved": out_path})
+    runlog.finalize("ok")
     print(f"{args.accession}: encoded tokenizer={tok} source={src} -> shape={encoded.shape} saved={out_path}")
     return 0
 
@@ -202,6 +215,8 @@ def cmd_train_one(args: argparse.Namespace) -> int:
     _validate_tok_params(tok, window_size, stride, frame)
 
     src = _get_source(args, tok)
+    runlog = start_run_logger(io_cfg, command="train-one", accession=args.accession, tokenizer=tok)
+    runlog.emit("start", metric={"source": src})
     pol = _resolve_proteome_params(args, train_cfg, state=state, tok=tok, src=src)
     protein_opts = pol.get("protein_opts") or {}
 
@@ -219,6 +234,7 @@ def cmd_train_one(args: argparse.Namespace) -> int:
     if os.path.exists(enc_path) and not getattr(args, "reencode", False):
         encoded = np.load(enc_path)
         logging.info(f"{args.accession}: using cached encoded at {enc_path} shape={encoded.shape}")
+        runlog.emit("encoded_cached", metric={"shape": list(encoded.shape), "path": enc_path})
     else:
         encoded = encode_accession(
             args.accession, io_cfg, window_size, stride,
@@ -231,6 +247,7 @@ def cmd_train_one(args: argparse.Namespace) -> int:
             protein_opts=protein_opts,
             save_to_disk=True, out_path=enc_path,
         )
+        runlog.emit("encoded_generated", metric={"shape": list(encoded.shape), "path": enc_path})
 
     last_total = train_on_encoded(
         args.accession, encoded,
@@ -246,6 +263,8 @@ def cmd_train_one(args: argparse.Namespace) -> int:
     pvc = state["plasmid_visit_counts"]
     pvc[args.accession] = pvc.get(args.accession, 0) + 1
     save_state(io_cfg.state_file, state)
+    runlog.emit("train_complete", metric={"steps": int(steps), "batch": int(batch_size), "last_total": float(last_total)})
+    runlog.finalize("ok")
 
     print(f"{args.accession}: train-one tokenizer={tok} source={src} steps={steps} batch={batch_size} last_total={last_total:.6f}")
     return 0
@@ -266,6 +285,8 @@ def cmd_scope_one(args: argparse.Namespace) -> int:
     _validate_tok_params(tok, window_size, stride, frame)
 
     src = _get_source(args, tok)
+    runlog = start_run_logger(io_cfg, command="scope-one", accession=args.accession, tokenizer=tok)
+    runlog.emit("start", metric={"source": src})
     pol = _resolve_proteome_params(args, train_cfg, state=None, tok=tok, src=src)
     protein_opts = pol.get("protein_opts") or {}
 
@@ -303,6 +324,8 @@ def cmd_scope_one(args: argparse.Namespace) -> int:
         loss_type=getattr(args, "loss_type", None),
     )
     metric = compute_gc_from_encoded(encoded, tokenizer=tok)
+    runlog.emit("scope_metrics_ready", metric={"windows": int(encoded.shape[0]), "gc_points": int(len(metric))})
+    runlog.finalize("ok", details="interactive UI launched")
 
     curses.wrapper(
         run_scope_ui,
@@ -331,6 +354,8 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
     _validate_tok_params(tok, window_size, stride, frame)
 
     src = _get_source(args, tok)
+    runlog = start_run_logger(io_cfg, command="scope-stream", accession=args.accession, tokenizer=tok)
+    runlog.emit("start", metric={"source": src})
     pol = _resolve_proteome_params(args, train_cfg, state=None, tok=tok, src=src)
     protein_opts = pol.get("protein_opts") or {}
 
@@ -361,6 +386,8 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
         )
 
     metric = compute_gc_from_encoded(encoded, tokenizer=tok)
+    runlog.emit("scope_stream_ready", metric={"windows": int(encoded.shape[0]), "gc_points": int(len(metric))})
+    runlog.finalize("ok", details="interactive stream UI launched")
 
     import torch
     from torch.utils.data import DataLoader, TensorDataset
@@ -435,6 +462,8 @@ def cmd_stream(args: argparse.Namespace) -> int:
     _validate_tok_params(tok, window_size, stride, frame)
 
     src = _get_source(args, tok)
+    runlog = start_run_logger(io_cfg, command="stream", tokenizer=tok)
+    runlog.emit("start", metric={"source": src, "catalog_size": len(accessions)})
 
     batch_size = args.batch_size or train_cfg.batch_size
     steps_per_plasmid = args.steps_per_plasmid or train_cfg.steps_per_plasmid
@@ -495,9 +524,16 @@ def cmd_stream(args: argparse.Namespace) -> int:
             if getattr(args, "delete_cache", False):
                 cleanup_accession_files(acc, io_cfg, enc_path)
 
+            runlog.emit(
+                "stream_step",
+                accession=acc,
+                metric={"epoch": int(epoch), "steps_per_plasmid": int(steps_per_plasmid), "batch": int(batch_size)},
+            )
+
         epoch += 1
 
     print("[stream] Training complete.")
+    runlog.finalize("ok", details=f"epochs={max_epochs}")
     return 0
 
 
@@ -508,6 +544,8 @@ def cmd_generate_plasmid(args: argparse.Namespace) -> int:
     setup_logging(io_cfg.logs_dir)
 
     tok = _get_tok(args, train_cfg)
+    runlog = start_run_logger(io_cfg, command="generate-plasmid", tokenizer=tok)
+    runlog.emit("start")
     if tok not in ("base", "codon"):
         raise ValueError("generate-plasmid supports tokenizer base|codon only (use generate-protein for aa).")
 
@@ -530,6 +568,8 @@ def cmd_generate_plasmid(args: argparse.Namespace) -> int:
         output_path=args.output,
         tokenizer=tok,
     )
+    runlog.emit("generate_complete", metric={"length_bp": len(seq), "output": args.output})
+    runlog.finalize("ok")
     print(f"[generate-plasmid] tokenizer={tok} wrote {len(seq)} bp -> {args.output}")
     return 0
 
@@ -541,6 +581,8 @@ def cmd_generate_protein(args: argparse.Namespace) -> int:
     setup_logging(io_cfg.logs_dir)
 
     window_aa = args.window_aa if args.window_aa is not None else train_cfg.protein_window_aa
+    runlog = start_run_logger(io_cfg, command="generate-protein", tokenizer="aa")
+    runlog.emit("start", metric={"window_aa": int(window_aa)})
 
     seq = generate_protein_sequence(
         train_cfg=train_cfg,
@@ -558,5 +600,7 @@ def cmd_generate_protein(args: argparse.Namespace) -> int:
         reject_max_run=int(getattr(args, "reject_max_run", 10)),
         reject_max_x_frac=float(getattr(args, "reject_max_x_frac", 0.15)),
     )
+    runlog.emit("generate_complete", metric={"length_aa": len(seq), "output": args.output})
+    runlog.finalize("ok")
     print(f"[generate-protein] wrote {len(seq)} aa -> {args.output}")
     return 0

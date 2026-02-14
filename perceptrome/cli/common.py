@@ -1,5 +1,8 @@
-import argparse, logging, os
+import argparse, json, logging, os
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 import numpy as np
 
@@ -16,6 +19,77 @@ except ImportError:
     curses = None  # type: ignore
 
 from ..scope import run_scope_ui, run_scope_stream_ui, ScopeStreamContext
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass
+class RunLogger:
+    run_id: str
+    command: str
+    tokenizer: str | None
+    accession: str | None
+    jsonl_path: str
+    summary_path: str
+    events: list[dict[str, Any]] = field(default_factory=list)
+
+    def emit(self, step: str, metric: Any = None, accession: str | None = None, tokenizer: str | None = None) -> None:
+        event = {
+            "timestamp": _utc_now_iso(),
+            "command": self.command,
+            "accession": accession if accession is not None else self.accession,
+            "tokenizer": tokenizer if tokenizer is not None else self.tokenizer,
+            "step": step,
+            "metric": metric,
+        }
+        with open(self.jsonl_path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+        self.events.append(event)
+        print(json.dumps(event, ensure_ascii=False))
+
+    def finalize(self, status: str = "ok", details: str | None = None) -> str:
+        last_metric = None
+        if self.events:
+            last_metric = self.events[-1].get("metric")
+        summary = {
+            "run_id": self.run_id,
+            "timestamp": _utc_now_iso(),
+            "command": self.command,
+            "accession": self.accession,
+            "tokenizer": self.tokenizer,
+            "status": status,
+            "events": len(self.events),
+            "last_metric": last_metric,
+            "details": details,
+            "summary": (
+                f"[{status}] {self.command} accession={self.accession or '-'} "
+                f"tokenizer={self.tokenizer or '-'} events={len(self.events)}"
+                + (f" metric={last_metric}" if last_metric is not None else "")
+                + (f" ({details})" if details else "")
+            ),
+        }
+        with open(self.summary_path, "w", encoding="utf-8") as handle:
+            json.dump(summary, handle, indent=2)
+        print(summary["summary"])
+        return summary["summary"]
+
+
+def start_run_logger(io_cfg, command: str, accession: str | None = None, tokenizer: str | None = None) -> RunLogger:
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:8]
+    runs_dir = os.path.join(io_cfg.logs_dir, "runs")
+    os.makedirs(runs_dir, exist_ok=True)
+    jsonl_path = os.path.join(runs_dir, f"{run_id}.jsonl")
+    summary_path = os.path.join(runs_dir, f"{run_id}.summary.json")
+    return RunLogger(
+        run_id=run_id,
+        command=command,
+        tokenizer=tokenizer,
+        accession=accession,
+        jsonl_path=jsonl_path,
+        summary_path=summary_path,
+    )
 
 def _get_tok(args, train_cfg):
     return (getattr(args, "tokenizer", None) or train_cfg.tokenizer).lower()
@@ -216,4 +290,3 @@ def _resolve_proteome_params(args: argparse.Namespace, train_cfg, state, tok: st
         pol["span_mask_len"] = int(getattr(args, "span_mask_len"))
 
     return pol
-

@@ -1,4 +1,5 @@
 import math
+import json
 import os
 import re
 import sys
@@ -15,7 +16,7 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QPushButton,
     QPlainTextEdit, QProgressBar,
     QSpinBox, QDoubleSpinBox, QGroupBox,
-    QTableWidget, QTableWidgetItem, QHeaderView
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView
 )
 
 from .theme import apply_dark_mode
@@ -221,16 +222,20 @@ class PerceptromeQt(QMainWindow):
         self.history_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.history_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.history_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.history_table.setSelectionMode(QAbstractItemView.SingleSelection)
 
         btn_row = QHBoxLayout()
         self.btn_clear_history = QPushButton("Clear history")
+        self.btn_reload_history = QPushButton("Reload run summaries")
         btn_row.addWidget(self.btn_clear_history)
+        btn_row.addWidget(self.btn_reload_history)
         btn_row.addStretch(1)
 
         layout.addLayout(btn_row)
         layout.addWidget(self.history_table, 1)
 
         self.btn_clear_history.clicked.connect(self._clear_history)
+        self.btn_reload_history.clicked.connect(self._load_run_summaries)
         return w
 
     def _build_view_tab(self) -> QWidget:
@@ -271,10 +276,19 @@ class PerceptromeQt(QMainWindow):
         self.view_pdf.setDocument(self.view_pdf_doc)
         self.view_pdf.setZoomMode(QPdfView.ZoomMode.FitInView)
 
+        self.view_run_summary = QPlainTextEdit()
+        self.view_run_summary.setReadOnly(True)
+        self.view_run_summary.setPlaceholderText("Latest run summaries will appear here...")
+
+        self.btn_view_refresh_summaries = QPushButton("Refresh run summaries")
+        self.btn_view_refresh_summaries.clicked.connect(self._render_latest_run_summaries)
+
         layout.addWidget(source_group)
         layout.addWidget(output_group)
         layout.addLayout(btn_row)
         layout.addWidget(self.view_log)
+        layout.addWidget(self.btn_view_refresh_summaries)
+        layout.addWidget(self.view_run_summary)
         layout.addWidget(self.view_pdf, 1)
 
         self.btn_view_generate.clicked.connect(self._view_generate_pdf)
@@ -319,6 +333,8 @@ class PerceptromeQt(QMainWindow):
         self.view_title.setText(self.settings.value("view_title", ""))
 
         self.cfg_status.setText("Loaded saved config (if any).")
+        self._load_run_summaries()
+        self._render_latest_run_summaries()
 
     # -------------------------
     # Helpers
@@ -352,6 +368,24 @@ class PerceptromeQt(QMainWindow):
             bar.setRange(0, 100)
 
     def _maybe_update_progress(self, bar: QProgressBar, line: str):
+        stripped = line.strip()
+        if stripped.startswith("{"):
+            try:
+                event = json.loads(stripped)
+                step = str(event.get("step", "")).lower()
+                if step in {"train_complete", "generate_complete", "fetch_complete", "encode_complete"}:
+                    if bar.minimum() == 0 and bar.maximum() == 0:
+                        self._set_busy(bar, False)
+                    bar.setValue(100)
+                    return
+                if step in {"start", "encoded_cached", "encoded_generated", "stream_step"}:
+                    if bar.minimum() == 0 and bar.maximum() == 0:
+                        self._set_busy(bar, False)
+                    bar.setValue(max(bar.value(), 5))
+                    return
+            except Exception:
+                pass
+
         m = PCT_RE.search(line)
         if m:
             v = int(m.group(1))
@@ -403,6 +437,8 @@ class PerceptromeQt(QMainWindow):
             self.btn_train_start.setEnabled(True)
             self.btn_train_stop.setEnabled(False)
             self._add_history("train_done", status)
+            self._load_run_summaries()
+            self._render_latest_run_summaries()
 
         def on_error(msg: str):
             self._set_busy(self.train_progress, False)
@@ -451,6 +487,8 @@ class PerceptromeQt(QMainWindow):
             self.btn_generate.setEnabled(True)
             self.btn_gen_stop.setEnabled(False)
             self._add_history("generate_done", status)
+            self._load_run_summaries()
+            self._render_latest_run_summaries()
 
         def on_error(msg: str):
             self._set_busy(self.gen_progress, False)
@@ -581,6 +619,64 @@ class PerceptromeQt(QMainWindow):
         self.history_table.setItem(r, 1, QTableWidgetItem(action))
         self.history_table.setItem(r, 2, QTableWidgetItem(details))
         self.history_table.scrollToBottom()
+
+    def _runs_dir(self) -> str:
+        cfg_path = self.cfg_stream_yaml.text().strip() or "stream_config.yaml"
+        try:
+            cfg = load_full_config(cfg_path)
+            _, _, io_cfg = extract_configs(cfg)
+            ensure_dirs(io_cfg)
+            return os.path.join(io_cfg.logs_dir, "runs")
+        except Exception:
+            return os.path.join("logs", "runs")
+
+    def _load_run_summaries(self):
+        runs_dir = self._runs_dir()
+        if not os.path.isdir(runs_dir):
+            return
+        summary_paths = [
+            os.path.join(runs_dir, name)
+            for name in os.listdir(runs_dir)
+            if name.endswith(".summary.json")
+        ]
+        rows = []
+        for path in summary_paths:
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+                rows.append(data)
+            except Exception:
+                continue
+        rows.sort(key=lambda x: str(x.get("timestamp", "")), reverse=True)
+        self.history_table.setRowCount(0)
+        for row in rows[:200]:
+            self._add_history(
+                str(row.get("command", "run")),
+                str(row.get("summary", "")),
+            )
+
+    def _render_latest_run_summaries(self):
+        runs_dir = self._runs_dir()
+        if not os.path.isdir(runs_dir):
+            self.view_run_summary.setPlainText("No run summary directory found.")
+            return
+        summary_paths = sorted(
+            [
+                os.path.join(runs_dir, name)
+                for name in os.listdir(runs_dir)
+                if name.endswith(".summary.json")
+            ],
+            reverse=True,
+        )
+        lines = []
+        for path in summary_paths[:10]:
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+                lines.append(str(data.get("summary", "")))
+            except Exception:
+                continue
+        self.view_run_summary.setPlainText("\n".join(lines) if lines else "No summaries yet.")
 
     def _clear_history(self):
         self.history_table.setRowCount(0)
