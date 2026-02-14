@@ -91,6 +91,7 @@ def train_on_encoded(
     mask_prob: Optional[float] = None,
     span_mask_prob: Optional[float] = None,
     span_mask_len: Optional[int] = None,
+    model_name: Optional[str] = None,
 ) -> float:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -123,6 +124,7 @@ def train_on_encoded(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        model_name=model_name,
     )
 
     windows_tensor = torch.from_numpy(encoded)  # (N, L, V)
@@ -225,6 +227,7 @@ def compute_window_errors(
     tokenizer: str,
     window_size_bp: int,
     loss_type: Optional[str] = None,
+    model_name: Optional[str] = None,
 ) -> np.ndarray:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -254,6 +257,7 @@ def compute_window_errors(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        model_name=model_name,
     )
 
     model.eval()

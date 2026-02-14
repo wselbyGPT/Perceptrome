@@ -484,6 +484,7 @@ def cmd_stream(args: argparse.Namespace) -> int:
                 mask_prob=pol.get("mask_prob"),
                 span_mask_prob=pol.get("span_mask_prob"),
                 span_mask_len=pol.get("span_mask_len"),
+                model_name=getattr(args, "model_name", None),
             )
 
             pvc = state["plasmid_visit_counts"]
@@ -529,6 +530,7 @@ def cmd_generate_plasmid(args: argparse.Namespace) -> int:
         name=args.name,
         output_path=args.output,
         tokenizer=tok,
+        model_name=getattr(args, "model_name", None),
     )
     print(f"[generate-plasmid] tokenizer={tok} wrote {len(seq)} bp -> {args.output}")
     return 0
@@ -557,6 +559,7 @@ def cmd_generate_protein(args: argparse.Namespace) -> int:
         reject_tries=int(getattr(args, "reject_tries", 40)),
         reject_max_run=int(getattr(args, "reject_max_run", 10)),
         reject_max_x_frac=float(getattr(args, "reject_max_x_frac", 0.15)),
+        model_name=getattr(args, "model_name", None),
     )
     print(f"[generate-protein] wrote {len(seq)} aa -> {args.output}")
     return 0

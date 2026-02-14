@@ -1,4 +1,4 @@
-import logging, os
+import logging, os, re
 from typing import Dict, Tuple
 
 try:
@@ -147,6 +147,24 @@ def get_device() -> "torch.device":
         raise RuntimeError("PyTorch not installed.")
     return torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
+
+def _normalize_model_name(model_name: str) -> str:
+    name = str(model_name).strip()
+    if not name:
+        raise ValueError("Model name cannot be empty.")
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", name)
+    safe = safe.strip("._-")
+    if not safe:
+        raise ValueError(f"Invalid model name: {model_name!r}")
+    return safe
+
+
+def resolve_checkpoint_path(io_cfg: IOConfig, model_name: str = None) -> str:
+    if model_name is None:
+        return os.path.join(io_cfg.checkpoints_dir, "latest.pt")
+    safe_name = _normalize_model_name(model_name)
+    return os.path.join(io_cfg.checkpoints_dir, "models", safe_name, "latest.pt")
+
 def load_or_init_model(
     io_cfg: IOConfig,
     seq_len: int,
@@ -161,6 +179,7 @@ def load_or_init_model(
     transformer_nhead: int,
     transformer_layers: int,
     transformer_dropout: float,
+    model_name: str = None,
 ) -> Tuple[nn.Module, "optim.Optimizer", int, str]:
     """
     seq_len: number of positions (bp or codons)
@@ -169,7 +188,7 @@ def load_or_init_model(
     if torch is None or nn is None or optim is None:
         raise RuntimeError("PyTorch is required.")
 
-    ckpt_path = os.path.join(io_cfg.checkpoints_dir, "latest.pt")
+    ckpt_path = resolve_checkpoint_path(io_cfg, model_name=model_name)
 
     mt = str(model_type).lower()
     input_dim = int(seq_len) * int(vocab_size)
@@ -292,6 +311,7 @@ def save_checkpoint(
         },
     }
     tmp = ckpt_path + ".tmp"
+    os.makedirs(os.path.dirname(ckpt_path) or ".", exist_ok=True)
     torch.save(payload, tmp)
     os.replace(tmp, ckpt_path)
     logging.info(f"Saved checkpoint step={global_step} -> {ckpt_path}")

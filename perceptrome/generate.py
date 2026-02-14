@@ -60,6 +60,7 @@ def generate_plasmid_sequence(
     name: str,
     output_path: str,
     tokenizer: str,
+    model_name: Optional[str] = None,
 ) -> str:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -99,6 +100,7 @@ def generate_plasmid_sequence(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        model_name=model_name,
     )
     model.eval()
 
@@ -168,6 +170,7 @@ def generate_protein_sequence(
     reject_tries: int = 40,
     reject_max_run: int = 10,
     reject_max_x_frac: float = 0.15,
+    model_name: Optional[str] = None,
 ) -> str:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -203,6 +206,7 @@ def generate_protein_sequence(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        model_name=model_name,
     )
     model.eval()
 

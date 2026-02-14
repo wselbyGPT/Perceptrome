@@ -105,6 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--window-size", type=int, default=None)
     s.add_argument("--stride", type=int, default=None)
     s.add_argument("--delete-cache", action="store_true")
+    s.add_argument("--model-name", default=None, help="Checkpoint namespace for this catalog training run (default: latest schema)")
     add_tok_args(s)
     add_loss_args(s)
     s.set_defaults(func=cmd_stream)
@@ -119,6 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--latent-scale", type=float, default=1.0)
     s.add_argument("--temperature", type=float, default=1.0)
     s.add_argument("--gc-bias", type=float, default=1.0)
+    s.add_argument("--model-name", default=None, help="Model checkpoint namespace to use for generation (default: latest schema)")
     add_tok_args(s)
     s.set_defaults(func=cmd_generate_plasmid)
 
@@ -135,6 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reject-tries", type=int, default=40)
     s.add_argument("--reject-max-run", type=int, default=10, help="Reject if any AA repeats longer than this")
     s.add_argument("--reject-max-x-frac", type=float, default=0.15, help="Reject if fraction of 'X' exceeds this")
+    s.add_argument("--model-name", default=None, help="Model checkpoint namespace to use for generation (default: latest schema)")
     s.set_defaults(func=cmd_generate_protein)
 
     return p
