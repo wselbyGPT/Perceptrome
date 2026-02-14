@@ -64,6 +64,7 @@ class PerceptromeQt(QMainWindow):
         self.gen_runner = ProcessRunner(self)
 
         self._closing = False
+        self._shutdown_initiated = False
 
         # Build tabs
         self.tab_home = self._build_home_tab()
@@ -398,11 +399,18 @@ class PerceptromeQt(QMainWindow):
 
         def on_finished(exit_code: int, status: str):
             self._set_busy(self.train_progress, False)
-            self.train_progress.setValue(100 if exit_code == 0 else 0)
+            self.train_progress.setValue(100 if status == "ok" else 0)
             self._append_log(self.train_log, f"\n[{now_str()}] [train] finished ({status})\n")
             self.btn_train_start.setEnabled(True)
             self.btn_train_stop.setEnabled(False)
-            self._add_history("train_done", status)
+            if status == "ok":
+                self._add_history("train_done", "completed successfully")
+            elif status == "cancelled":
+                self._add_history("train_cancelled", "stopped by user")
+            elif status == "timed_out":
+                self._add_history("train_timed_out", "forced shutdown after terminate timeout")
+            else:
+                self._add_history("train_failed", status)
 
         def on_error(msg: str):
             self._set_busy(self.train_progress, False)
@@ -416,9 +424,10 @@ class PerceptromeQt(QMainWindow):
             on_error("Failed to start process.")
 
     def _train_stop(self):
-        self.train_runner.stop(lambda s: self._append_log(self.train_log, s))
-        self._add_history("train_stop", "requested")
-        self.btn_train_stop.setEnabled(False)
+        requested = self.train_runner.stop(lambda s: self._append_log(self.train_log, s))
+        if requested:
+            self._add_history("train_stopping", "stop requested")
+            self.btn_train_stop.setEnabled(False)
 
     # -------------------------
     # Generate actions (real QProcess)
@@ -446,11 +455,18 @@ class PerceptromeQt(QMainWindow):
 
         def on_finished(exit_code: int, status: str):
             self._set_busy(self.gen_progress, False)
-            self.gen_progress.setValue(100 if exit_code == 0 else 0)
+            self.gen_progress.setValue(100 if status == "ok" else 0)
             self._append_log(self.gen_out, f"\n[{now_str()}] [generate] finished ({status})\n")
             self.btn_generate.setEnabled(True)
             self.btn_gen_stop.setEnabled(False)
-            self._add_history("generate_done", status)
+            if status == "ok":
+                self._add_history("generate_done", "completed successfully")
+            elif status == "cancelled":
+                self._add_history("generate_cancelled", "stopped by user")
+            elif status == "timed_out":
+                self._add_history("generate_timed_out", "forced shutdown after terminate timeout")
+            else:
+                self._add_history("generate_failed", status)
 
         def on_error(msg: str):
             self._set_busy(self.gen_progress, False)
@@ -464,9 +480,10 @@ class PerceptromeQt(QMainWindow):
             on_error("Failed to start process.")
 
     def _gen_stop(self):
-        self.gen_runner.stop(lambda s: self._append_log(self.gen_out, s))
-        self._add_history("generate_stop", "requested")
-        self.btn_gen_stop.setEnabled(False)
+        requested = self.gen_runner.stop(lambda s: self._append_log(self.gen_out, s))
+        if requested:
+            self._add_history("generate_stopping", "stop requested")
+            self.btn_gen_stop.setEnabled(False)
 
     # -------------------------
     # View actions
@@ -590,17 +607,17 @@ class PerceptromeQt(QMainWindow):
 
     def shutdown(self):
         # Called on app quit/close to prevent "QProcess destroyed while running"
-        if self._closing:
+        if self._shutdown_initiated:
             return
+        self._shutdown_initiated = True
+
+        if self.train_runner.stop(lambda s: self._append_log(self.train_log, s)):
+            self._add_history("train_stopping", "window closing")
+
+        if self.gen_runner.stop(lambda s: self._append_log(self.gen_out, s)):
+            self._add_history("generate_stopping", "window closing")
+
         self._closing = True
-        try:
-            self.train_runner.stop(None)
-        except Exception:
-            pass
-        try:
-            self.gen_runner.stop(None)
-        except Exception:
-            pass
 
     def closeEvent(self, event):
         self.shutdown()

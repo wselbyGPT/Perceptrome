@@ -16,7 +16,21 @@ class ProcState:
     proc: Optional[QProcess] = None
     buf: str = ""
     kill_timer: Optional[QTimer] = None
-    busy: bool = False
+    stop_requested: bool = False
+    kill_sent: bool = False
+    last_error: Optional[str] = None
+
+
+def _process_error_to_text(err: QProcess.ProcessError) -> str:
+    names = {
+        QProcess.FailedToStart: "failed_to_start",
+        QProcess.Crashed: "crashed",
+        QProcess.Timedout: "timed_out",
+        QProcess.WriteError: "write_error",
+        QProcess.ReadError: "read_error",
+        QProcess.UnknownError: "unknown_error",
+    }
+    return names.get(err, f"process_error_{int(err)}")
 
 
 class ProcessRunner(QObject):
@@ -55,6 +69,10 @@ class ProcessRunner(QObject):
         p.setWorkingDirectory(workdir if workdir else ".")
         p.setProcessChannelMode(QProcess.MergedChannels)
 
+        self.state.stop_requested = False
+        self.state.kill_sent = False
+        self.state.last_error = None
+
         # wire signals
         p.started.connect(on_started)
 
@@ -70,13 +88,34 @@ class ProcessRunner(QObject):
         def _finished(exit_code: int, exit_status):
             # flush remaining
             _read_ready()
-            status = "ok" if exit_code == 0 else f"exit_code={exit_code}"
+            if self.state.kill_timer is not None:
+                self.state.kill_timer.stop()
+                self.state.kill_timer.deleteLater()
+                self.state.kill_timer = None
+
+            if self.state.stop_requested:
+                status = "timed_out" if self.state.kill_sent else "cancelled"
+            elif exit_status == QProcess.CrashExit:
+                status = "failed"
+            elif self.state.last_error:
+                status = f"failed ({self.state.last_error})"
+            else:
+                status = "ok" if exit_code == 0 else f"failed (exit_code={exit_code})"
+
             on_finished(exit_code, status)
+
+            self.state.proc = None
+            self.state.buf = ""
+            self.state.stop_requested = False
+            self.state.kill_sent = False
+            self.state.last_error = None
 
         p.finished.connect(_finished)
 
-        def _error(err):
-            on_error(str(err))
+        def _error(err: QProcess.ProcessError):
+            msg = _process_error_to_text(err)
+            self.state.last_error = msg
+            on_error(msg)
 
         p.errorOccurred.connect(_error)
 
@@ -87,15 +126,25 @@ class ProcessRunner(QObject):
         self.state.buf = ""
         return True
 
-    def stop(self, on_line: Callable[[str], None]) -> None:
+    def stop(self, on_line: Optional[Callable[[str], None]] = None) -> bool:
         if not self.is_running():
-            return
+            return False
         p = self.state.proc
         if p is None:
-            return
+            return False
 
-        on_line("[gui] Sending terminate()...\n")
+        if self.state.stop_requested:
+            return False
+
+        self.state.stop_requested = True
+
+        if on_line:
+            on_line("[gui] Sending terminate()...\n")
         p.terminate()
+
+        if self.state.kill_timer is not None:
+            self.state.kill_timer.stop()
+            self.state.kill_timer.deleteLater()
 
         # escalate to kill if it doesn't stop quickly
         kt = QTimer(self)
@@ -103,12 +152,15 @@ class ProcessRunner(QObject):
 
         def _kill():
             if self.is_running():
-                on_line("[gui] terminate() timed out; sending kill()...\n")
+                self.state.kill_sent = True
+                if on_line:
+                    on_line("[gui] terminate() timed out; sending kill()...\n")
                 p.kill()
 
         kt.timeout.connect(_kill)
         kt.start(2000)
         self.state.kill_timer = kt
+        return True
 
     def _feed(self, text: str, on_line: Callable[[str], None]) -> None:
         # Keep line boundaries neat; preserve partial line across reads
