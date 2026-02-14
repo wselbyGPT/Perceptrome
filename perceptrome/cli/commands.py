@@ -17,6 +17,7 @@ from perceptrome.cli.common import (
     _get_tok, _get_frame, _get_min_orf, _get_grounded, _get_protein_opts,
     _get_source, _ensure_record,
 )
+from perceptrome.catalog_schema import parse_catalog_schema
 
 
 # -----------------------------
@@ -132,6 +133,50 @@ def cmd_catalog_show(args: argparse.Namespace) -> int:
         print(f"    {acc}")
     if len(accessions) > 10:
         print(f"    ... (+{len(accessions)-10} more)")
+    return 0
+
+
+def cmd_catalog_generate(args: argparse.Namespace) -> int:
+    schema = parse_catalog_schema(args.schema)
+
+    accessions_dir = getattr(args, "accessions_dir", "accessions")
+    category_files = {
+        "plasmid": ["plasmid_accessions.txt"],
+        "virus": ["virus_accessions.txt", "viruses_accessions.txt", "viroid_accessions.txt"],
+        "eukaryote": ["eukaryote_accessions.txt"],
+    }
+
+    selected: list[str] = []
+    for category, count in schema:
+        candidates = category_files.get(category, [])
+        source_path = None
+        for name in candidates:
+            p = os.path.join(accessions_dir, name)
+            if os.path.exists(p):
+                source_path = p
+                break
+        if source_path is None:
+            raise ValueError(
+                f"No accession file found for category '{category}' under {accessions_dir!r}. "
+                f"Tried: {', '.join(candidates)}"
+            )
+
+        source_accessions = read_catalog(source_path)
+        if count > len(source_accessions):
+            raise ValueError(
+                f"Requested {count} {category} entries, but only {len(source_accessions)} are available "
+                f"in {source_path}."
+            )
+        selected.extend(source_accessions[:count])
+
+    out_path = args.output
+    out_dir = os.path.dirname(out_path) or "."
+    os.makedirs(out_dir, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        for acc in selected:
+            f.write(f"{acc}\n")
+
+    print(f"Generated catalog with {len(selected)} accessions -> {out_path}")
     return 0
 
 

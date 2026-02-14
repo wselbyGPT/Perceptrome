@@ -3,7 +3,7 @@ import argparse
 from typing import Any
 
 from perceptrome.cli.commands import (
-    cmd_init, cmd_catalog_show, cmd_fetch_one, cmd_encode_one, cmd_train_one,
+    cmd_init, cmd_catalog_show, cmd_catalog_generate, cmd_fetch_one, cmd_encode_one, cmd_train_one,
     cmd_scope_one, cmd_scope_stream, cmd_stream, cmd_generate_plasmid, cmd_generate_protein,
 )
 
@@ -14,6 +14,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("init"); s.set_defaults(func=cmd_init)
     s = sub.add_parser("catalog-show"); s.add_argument("path"); s.set_defaults(func=cmd_catalog_show)
+    s = sub.add_parser("catalog-generate")
+    s.add_argument("--schema", required=True, help="Catalog schema, e.g. '100 plasmids, 25 viruses, 10 eukaryotes'")
+    s.add_argument("--output", required=True, help="Output catalog path")
+    s.add_argument("--accessions-dir", default="accessions", help="Directory containing category accession lists")
+    s.set_defaults(func=cmd_catalog_generate)
 
     s = sub.add_parser("fetch-one")
     s.add_argument("accession"); s.add_argument("--force", action="store_true")
