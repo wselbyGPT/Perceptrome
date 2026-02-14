@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import json
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -16,6 +17,14 @@ from perceptrome.cli.common import (
     run_scope_ui, run_scope_stream_ui, ScopeStreamContext,
     _get_tok, _get_frame, _get_min_orf, _get_grounded, _get_protein_opts,
     _get_source, _ensure_record,
+)
+from perceptrome.run_manifest import (
+    default_run_id,
+    init_run_manifest,
+    record_cache_fingerprint,
+    record_source_accession,
+    load_manifest,
+    file_fingerprint,
 )
 
 
@@ -207,6 +216,21 @@ def cmd_train_one(args: argparse.Namespace) -> int:
 
     batch_size = args.batch_size or train_cfg.batch_size
     steps = args.steps or train_cfg.steps_per_plasmid
+    run_id = str(getattr(args, "run_id", None) or default_run_id())
+
+    source_inputs = {
+        "mode": "train-one",
+        "catalog": None,
+        "accessions": [],
+    }
+    manifest_path = init_run_manifest(
+        io_cfg=io_cfg,
+        run_id=run_id,
+        config_path=args.config,
+        merged_config=cfg,
+        source_inputs=source_inputs,
+        dataset_accessions=[args.accession],
+    )
 
     _ensure_record(args.accession, src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=False)
 
@@ -219,6 +243,7 @@ def cmd_train_one(args: argparse.Namespace) -> int:
     if os.path.exists(enc_path) and not getattr(args, "reencode", False):
         encoded = np.load(enc_path)
         logging.info(f"{args.accession}: using cached encoded at {enc_path} shape={encoded.shape}")
+        record_cache_fingerprint(io_cfg, run_id, "encode", args.accession, enc_path)
     else:
         encoded = encode_accession(
             args.accession, io_cfg, window_size, stride,
@@ -231,6 +256,10 @@ def cmd_train_one(args: argparse.Namespace) -> int:
             protein_opts=protein_opts,
             save_to_disk=True, out_path=enc_path,
         )
+        record_cache_fingerprint(io_cfg, run_id, "encode", args.accession, enc_path)
+
+    src_file = os.path.join(io_cfg.cache_genbank_dir, f"{args.accession}.gb") if src == "genbank" else os.path.join(io_cfg.cache_fasta_dir, f"{args.accession}.fasta")
+    record_source_accession(io_cfg, run_id, args.accession, src, src_file)
 
     last_total = train_on_encoded(
         args.accession, encoded,
@@ -242,12 +271,13 @@ def cmd_train_one(args: argparse.Namespace) -> int:
         span_mask_prob=pol.get("span_mask_prob"),
         span_mask_len=pol.get("span_mask_len"),
     )
+    record_cache_fingerprint(io_cfg, run_id, "train", args.accession, enc_path)
 
     pvc = state["plasmid_visit_counts"]
     pvc[args.accession] = pvc.get(args.accession, 0) + 1
     save_state(io_cfg.state_file, state)
 
-    print(f"{args.accession}: train-one tokenizer={tok} source={src} steps={steps} batch={batch_size} last_total={last_total:.6f}")
+    print(f"{args.accession}: train-one tokenizer={tok} source={src} steps={steps} batch={batch_size} last_total={last_total:.6f} run_id={run_id} manifest={manifest_path}")
     return 0
 
 
@@ -439,6 +469,21 @@ def cmd_stream(args: argparse.Namespace) -> int:
     batch_size = args.batch_size or train_cfg.batch_size
     steps_per_plasmid = args.steps_per_plasmid or train_cfg.steps_per_plasmid
     max_epochs = args.max_epochs or train_cfg.max_stream_epochs
+    run_id = str(getattr(args, "run_id", None) or default_run_id())
+
+    source_inputs = {
+        "mode": "stream",
+        "catalog": file_fingerprint(args.catalog),
+        "accessions": [],
+    }
+    manifest_path = init_run_manifest(
+        io_cfg=io_cfg,
+        run_id=run_id,
+        config_path=args.config,
+        merged_config=cfg,
+        source_inputs=source_inputs,
+        dataset_accessions=accessions,
+    )
 
     epoch = int(state.get("epoch", 0))
 
@@ -462,6 +507,7 @@ def cmd_stream(args: argparse.Namespace) -> int:
 
             if os.path.exists(enc_path) and not getattr(args, "reencode", False):
                 encoded = np.load(enc_path)
+                record_cache_fingerprint(io_cfg, run_id, "encode", acc, enc_path)
             else:
                 encoded = encode_accession(
                     acc, io_cfg, window_size, stride,
@@ -474,6 +520,10 @@ def cmd_stream(args: argparse.Namespace) -> int:
                     protein_opts=protein_opts,
                     save_to_disk=True, out_path=enc_path,
                 )
+                record_cache_fingerprint(io_cfg, run_id, "encode", acc, enc_path)
+
+            src_file = os.path.join(io_cfg.cache_genbank_dir, f"{acc}.gb") if src == "genbank" else os.path.join(io_cfg.cache_fasta_dir, f"{acc}.fasta")
+            record_source_accession(io_cfg, run_id, acc, src, src_file)
 
             _ = train_on_encoded(
                 acc, encoded,
@@ -485,6 +535,7 @@ def cmd_stream(args: argparse.Namespace) -> int:
                 span_mask_prob=pol.get("span_mask_prob"),
                 span_mask_len=pol.get("span_mask_len"),
             )
+            record_cache_fingerprint(io_cfg, run_id, "train", acc, enc_path)
 
             pvc = state["plasmid_visit_counts"]
             pvc[acc] = pvc.get(acc, 0) + 1
@@ -497,7 +548,20 @@ def cmd_stream(args: argparse.Namespace) -> int:
 
         epoch += 1
 
-    print("[stream] Training complete.")
+    print(f"[stream] Training complete. run_id={run_id} manifest={manifest_path}")
+    return 0
+
+
+def cmd_run_manifest(args: argparse.Namespace) -> int:
+    cfg = load_full_config(args.config)
+    _, _, io_cfg = extract_configs(cfg)
+    manifest = load_manifest(io_cfg, args.run_id)
+    if getattr(args, "output", None):
+        with open(args.output, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+        print(f"wrote {args.output}")
+        return 0
+    print(json.dumps(manifest, indent=2))
     return 0
 
 

@@ -5,6 +5,7 @@ from typing import Any
 from perceptrome.cli.commands import (
     cmd_init, cmd_catalog_show, cmd_fetch_one, cmd_encode_one, cmd_train_one,
     cmd_scope_one, cmd_scope_stream, cmd_stream, cmd_generate_plasmid, cmd_generate_protein,
+    cmd_run_manifest,
 )
 
 def build_parser() -> argparse.ArgumentParser:
@@ -72,6 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reencode", action="store_true")
     add_tok_args(s)
     add_loss_args(s)
+    s.add_argument("--run-id", default=None, help="Run identifier for manifest tracking (default: auto-generated UTC id)")
     s.set_defaults(func=cmd_train_one)
 
     s = sub.add_parser("scope-one")
@@ -107,7 +109,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--delete-cache", action="store_true")
     add_tok_args(s)
     add_loss_args(s)
+    s.add_argument("--run-id", default=None, help="Run identifier for manifest tracking (default: auto-generated UTC id)")
     s.set_defaults(func=cmd_stream)
+
+    s = sub.add_parser("run-manifest")
+    s.add_argument("run_id", help="Run id whose manifest to print/export")
+    s.add_argument("--output", default=None, help="Optional path to export manifest JSON")
+    s.set_defaults(func=cmd_run_manifest)
 
     s = sub.add_parser("generate-plasmid")
     s.add_argument("--length-bp", type=int, default=10000)
