@@ -11,5 +11,6 @@ __all__ = [
     "training",
     "scope",
     "generate",
+    "genome_evolution",
     "cli",
 ]
