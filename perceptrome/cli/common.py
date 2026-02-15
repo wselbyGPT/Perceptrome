@@ -153,21 +153,21 @@ def _resolve_proteome_params(args: argparse.Namespace, train_cfg, state, tok: st
     tok = (tok or "").lower()
     src = (src or "").lower()
 
-    # Defaults from config
+    # Start with conservative defaults; we then apply curriculum, config, and CLI in order.
     pol: dict[str, Any] = {
-        "protein_len_min": getattr(train_cfg, "protein_len_min", None),
-        "protein_len_max": getattr(train_cfg, "protein_len_max", None),
-        "translation_only": bool(getattr(train_cfg, "translation_only", False)),
-        "max_windows_per_protein": getattr(train_cfg, "max_windows_per_protein", None),
-        "mask_prob": float(getattr(train_cfg, "aa_mask_prob", 0.05)) if tok == "aa" else 0.0,
-        "span_mask_prob": float(getattr(train_cfg, "aa_span_mask_prob", 0.0)),
-        "span_mask_len": int(getattr(train_cfg, "aa_span_mask_len", 0)),
+        "protein_len_min": None,
+        "protein_len_max": None,
+        "translation_only": False,
+        "max_windows_per_protein": None,
+        "mask_prob": 0.05 if tok == "aa" else 0.0,
+        "span_mask_prob": 0.0,
+        "span_mask_len": 0,
         "curriculum_tag": None,
     }
 
     total_steps = int(state.get("total_steps", 0)) if isinstance(state, dict) else 0
 
-    # Curriculum (optional)
+    # Curriculum (optional, lowest precedence)
     if (
         tok == "aa"
         and src == "genbank"
@@ -189,10 +189,31 @@ def _resolve_proteome_params(args: argparse.Namespace, train_cfg, state, tok: st
             idx = max(0, min(idx, len(phases) - 1))
             phase = phases[idx] if idx < len(phases) else {}
             if isinstance(phase, dict):
-                for k in ("protein_len_min", "protein_len_max", "translation_only", "max_windows_per_protein", "mask_prob", "span_mask_prob", "span_mask_len"):
+                key_aliases = {
+                    "mask_prob": ("mask_prob", "aa_mask_prob"),
+                    "span_mask_prob": ("span_mask_prob", "aa_span_mask_prob"),
+                    "span_mask_len": ("span_mask_len", "aa_span_mask_len"),
+                }
+                for k in ("protein_len_min", "protein_len_max", "translation_only", "max_windows_per_protein"):
                     if k in phase and phase[k] is not None:
                         pol[k] = phase[k]
+                for dst, names in key_aliases.items():
+                    for name in names:
+                        if name in phase and phase[name] is not None:
+                            pol[dst] = phase[name]
+                            break
             pol["curriculum_tag"] = f"cur{idx}"
+
+    # Config values override curriculum values
+    pol.update({
+        "protein_len_min": getattr(train_cfg, "protein_len_min", pol["protein_len_min"]),
+        "protein_len_max": getattr(train_cfg, "protein_len_max", pol["protein_len_max"]),
+        "translation_only": bool(getattr(train_cfg, "translation_only", pol["translation_only"])),
+        "max_windows_per_protein": getattr(train_cfg, "max_windows_per_protein", pol["max_windows_per_protein"]),
+        "mask_prob": float(getattr(train_cfg, "aa_mask_prob", pol["mask_prob"])) if tok == "aa" else 0.0,
+        "span_mask_prob": float(getattr(train_cfg, "aa_span_mask_prob", pol["span_mask_prob"])),
+        "span_mask_len": int(getattr(train_cfg, "aa_span_mask_len", pol["span_mask_len"])),
+    })
 
     # CLI overrides (only override if user explicitly set the flag)
     if getattr(args, "protein_len_min", None) is not None:
@@ -216,4 +237,3 @@ def _resolve_proteome_params(args: argparse.Namespace, train_cfg, state, tok: st
         pol["span_mask_len"] = int(getattr(args, "span_mask_len"))
 
     return pol
-
