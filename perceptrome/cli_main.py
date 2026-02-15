@@ -119,6 +119,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--latent-scale", type=float, default=1.0)
     s.add_argument("--temperature", type=float, default=1.0)
     s.add_argument("--gc-bias", type=float, default=1.0)
+    s.add_argument("--num-candidates", type=int, default=1)
+    s.add_argument("--top-k", type=int, default=1)
+    s.add_argument("--target-gc", type=float, default=None, help="Target GC fraction for heuristic ranking")
+    s.add_argument("--max-homopolymer", type=int, default=None, help="Max allowed homopolymer run before penalty")
+    s.add_argument("--roundtrip-score", action="store_true", help="Compute model round-trip reconstruction score")
+    s.add_argument("--summary-csv", default=None, help="Optional CSV path for candidate summary")
+    s.add_argument("--summary-json", default=None, help="Optional JSON path for candidate summary")
     add_tok_args(s)
     s.set_defaults(func=cmd_generate_plasmid)
 
@@ -135,6 +142,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reject-tries", type=int, default=40)
     s.add_argument("--reject-max-run", type=int, default=10, help="Reject if any AA repeats longer than this")
     s.add_argument("--reject-max-x-frac", type=float, default=0.15, help="Reject if fraction of 'X' exceeds this")
+    s.add_argument("--num-candidates", type=int, default=1)
+    s.add_argument("--top-k", type=int, default=1)
+    s.add_argument("--max-homopolymer", type=int, default=None, help="Max allowed AA run before penalty")
+    s.add_argument("--max-invalid-aa-ratio", type=float, default=0.15)
+    s.add_argument("--stop-policy", choices=["allow", "none", "terminal"], default="allow")
+    s.add_argument("--roundtrip-score", action="store_true", help="Compute model round-trip reconstruction score")
+    s.add_argument("--summary-csv", default=None, help="Optional CSV path for candidate summary")
+    s.add_argument("--summary-json", default=None, help="Optional JSON path for candidate summary")
     s.set_defaults(func=cmd_generate_protein)
 
     return p

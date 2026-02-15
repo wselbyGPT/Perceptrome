@@ -516,7 +516,7 @@ def cmd_generate_plasmid(args: argparse.Namespace) -> int:
     frame = _get_frame(args, train_cfg)
     _validate_tok_params(tok, int(window_size), int(stride), frame)
 
-    seq = generate_plasmid_sequence(
+    result = generate_plasmid_sequence(
         train_cfg=train_cfg,
         io_cfg=io_cfg,
         length_bp=args.length_bp,
@@ -529,8 +529,16 @@ def cmd_generate_plasmid(args: argparse.Namespace) -> int:
         name=args.name,
         output_path=args.output,
         tokenizer=tok,
+        num_candidates=int(getattr(args, "num_candidates", 1)),
+        top_k=int(getattr(args, "top_k", 1)),
+        target_gc=getattr(args, "target_gc", None),
+        max_homopolymer=getattr(args, "max_homopolymer", None),
+        roundtrip_score=bool(getattr(args, "roundtrip_score", False)),
+        summary_csv=getattr(args, "summary_csv", None),
+        summary_json=getattr(args, "summary_json", None),
     )
-    print(f"[generate-plasmid] tokenizer={tok} wrote {len(seq)} bp -> {args.output}")
+    top = result["top"]
+    print(f"[generate-plasmid] tokenizer={tok} wrote {len(top)} top candidates (best len={top[0]['length']} bp) -> {args.output}")
     return 0
 
 
@@ -542,7 +550,7 @@ def cmd_generate_protein(args: argparse.Namespace) -> int:
 
     window_aa = args.window_aa if args.window_aa is not None else train_cfg.protein_window_aa
 
-    seq = generate_protein_sequence(
+    result = generate_protein_sequence(
         train_cfg=train_cfg,
         io_cfg=io_cfg,
         length_aa=args.length_aa,
@@ -557,6 +565,15 @@ def cmd_generate_protein(args: argparse.Namespace) -> int:
         reject_tries=int(getattr(args, "reject_tries", 40)),
         reject_max_run=int(getattr(args, "reject_max_run", 10)),
         reject_max_x_frac=float(getattr(args, "reject_max_x_frac", 0.15)),
+        num_candidates=int(getattr(args, "num_candidates", 1)),
+        top_k=int(getattr(args, "top_k", 1)),
+        max_homopolymer=getattr(args, "max_homopolymer", None),
+        max_invalid_aa_ratio=float(getattr(args, "max_invalid_aa_ratio", 0.15)),
+        stop_policy=str(getattr(args, "stop_policy", "allow")),
+        roundtrip_score=bool(getattr(args, "roundtrip_score", False)),
+        summary_csv=getattr(args, "summary_csv", None),
+        summary_json=getattr(args, "summary_json", None),
     )
-    print(f"[generate-protein] wrote {len(seq)} aa -> {args.output}")
+    top = result["top"]
+    print(f"[generate-protein] wrote {len(top)} top candidates (best len={top[0]['length']} aa) -> {args.output}")
     return 0

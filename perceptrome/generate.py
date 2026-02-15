@@ -1,5 +1,7 @@
+import csv
+import json
 import logging, os, random
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -11,6 +13,11 @@ except ImportError:
 from .config import TrainingConfig, IOConfig
 from .model import get_device, load_or_init_model
 from .encoding_main import tokenizer_meta, IDX_TO_CODON, CODON_VOCAB_SIZE, GC_COUNT_PER_TOKEN, IDX_TO_AA, AA_VOCAB_SIZE
+
+BASE_TO_IDX = {"A": 0, "C": 1, "G": 2, "T": 3}
+CODON_TO_IDX = {codon: i for i, codon in enumerate(IDX_TO_CODON)}
+AA_TO_IDX = {aa: i for i, aa in enumerate(IDX_TO_AA)}
+VALID_AA_CHARS = set("ACDEFGHIKLMNPQRSTVWY")
 
 def _sample_from_logits(logits: np.ndarray, temperature: float) -> int:
     """Sample an index from a logits vector using softmax( logits / T )."""
@@ -47,6 +54,133 @@ def _passes_protein_filters(seq: str, max_run: int, max_x_frac: float) -> bool:
             return False
     return True
 
+
+def _max_homopolymer_run(seq: str) -> int:
+    if not seq:
+        return 0
+    best = run = 1
+    for i in range(1, len(seq)):
+        if seq[i] == seq[i - 1]:
+            run += 1
+            best = max(best, run)
+        else:
+            run = 1
+    return best
+
+
+def _gc_fraction(seq: str) -> float:
+    if not seq:
+        return 0.0
+    gc = sum(1 for c in seq if c in ("G", "C"))
+    return gc / float(len(seq))
+
+
+def _invalid_aa_ratio(seq: str) -> float:
+    if not seq:
+        return 1.0
+    bad = sum(1 for aa in seq if aa not in VALID_AA_CHARS and aa != "*")
+    return bad / float(len(seq))
+
+
+def _stop_penalty(seq: str, stop_policy: str) -> float:
+    pol = str(stop_policy or "allow").lower()
+    stop_count = seq.count("*")
+    if pol == "allow":
+        return 0.0
+    if pol == "none":
+        return float(stop_count)
+    if pol == "terminal":
+        if stop_count == 0:
+            return 0.0
+        if stop_count == 1 and seq.endswith("*"):
+            return 0.0
+        return float(stop_count)
+    raise ValueError(f"Unknown stop policy: {stop_policy}")
+
+
+def _roundtrip_score(
+    model: Any,
+    seq: str,
+    tokenizer: str,
+    seq_len: int,
+    vocab_size: int,
+    device: Any,
+    loss_type: str,
+) -> Optional[float]:
+    if torch is None:
+        return None
+
+    tok = tokenizer.lower()
+    if tok == "base":
+        toks = list(seq)
+        idx_map = BASE_TO_IDX
+    elif tok == "codon":
+        toks = [seq[i:i + 3] for i in range(0, len(seq) - 2, 3)]
+        idx_map = CODON_TO_IDX
+    elif tok == "aa":
+        toks = list(seq)
+        idx_map = AA_TO_IDX
+    else:
+        return None
+
+    if not toks:
+        return None
+
+    n = min(len(toks), seq_len)
+    x = torch.zeros((1, seq_len, vocab_size), dtype=torch.float32, device=device)
+    valid = 0
+    for i in range(n):
+        idx = idx_map.get(toks[i])
+        if idx is None or idx < 0 or idx >= vocab_size:
+            continue
+        x[0, i, idx] = 1.0
+        valid += 1
+    if valid == 0:
+        return None
+
+    x_flat = x.view(1, seq_len * vocab_size)
+    with torch.no_grad():
+        mu, _ = model.encode(x_flat)
+        probs = model.decode_probs(mu, seq_len=seq_len, vocab_size=vocab_size, loss_type=loss_type)
+        p = 0.0
+        for i in range(n):
+            idx = idx_map.get(toks[i])
+            if idx is None or idx < 0 or idx >= vocab_size:
+                continue
+            p += float(probs[0, i, idx].item())
+    return p / float(valid)
+
+
+def _write_summary(path: Optional[str], rows: List[Dict[str, Any]], fmt: str) -> None:
+    if not path:
+        return
+    out_dir = os.path.dirname(path) or "."
+    os.makedirs(out_dir, exist_ok=True)
+    if fmt == "csv":
+        if not rows:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("")
+            return
+        fields = list(rows[0].keys())
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fields)
+            w.writeheader()
+            w.writerows(rows)
+        return
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(rows, f, indent=2)
+
+
+def _write_fasta(path: str, entries: List[Dict[str, Any]]) -> None:
+    out_dir = os.path.dirname(path) or "."
+    os.makedirs(out_dir, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        for e in entries:
+            f.write(f">{e['name']}\n")
+            seq = e["sequence"]
+            for i in range(0, len(seq), 60):
+                f.write(seq[i:i + 60] + "\n")
+
 def generate_plasmid_sequence(
     train_cfg: TrainingConfig,
     io_cfg: IOConfig,
@@ -60,7 +194,14 @@ def generate_plasmid_sequence(
     name: str,
     output_path: str,
     tokenizer: str,
-) -> str:
+    num_candidates: int = 1,
+    top_k: int = 1,
+    target_gc: Optional[float] = None,
+    max_homopolymer: Optional[int] = None,
+    roundtrip_score: bool = False,
+    summary_csv: Optional[str] = None,
+    summary_json: Optional[str] = None,
+) -> Dict[str, Any]:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
     tok = tokenizer.lower()
@@ -113,45 +254,69 @@ def generate_plasmid_sequence(
     latent_scale = float(latent_scale)
     gc_bias = float(gc_bias)
 
-    seq_parts: List[str] = []
+    candidates: List[Dict[str, Any]] = []
 
     with torch.no_grad():
-        for _ in range(n_windows):
-            z = torch.randn(1, latent_dim, device=device) * latent_scale
-            logits_flat = model.decode(z)   # (1, seq_len*vocab)
-            logits = logits_flat.view(seq_len, vocab_size).cpu().numpy()
+        for i in range(max(1, int(num_candidates))):
+            seq_parts: List[str] = []
+            for _ in range(n_windows):
+                z = torch.randn(1, latent_dim, device=device) * latent_scale
+                logits_flat = model.decode(z)   # (1, seq_len*vocab)
+                logits = logits_flat.view(seq_len, vocab_size).cpu().numpy()
 
-            if tok == "base":
-                idx_to_base = ["A", "C", "G", "T"]
-                for j in range(seq_len):
-                    # base/codon models are trained with MSE on sigmoid weights
-                    w = 1.0 / (1.0 + np.exp(-logits[j]))
-                    # apply gc bias to C/G
-                    if gc_bias != 1.0:
-                        w[1] *= gc_bias
-                        w[2] *= gc_bias
-                    # weights, not logits: convert to pseudo-logits via log
-                    idx = _sample_from_logits(np.log(np.clip(w, 1e-9, None)), temperature)
-                    seq_parts.append(idx_to_base[idx])
-            else:
-                for j in range(seq_len):
-                    w = 1.0 / (1.0 + np.exp(-logits[j]))
-                    if gc_bias != 1.0:
-                        w *= (gc_bias ** GC_COUNT_PER_TOKEN[: w.shape[0]])
-                    idx = _sample_from_logits(np.log(np.clip(w, 1e-9, None)), temperature)
-                    seq_parts.append(IDX_TO_CODON[idx])
+                if tok == "base":
+                    idx_to_base = ["A", "C", "G", "T"]
+                    for j in range(seq_len):
+                        w = 1.0 / (1.0 + np.exp(-logits[j]))
+                        if gc_bias != 1.0:
+                            w[1] *= gc_bias
+                            w[2] *= gc_bias
+                        idx = _sample_from_logits(np.log(np.clip(w, 1e-9, None)), temperature)
+                        seq_parts.append(idx_to_base[idx])
+                else:
+                    for j in range(seq_len):
+                        w = 1.0 / (1.0 + np.exp(-logits[j]))
+                        if gc_bias != 1.0:
+                            w *= (gc_bias ** GC_COUNT_PER_TOKEN[: w.shape[0]])
+                        idx = _sample_from_logits(np.log(np.clip(w, 1e-9, None)), temperature)
+                        seq_parts.append(IDX_TO_CODON[idx])
 
-    seq = "".join(seq_parts)
-    seq = seq[:target_bp]
+            seq = "".join(seq_parts)[:target_bp]
+            gc = _gc_fraction(seq)
+            gc_dev = abs(gc - float(target_gc)) if target_gc is not None else 0.0
+            max_run = _max_homopolymer_run(seq)
+            hp_penalty = 0.0
+            if max_homopolymer is not None and max_homopolymer > 0:
+                hp_penalty = max(0, max_run - int(max_homopolymer)) / float(max_homopolymer)
+            rt = _roundtrip_score(model, seq, tok, seq_len, vocab_size, device, loss_type="mse") if roundtrip_score else None
+            score = -(gc_dev + hp_penalty + (0.0 if rt is None else (1.0 - rt)))
+            candidates.append({
+                "rank": 0,
+                "candidate": i + 1,
+                "name": f"{name}_{i+1}",
+                "sequence": seq,
+                "length": len(seq),
+                "gc_fraction": gc,
+                "gc_target_deviation": gc_dev,
+                "max_homopolymer_run": max_run,
+                "homopolymer_penalty": hp_penalty,
+                "roundtrip_score": rt,
+                "invalid_aa_ratio": 0.0,
+                "stop_penalty": 0.0,
+                "heuristic_score": score,
+            })
 
-    out_dir = os.path.dirname(output_path) or "."
-    os.makedirs(out_dir, exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(f">{name}\n")
-        for i in range(0, len(seq), 60):
-            f.write(seq[i:i+60] + "\n")
+    ranked = sorted(candidates, key=lambda x: x["heuristic_score"], reverse=True)
+    keep = max(1, min(int(top_k), len(ranked)))
+    top = ranked[:keep]
+    for r, row in enumerate(top, start=1):
+        row["rank"] = r
 
-    return seq
+    _write_fasta(output_path, top)
+    _write_summary(summary_csv, [{k: v for k, v in row.items() if k != "sequence"} for row in ranked], fmt="csv")
+    _write_summary(summary_json, [{k: v for k, v in row.items() if k != "sequence"} for row in ranked], fmt="json")
+
+    return {"candidates": ranked, "top": top}
 
 def generate_protein_sequence(
     train_cfg: TrainingConfig,
@@ -168,7 +333,15 @@ def generate_protein_sequence(
     reject_tries: int = 40,
     reject_max_run: int = 10,
     reject_max_x_frac: float = 0.15,
-) -> str:
+    num_candidates: int = 1,
+    top_k: int = 1,
+    max_homopolymer: Optional[int] = None,
+    max_invalid_aa_ratio: float = 0.15,
+    stop_policy: str = "allow",
+    roundtrip_score: bool = False,
+    summary_csv: Optional[str] = None,
+    summary_json: Optional[str] = None,
+) -> Dict[str, Any]:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
 
@@ -228,25 +401,54 @@ def generate_protein_sequence(
                     aa_chars.append(IDX_TO_AA[idx])
         return "".join(aa_chars)[:target_aa]
 
-    if reject:
-        tries = max(1, int(reject_tries))
-        for t in range(tries):
-            seq = _sample_once()
-            if _passes_protein_filters(seq, max_run=int(reject_max_run), max_x_frac=float(reject_max_x_frac)):
-                break
-            if (t + 1) % 10 == 0:
-                logging.info(f"[generate-protein] rejection: {t+1}/{tries} rejected")
+    candidates: List[Dict[str, Any]] = []
+    for i in range(max(1, int(num_candidates))):
+        if reject:
+            tries = max(1, int(reject_tries))
+            for t in range(tries):
+                seq = _sample_once()
+                if _passes_protein_filters(seq, max_run=int(reject_max_run), max_x_frac=float(reject_max_x_frac)):
+                    break
+                if (t + 1) % 10 == 0:
+                    logging.info(f"[generate-protein] rejection: {t+1}/{tries} rejected")
+            else:
+                logging.warning("[generate-protein] rejection-sampling exhausted tries; using last sample")
+                seq = _sample_once()
         else:
-            logging.warning("[generate-protein] rejection-sampling exhausted tries; using last sample")
             seq = _sample_once()
-    else:
-        seq = _sample_once()
 
-    out_dir = os.path.dirname(output_path) or "."
-    os.makedirs(out_dir, exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(f">{name}\n")
-        for i in range(0, len(seq), 60):
-            f.write(seq[i:i+60] + "\n")
+        max_run = _max_homopolymer_run(seq)
+        hp_limit = int(max_homopolymer) if max_homopolymer is not None else int(reject_max_run)
+        hp_penalty = max(0, max_run - hp_limit) / float(max(1, hp_limit))
+        invalid_ratio = _invalid_aa_ratio(seq)
+        invalid_penalty = max(0.0, invalid_ratio - float(max_invalid_aa_ratio))
+        stop_pen = _stop_penalty(seq, stop_policy)
+        rt = _roundtrip_score(model, seq, "aa", seq_len, vocab_size, device, loss_type="ce") if roundtrip_score else None
+        score = -(hp_penalty + invalid_penalty + stop_pen + (0.0 if rt is None else (1.0 - rt)))
+        candidates.append({
+            "rank": 0,
+            "candidate": i + 1,
+            "name": f"{name}_{i+1}",
+            "sequence": seq,
+            "length": len(seq),
+            "gc_fraction": None,
+            "gc_target_deviation": None,
+            "max_homopolymer_run": max_run,
+            "homopolymer_penalty": hp_penalty,
+            "roundtrip_score": rt,
+            "invalid_aa_ratio": invalid_ratio,
+            "stop_penalty": stop_pen,
+            "heuristic_score": score,
+        })
 
-    return seq
+    ranked = sorted(candidates, key=lambda x: x["heuristic_score"], reverse=True)
+    keep = max(1, min(int(top_k), len(ranked)))
+    top = ranked[:keep]
+    for r, row in enumerate(top, start=1):
+        row["rank"] = r
+
+    _write_fasta(output_path, top)
+    _write_summary(summary_csv, [{k: v for k, v in row.items() if k != "sequence"} for row in ranked], fmt="csv")
+    _write_summary(summary_json, [{k: v for k, v in row.items() if k != "sequence"} for row in ranked], fmt="json")
+
+    return {"candidates": ranked, "top": top}
