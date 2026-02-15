@@ -4,7 +4,7 @@ from typing import Any
 
 from perceptrome.cli.commands import (
     cmd_init, cmd_catalog_show, cmd_fetch_one, cmd_encode_one, cmd_train_one,
-    cmd_scope_one, cmd_scope_stream, cmd_stream, cmd_generate_plasmid, cmd_generate_protein,
+    cmd_scope_one, cmd_scope_stream, cmd_stream, cmd_eval_one, cmd_eval_catalog, cmd_generate_plasmid, cmd_generate_protein,
 )
 
 def build_parser() -> argparse.ArgumentParser:
@@ -108,6 +108,29 @@ def build_parser() -> argparse.ArgumentParser:
     add_tok_args(s)
     add_loss_args(s)
     s.set_defaults(func=cmd_stream)
+
+
+    s = sub.add_parser("eval-one")
+    s.add_argument("accession")
+    s.add_argument("--window-size", type=int, default=None)
+    s.add_argument("--stride", type=int, default=None)
+    s.add_argument("--reencode", action="store_true")
+    s.add_argument("--seed", type=int, default=1337)
+    s.add_argument("--topk", type=int, default=5)
+    add_tok_args(s)
+    s.add_argument("--loss-type", choices=["mse", "ce"], default=None, help="Override evaluation reconstruction loss mode")
+    s.set_defaults(func=cmd_eval_one)
+
+    s = sub.add_parser("eval-catalog")
+    s.add_argument("--catalog", required=True)
+    s.add_argument("--window-size", type=int, default=None)
+    s.add_argument("--stride", type=int, default=None)
+    s.add_argument("--reencode", action="store_true")
+    s.add_argument("--seed", type=int, default=1337)
+    s.add_argument("--topk", type=int, default=5)
+    add_tok_args(s)
+    s.add_argument("--loss-type", choices=["mse", "ce"], default=None, help="Override evaluation reconstruction loss mode")
+    s.set_defaults(func=cmd_eval_catalog)
 
     s = sub.add_parser("generate-plasmid")
     s.add_argument("--length-bp", type=int, default=10000)
