@@ -12,4 +12,5 @@ __all__ = [
     "scope",
     "generate",
     "cli",
+    "genome_spec",
 ]
