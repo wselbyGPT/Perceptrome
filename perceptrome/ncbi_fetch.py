@@ -1,10 +1,11 @@
 import logging
 import os
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import requests
 
 from .config import NCBIConfig, IOConfig
+from .io_utils import software_snapshot, utc_now_iso, write_manifest
 
 
 def fetch_fasta(
@@ -12,6 +13,7 @@ def fetch_fasta(
     io_cfg: IOConfig,
     ncbi_cfg: NCBIConfig,
     force: bool = False,
+    config_snapshot: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Download FASTA for accession from NCBI nuccore, returning local path."""
     out_path = os.path.join(io_cfg.cache_fasta_dir, f"{accession}.fasta")
@@ -19,6 +21,23 @@ def fetch_fasta(
 
     if os.path.exists(out_path) and not force:
         fetch_logger.info(f"{accession}: using cached FASTA at {out_path}")
+        if not os.path.exists(f"{out_path}.manifest.json"):
+            write_manifest(
+                out_path,
+                {
+                    "accession": accession,
+                    "artifact": {"kind": "fasta", "path": out_path},
+                    "fetch": {
+                        "timestamp_utc": utc_now_iso(),
+                        "source_type": "fasta",
+                        "provider": "ncbi.nuccore",
+                        "cache_hit": True,
+                    },
+                    "effective_settings": {},
+                    "filtering": {},
+                    "software": software_snapshot(config_snapshot=config_snapshot),
+                },
+            )
         return out_path
 
     url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
@@ -40,6 +59,21 @@ def fetch_fasta(
             if resp.status_code == 200 and resp.text.strip().startswith(">"):
                 with open(out_path, "w", encoding="utf-8") as f:
                     f.write(resp.text)
+                write_manifest(
+                    out_path,
+                    {
+                        "accession": accession,
+                        "artifact": {"kind": "fasta", "path": out_path},
+                        "fetch": {
+                            "timestamp_utc": utc_now_iso(),
+                            "source_type": "fasta",
+                            "provider": "ncbi.nuccore",
+                        },
+                        "effective_settings": {},
+                        "filtering": {},
+                        "software": software_snapshot(config_snapshot=config_snapshot),
+                    },
+                )
                 fetch_logger.info(
                     f"{accession}: fetched and saved FASTA ({len(resp.text)} bytes)"
                 )
@@ -71,6 +105,7 @@ def fetch_genbank(
     ncbi_cfg: NCBIConfig,
     force: bool = False,
     rettype: str = "gbwithparts",
+    config_snapshot: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Download GenBank flatfile for accession from NCBI nuccore, returning local path."""
     out_path = os.path.join(getattr(io_cfg, "cache_genbank_dir", "cache/genbank"), f"{accession}.gb")
@@ -78,6 +113,23 @@ def fetch_genbank(
 
     if os.path.exists(out_path) and not force:
         fetch_logger.info(f"{accession}: using cached GenBank at {out_path}")
+        if not os.path.exists(f"{out_path}.manifest.json"):
+            write_manifest(
+                out_path,
+                {
+                    "accession": accession,
+                    "artifact": {"kind": "genbank", "path": out_path},
+                    "fetch": {
+                        "timestamp_utc": utc_now_iso(),
+                        "source_type": "genbank",
+                        "provider": "ncbi.nuccore",
+                        "cache_hit": True,
+                    },
+                    "effective_settings": {"rettype": rettype},
+                    "filtering": {},
+                    "software": software_snapshot(config_snapshot=config_snapshot),
+                },
+            )
         return out_path
 
     url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
@@ -101,6 +153,21 @@ def fetch_genbank(
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)
                 with open(out_path, "w", encoding="utf-8") as f:
                     f.write(resp.text)
+                write_manifest(
+                    out_path,
+                    {
+                        "accession": accession,
+                        "artifact": {"kind": "genbank", "path": out_path},
+                        "fetch": {
+                            "timestamp_utc": utc_now_iso(),
+                            "source_type": "genbank",
+                            "provider": "ncbi.nuccore",
+                        },
+                        "effective_settings": {"rettype": rettype},
+                        "filtering": {},
+                        "software": software_snapshot(config_snapshot=config_snapshot),
+                    },
+                )
                 fetch_logger.info(
                     f"{accession}: fetched and saved GenBank ({len(resp.text)} bytes)"
                 )

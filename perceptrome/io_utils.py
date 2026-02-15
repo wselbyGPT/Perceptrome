@@ -1,6 +1,9 @@
 import json
 import logging
 import os
+import platform
+import subprocess
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from .config import IOConfig
@@ -50,6 +53,45 @@ def save_state(path: str, state: Dict[str, Any]) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
     os.replace(tmp, path)
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def manifest_path_for(path: str) -> str:
+    return f"{path}.manifest.json"
+
+
+def read_manifest(path: str) -> Dict[str, Any] | None:
+    mpath = manifest_path_for(path)
+    if not os.path.exists(mpath):
+        return None
+    with open(mpath, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def write_manifest(path: str, manifest: Dict[str, Any]) -> str:
+    mpath = manifest_path_for(path)
+    tmp = f"{mpath}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2, sort_keys=True)
+    os.replace(tmp, mpath)
+    return mpath
+
+
+def software_snapshot(config_snapshot: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    git_commit = None
+    try:
+        git_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception:
+        git_commit = None
+    return {
+        "package": "perceptrome",
+        "python": platform.python_version(),
+        "git_commit": git_commit,
+        "config_snapshot": config_snapshot or {},
+    }
 
 
 def setup_logging(logs_dir: str) -> None:

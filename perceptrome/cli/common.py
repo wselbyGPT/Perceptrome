@@ -6,7 +6,7 @@ import numpy as np
 from ..config import extract_configs, load_full_config
 from ..encoding_main import compute_gc_from_encoded, encode_accession
 from ..generate import generate_plasmid_sequence, generate_protein_sequence
-from ..io_utils import ensure_dirs, load_state, read_catalog, save_state, setup_logging, encoded_cache_path
+from ..io_utils import ensure_dirs, load_state, read_catalog, save_state, setup_logging, encoded_cache_path, read_manifest
 from ..ncbi_fetch import fetch_fasta, fetch_genbank
 from ..training import cleanup_accession_files, compute_window_errors, train_on_encoded
 
@@ -105,18 +105,18 @@ def _get_source(args, tok: str) -> str:
     #   - aa: GenBank (prefer CDS translations when available)
     return "genbank" if tok == "aa" else "fasta"
 
-def _ensure_record(accession: str, src: str, io_cfg, ncbi_cfg, force: bool = False) -> str:
+def _ensure_record(accession: str, src: str, io_cfg, ncbi_cfg, force: bool = False, config_snapshot=None) -> str:
     """Ensure the requested record exists in cache; fetch if missing."""
     src = (src or "fasta").lower()
     if src == "genbank":
         gb_dir = getattr(io_cfg, "cache_genbank_dir", "cache/genbank")
         gb_path = os.path.join(gb_dir, f"{accession}.gb")
         if not os.path.exists(gb_path) or force:
-            fetch_genbank(accession, io_cfg, ncbi_cfg, force=force)
+            fetch_genbank(accession, io_cfg, ncbi_cfg, force=force, config_snapshot=config_snapshot)
         return gb_path
     fasta_path = os.path.join(io_cfg.cache_fasta_dir, f"{accession}.fasta")
     if not os.path.exists(fasta_path) or force:
-        fetch_fasta(accession, io_cfg, ncbi_cfg, force=force)
+        fetch_fasta(accession, io_cfg, ncbi_cfg, force=force, config_snapshot=config_snapshot)
     return fasta_path
 
 def _pick_window_stride(args, train_cfg, tok: str):

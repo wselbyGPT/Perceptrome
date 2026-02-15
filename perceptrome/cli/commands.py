@@ -1,4 +1,5 @@
 import argparse
+from datetime import datetime
 import logging
 import os
 from typing import Any, Dict, Optional, Tuple
@@ -16,6 +17,7 @@ from perceptrome.cli.common import (
     run_scope_ui, run_scope_stream_ui, ScopeStreamContext,
     _get_tok, _get_frame, _get_min_orf, _get_grounded, _get_protein_opts,
     _get_source, _ensure_record,
+    read_manifest,
 )
 
 
@@ -111,6 +113,70 @@ def _cache_kwargs(tok: str, min_orf: int, pol: Dict[str, Any]) -> Dict[str, Any]
     return kw
 
 
+
+def _manifest_iso_to_dt(value: Optional[str]):
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _expected_manifest(window_size: int, stride: int, tok: str, frame: int, src: str, min_orf: int, pol: Dict[str, Any], protein_opts: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    return {
+        "effective_settings": {
+            "tokenizer": tok,
+            "window_size": int(window_size),
+            "stride": int(stride),
+            "frame_offset": int(frame),
+            "source": src,
+        },
+        "filtering": {
+            "min_orf_aa": int(min_orf),
+            "max_windows_per_protein": pol.get("max_windows_per_protein"),
+            "protein_len_min": pol.get("protein_len_min"),
+            "protein_len_max": pol.get("protein_len_max"),
+            "translation_only": bool(pol.get("translation_only", False)),
+            "strict_cds": bool(protein_opts.get("strict_cds", False)),
+            "require_translation": bool(protein_opts.get("require_translation", False)),
+            "x_free": bool(protein_opts.get("x_free", False)),
+            "require_start_m": bool(protein_opts.get("require_start_m", False)),
+            "reject_partial_cds": bool(protein_opts.get("reject_partial_cds", False)),
+            "max_protein_aa": protein_opts.get("max_protein_aa"),
+        },
+    }
+
+
+def _warn_cached_encoding_manifest(accession: str, enc_path: str, io_cfg, src: str, expected: Dict[str, Dict[str, Any]]) -> None:
+    manifest = read_manifest(enc_path)
+    if not manifest:
+        logging.warning(f"{accession}: cached encoding {enc_path} missing manifest; consider --reencode")
+        return
+
+    mismatches = []
+    for section in ("effective_settings", "filtering"):
+        expected_section = expected.get(section, {})
+        actual_section = manifest.get(section, {}) if isinstance(manifest.get(section), dict) else {}
+        for key, exp_val in expected_section.items():
+            act_val = actual_section.get(key)
+            if act_val != exp_val:
+                mismatches.append(f"{section}.{key}: cached={act_val!r} expected={exp_val!r}")
+
+    if mismatches:
+        logging.warning("%s: cached encoding manifest is incompatible (%s)", accession, "; ".join(mismatches))
+
+    source_path = os.path.join(getattr(io_cfg, "cache_genbank_dir", "cache/genbank"), f"{accession}.gb") if src == "genbank" else os.path.join(io_cfg.cache_fasta_dir, f"{accession}.fasta")
+    source_manifest = read_manifest(source_path)
+    enc_fetch = _manifest_iso_to_dt((manifest.get("fetch") or {}).get("timestamp_utc") if isinstance(manifest.get("fetch"), dict) else None)
+    src_fetch = _manifest_iso_to_dt((source_manifest.get("fetch") or {}).get("timestamp_utc") if isinstance(source_manifest, dict) and isinstance(source_manifest.get("fetch"), dict) else None)
+
+    if src_fetch and enc_fetch and src_fetch > enc_fetch:
+        logging.warning(f"{accession}: cached encoding appears stale (source fetched after encoding); consider --reencode")
+    elif os.path.exists(source_path) and os.path.exists(enc_path) and os.path.getmtime(source_path) > os.path.getmtime(enc_path):
+        logging.warning(f"{accession}: cached encoding may be stale (source file newer than encoded); consider --reencode")
+
+
 # -----------------------------
 # Commands
 # -----------------------------
@@ -143,9 +209,9 @@ def cmd_fetch_one(args: argparse.Namespace) -> int:
 
     src = str(getattr(args, "source", None) or "fasta").lower()
     if src == "genbank":
-        fetch_genbank(args.accession, io_cfg, ncbi_cfg, force=args.force)
+        fetch_genbank(args.accession, io_cfg, ncbi_cfg, force=args.force, config_snapshot={"ncbi": cfg.get("ncbi", {})})
     else:
-        fetch_fasta(args.accession, io_cfg, ncbi_cfg, force=args.force)
+        fetch_fasta(args.accession, io_cfg, ncbi_cfg, force=args.force, config_snapshot={"ncbi": cfg.get("ncbi", {})})
     return 0
 
 
@@ -165,7 +231,7 @@ def cmd_encode_one(args: argparse.Namespace) -> int:
     pol = _resolve_proteome_params(args, train_cfg, state=None, tok=tok, src=src)
     protein_opts = pol.get("protein_opts") or {}
 
-    _ensure_record(args.accession, src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=False)
+    _ensure_record(args.accession, src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=False, config_snapshot={"ncbi": cfg.get("ncbi", {})})
 
     out_path = encoded_cache_path(
         io_cfg, args.accession, tok, window_size, stride, frame,
@@ -183,6 +249,7 @@ def cmd_encode_one(args: argparse.Namespace) -> int:
         translation_only=bool(pol.get("translation_only", False)),
         protein_opts=protein_opts,
         save_to_disk=True, out_path=out_path,
+        config_snapshot={"training": cfg.get("training", {}), "io": cfg.get("io", {})},
     )
     print(f"{args.accession}: encoded tokenizer={tok} source={src} -> shape={encoded.shape} saved={out_path}")
     return 0
@@ -208,7 +275,7 @@ def cmd_train_one(args: argparse.Namespace) -> int:
     batch_size = args.batch_size or train_cfg.batch_size
     steps = args.steps or train_cfg.steps_per_plasmid
 
-    _ensure_record(args.accession, src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=False)
+    _ensure_record(args.accession, src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=False, config_snapshot={"ncbi": cfg.get("ncbi", {})})
 
     enc_path = encoded_cache_path(
         io_cfg, args.accession, tok, window_size, stride, frame,
@@ -218,6 +285,7 @@ def cmd_train_one(args: argparse.Namespace) -> int:
 
     if os.path.exists(enc_path) and not getattr(args, "reencode", False):
         encoded = np.load(enc_path)
+        _warn_cached_encoding_manifest(args.accession, enc_path, io_cfg, src, _expected_manifest(window_size, stride, tok, frame, src, min_orf, pol, protein_opts))
         logging.info(f"{args.accession}: using cached encoded at {enc_path} shape={encoded.shape}")
     else:
         encoded = encode_accession(
@@ -230,6 +298,7 @@ def cmd_train_one(args: argparse.Namespace) -> int:
             translation_only=bool(pol.get("translation_only", False)),
             protein_opts=protein_opts,
             save_to_disk=True, out_path=enc_path,
+            config_snapshot={"training": cfg.get("training", {}), "io": cfg.get("io", {})},
         )
 
     last_total = train_on_encoded(
@@ -269,7 +338,7 @@ def cmd_scope_one(args: argparse.Namespace) -> int:
     pol = _resolve_proteome_params(args, train_cfg, state=None, tok=tok, src=src)
     protein_opts = pol.get("protein_opts") or {}
 
-    _ensure_record(args.accession, src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=False)
+    _ensure_record(args.accession, src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=False, config_snapshot={"ncbi": cfg.get("ncbi", {})})
 
     # NOTE: encoded_cache_path() must NOT receive grounded protein keys.
     enc_path = encoded_cache_path(
@@ -280,6 +349,7 @@ def cmd_scope_one(args: argparse.Namespace) -> int:
 
     if os.path.exists(enc_path) and not args.reencode:
         encoded = np.load(enc_path)
+        _warn_cached_encoding_manifest(args.accession, enc_path, io_cfg, src, _expected_manifest(window_size, stride, tok, frame, src, min_orf, pol, protein_opts))
     else:
         encoded = encode_accession(
             args.accession, io_cfg, window_size, stride,
@@ -291,6 +361,7 @@ def cmd_scope_one(args: argparse.Namespace) -> int:
             translation_only=bool(pol.get("translation_only", False)),
             protein_opts=protein_opts,
             save_to_disk=True, out_path=enc_path,
+            config_snapshot={"training": cfg.get("training", {}), "io": cfg.get("io", {})},
         )
 
     errors = compute_window_errors(
@@ -334,7 +405,7 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
     pol = _resolve_proteome_params(args, train_cfg, state=None, tok=tok, src=src)
     protein_opts = pol.get("protein_opts") or {}
 
-    _ensure_record(args.accession, src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=False)
+    _ensure_record(args.accession, src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=False, config_snapshot={"ncbi": cfg.get("ncbi", {})})
 
     steps = args.steps or train_cfg.steps_per_plasmid
     batch_size = args.batch_size or train_cfg.batch_size
@@ -347,6 +418,7 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
 
     if os.path.exists(enc_path) and not args.reencode:
         encoded = np.load(enc_path)
+        _warn_cached_encoding_manifest(args.accession, enc_path, io_cfg, src, _expected_manifest(window_size, stride, tok, frame, src, min_orf, pol, protein_opts))
     else:
         encoded = encode_accession(
             args.accession, io_cfg, window_size, stride,
@@ -358,6 +430,7 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
             translation_only=bool(pol.get("translation_only", False)),
             protein_opts=protein_opts,
             save_to_disk=True, out_path=enc_path,
+            config_snapshot={"training": cfg.get("training", {}), "io": cfg.get("io", {})},
         )
 
     metric = compute_gc_from_encoded(encoded, tokenizer=tok)
@@ -452,7 +525,7 @@ def cmd_stream(args: argparse.Namespace) -> int:
             pol = _resolve_proteome_params(args, train_cfg, state=state, tok=tok, src=src)
             protein_opts = pol.get("protein_opts") or {}
 
-            _ensure_record(acc, src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=False)
+            _ensure_record(acc, src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=False, config_snapshot={"ncbi": cfg.get("ncbi", {})})
 
             enc_path = encoded_cache_path(
                 io_cfg, acc, tok, window_size, stride, frame,
@@ -462,6 +535,7 @@ def cmd_stream(args: argparse.Namespace) -> int:
 
             if os.path.exists(enc_path) and not getattr(args, "reencode", False):
                 encoded = np.load(enc_path)
+                _warn_cached_encoding_manifest(acc, enc_path, io_cfg, src, _expected_manifest(window_size, stride, tok, frame, src, min_orf, pol, protein_opts))
             else:
                 encoded = encode_accession(
                     acc, io_cfg, window_size, stride,
@@ -473,6 +547,7 @@ def cmd_stream(args: argparse.Namespace) -> int:
                     translation_only=bool(pol.get("translation_only", False)),
                     protein_opts=protein_opts,
                     save_to_disk=True, out_path=enc_path,
+                    config_snapshot={"training": cfg.get("training", {}), "io": cfg.get("io", {})},
                 )
 
             _ = train_on_encoded(

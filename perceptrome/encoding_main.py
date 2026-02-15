@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
 from .config import IOConfig
+from .io_utils import software_snapshot, utc_now_iso, write_manifest
 from .encoding.constants import (
     CODONS, CODON_TO_IDX, UNK_IDX, IDX_TO_CODON, CODON_VOCAB_SIZE,
     GC_COUNT_PER_TOKEN, GC_FRAC_PER_TOKEN,
@@ -74,6 +75,7 @@ def encode_accession(
     require_start_m: Optional[bool] = None,
     reject_partial_cds: Optional[bool] = None,
     max_protein_aa: Optional[int] = None,
+    config_snapshot: Optional[Dict[str, Any]] = None,
 ) -> np.ndarray:
     tok = tokenizer.lower()
     src = source.lower()
@@ -188,6 +190,39 @@ def encode_accession(
         if out_path is None:
             out_path = os.path.join(io_cfg.cache_encoded_dir, f"{accession}.npy")
         np.save(out_path, encoded)
+
+        write_manifest(
+            out_path,
+            {
+                "accession": accession,
+                "artifact": {"kind": "encoded", "path": out_path},
+                "fetch": {
+                    "timestamp_utc": utc_now_iso(),
+                    "source_type": src,
+                },
+                "effective_settings": {
+                    "tokenizer": tok,
+                    "window_size": int(window_size),
+                    "stride": int(stride),
+                    "frame_offset": int(frame_offset),
+                    "source": src,
+                },
+                "filtering": {
+                    "min_orf_aa": int(min_orf_aa),
+                    "max_windows_per_protein": max_windows_per_protein,
+                    "protein_len_min": protein_len_min,
+                    "protein_len_max": protein_len_max,
+                    "translation_only": bool(translation_only),
+                    "strict_cds": bool(strict_cds_v) if tok == "aa" else False,
+                    "require_translation": bool(require_translation_v) if tok == "aa" else False,
+                    "x_free": bool(x_free_v) if tok == "aa" else False,
+                    "require_start_m": bool(require_start_m_v) if tok == "aa" else False,
+                    "reject_partial_cds": bool(reject_partial_cds_v) if tok == "aa" else False,
+                    "max_protein_aa": int(max_protein_aa_v) if tok == "aa" and max_protein_aa_v else None,
+                },
+                "software": software_snapshot(config_snapshot=config_snapshot),
+            },
+        )
         logging.info(f"{accession}: saved encoded tensor to {out_path}")
 
     return encoded
