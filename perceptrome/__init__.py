@@ -11,5 +11,6 @@ __all__ = [
     "training",
     "scope",
     "generate",
+    "samplers",
     "cli",
 ]
