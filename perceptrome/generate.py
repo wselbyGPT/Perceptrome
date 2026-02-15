@@ -1,5 +1,7 @@
+import csv
+import json
 import logging, os, random
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -47,6 +49,85 @@ def _passes_protein_filters(seq: str, max_run: int, max_x_frac: float) -> bool:
             return False
     return True
 
+
+def _max_homopolymer_run(seq: str) -> int:
+    if not seq:
+        return 0
+    run = 1
+    best = 1
+    for i in range(1, len(seq)):
+        if seq[i] == seq[i - 1]:
+            run += 1
+            best = max(best, run)
+        else:
+            run = 1
+    return best
+
+
+def _gc_fraction(seq: str) -> float:
+    if not seq:
+        return 0.0
+    gc = sum(1 for ch in seq if ch in ("G", "C"))
+    return gc / float(len(seq))
+
+
+def _make_out_paths(output_path: str, summary_path: Optional[str]) -> Tuple[str, str]:
+    out_dir = os.path.dirname(output_path) or "."
+    os.makedirs(out_dir, exist_ok=True)
+    summary_json = summary_path if summary_path else f"{output_path}.summary.json"
+    summary_csv = f"{summary_json}.csv" if not summary_json.endswith(".csv") else summary_json
+    return summary_json, summary_csv
+
+
+def _write_candidate_summary(summary_json: str, summary_csv: str, payload: Dict[str, object], rows: List[Dict[str, object]]) -> None:
+    with open(summary_json, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+    if not rows:
+        return
+    keys = sorted({k for row in rows for k in row.keys()})
+    with open(summary_csv, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=keys)
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+
+
+def _roundtrip_recon_score(model, seq: str, tok: str, seq_len: int, vocab_size: int, device: "torch.device") -> Optional[float]:
+    if torch is None:
+        return None
+    tok = tok.lower()
+    if tok == "base":
+        map_idx = {"A": 0, "C": 1, "G": 2, "T": 3}
+        tokens = [map_idx.get(ch, 0) for ch in seq[:seq_len]]
+    elif tok == "codon":
+        codons = [seq[i:i + 3] for i in range(0, min(len(seq), seq_len * 3), 3)]
+        codon_to_idx = {c: i for i, c in enumerate(IDX_TO_CODON)}
+        tokens = [codon_to_idx.get(c, CODON_VOCAB_SIZE - 1) for c in codons[:seq_len]]
+    else:
+        aa_to_idx = {a: i for i, a in enumerate(IDX_TO_AA)}
+        tokens = [aa_to_idx.get(ch, AA_VOCAB_SIZE - 1) for ch in seq[:seq_len]]
+
+    if len(tokens) < seq_len:
+        pad = (vocab_size - 1) if tok in ("codon", "aa") else 0
+        tokens.extend([pad] * (seq_len - len(tokens)))
+
+    x = torch.zeros((1, seq_len, vocab_size), dtype=torch.float32, device=device)
+    for j, idx in enumerate(tokens[:seq_len]):
+        x[0, j, int(idx)] = 1.0
+
+    with torch.no_grad():
+        logits_flat = model.decode(model.encode(x.view(1, -1))[0])
+        logits = logits_flat.view(1, seq_len, vocab_size)
+        if tok == "aa":
+            import torch.nn.functional as F
+            targets = torch.tensor(tokens[:seq_len], dtype=torch.long, device=device).view(1, seq_len)
+            ce = F.cross_entropy(logits.view(-1, vocab_size), targets.view(-1), reduction="mean")
+            return float(ce.item())
+        recon = torch.sigmoid(logits)
+        mse = (recon - x).pow(2).mean()
+        return float(mse.item())
+
 def generate_plasmid_sequence(
     train_cfg: TrainingConfig,
     io_cfg: IOConfig,
@@ -60,6 +141,12 @@ def generate_plasmid_sequence(
     name: str,
     output_path: str,
     tokenizer: str,
+    num_candidates: int = 1,
+    top_k: int = 1,
+    target_gc: Optional[float] = None,
+    max_homopolymer: Optional[int] = None,
+    summary_path: Optional[str] = None,
+    roundtrip_score: bool = False,
 ) -> str:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -113,36 +200,60 @@ def generate_plasmid_sequence(
     latent_scale = float(latent_scale)
     gc_bias = float(gc_bias)
 
-    seq_parts: List[str] = []
+    def _sample_once() -> str:
+        seq_parts: List[str] = []
+        with torch.no_grad():
+            for _ in range(n_windows):
+                z = torch.randn(1, latent_dim, device=device) * latent_scale
+                logits_flat = model.decode(z)
+                logits = logits_flat.view(seq_len, vocab_size).cpu().numpy()
+                if tok == "base":
+                    idx_to_base = ["A", "C", "G", "T"]
+                    for j in range(seq_len):
+                        w = 1.0 / (1.0 + np.exp(-logits[j]))
+                        if gc_bias != 1.0:
+                            w[1] *= gc_bias
+                            w[2] *= gc_bias
+                        idx = _sample_from_logits(np.log(np.clip(w, 1e-9, None)), temperature)
+                        seq_parts.append(idx_to_base[idx])
+                else:
+                    for j in range(seq_len):
+                        w = 1.0 / (1.0 + np.exp(-logits[j]))
+                        if gc_bias != 1.0:
+                            w *= (gc_bias ** GC_COUNT_PER_TOKEN[: w.shape[0]])
+                        idx = _sample_from_logits(np.log(np.clip(w, 1e-9, None)), temperature)
+                        seq_parts.append(IDX_TO_CODON[idx])
+        return "".join(seq_parts)[:target_bp]
 
-    with torch.no_grad():
-        for _ in range(n_windows):
-            z = torch.randn(1, latent_dim, device=device) * latent_scale
-            logits_flat = model.decode(z)   # (1, seq_len*vocab)
-            logits = logits_flat.view(seq_len, vocab_size).cpu().numpy()
+    nc = max(1, int(num_candidates))
+    top_k = max(1, min(int(top_k), nc))
+    target_gc = 0.5 if target_gc is None else float(target_gc)
+    max_homopolymer = int(max_homopolymer) if max_homopolymer is not None else None
 
-            if tok == "base":
-                idx_to_base = ["A", "C", "G", "T"]
-                for j in range(seq_len):
-                    # base/codon models are trained with MSE on sigmoid weights
-                    w = 1.0 / (1.0 + np.exp(-logits[j]))
-                    # apply gc bias to C/G
-                    if gc_bias != 1.0:
-                        w[1] *= gc_bias
-                        w[2] *= gc_bias
-                    # weights, not logits: convert to pseudo-logits via log
-                    idx = _sample_from_logits(np.log(np.clip(w, 1e-9, None)), temperature)
-                    seq_parts.append(idx_to_base[idx])
-            else:
-                for j in range(seq_len):
-                    w = 1.0 / (1.0 + np.exp(-logits[j]))
-                    if gc_bias != 1.0:
-                        w *= (gc_bias ** GC_COUNT_PER_TOKEN[: w.shape[0]])
-                    idx = _sample_from_logits(np.log(np.clip(w, 1e-9, None)), temperature)
-                    seq_parts.append(IDX_TO_CODON[idx])
+    candidates: List[Dict[str, object]] = []
+    for i in range(nc):
+        seq = _sample_once()
+        gc = _gc_fraction(seq)
+        run = _max_homopolymer_run(seq)
+        gc_dev = abs(gc - target_gc)
+        run_pen = 0.0 if max_homopolymer is None else max(0, run - max_homopolymer) / max(1.0, float(max_homopolymer))
+        recon = _roundtrip_recon_score(model, seq, tok, seq_len, vocab_size, device) if roundtrip_score else None
+        score = -gc_dev - run_pen - (0.1 * recon if recon is not None else 0.0)
+        candidates.append({
+            "candidate": i,
+            "sequence": seq,
+            "length": len(seq),
+            "gc_fraction": gc,
+            "gc_deviation": gc_dev,
+            "max_homopolymer": run,
+            "homopolymer_penalty": run_pen,
+            "roundtrip_recon": recon,
+            "score": score,
+        })
 
-    seq = "".join(seq_parts)
-    seq = seq[:target_bp]
+    ranked = sorted(candidates, key=lambda x: float(x["score"]), reverse=True)
+    winner = ranked[0]
+    seq = str(winner["sequence"])
 
     out_dir = os.path.dirname(output_path) or "."
     os.makedirs(out_dir, exist_ok=True)
@@ -150,6 +261,25 @@ def generate_plasmid_sequence(
         f.write(f">{name}\n")
         for i in range(0, len(seq), 60):
             f.write(seq[i:i+60] + "\n")
+
+    summary_json, summary_csv = _make_out_paths(output_path, summary_path)
+    _write_candidate_summary(
+        summary_json,
+        summary_csv,
+        {
+            "mode": "plasmid",
+            "tokenizer": tok,
+            "num_candidates": nc,
+            "top_k": top_k,
+            "target_gc": target_gc,
+            "max_homopolymer": max_homopolymer,
+            "winner": {k: v for k, v in winner.items() if k != "sequence"},
+            "top_candidates": [{k: v for k, v in c.items() if k != "sequence"} for c in ranked[:top_k]],
+            "output_path": output_path,
+        },
+        [{k: v for k, v in c.items() if k != "sequence"} for c in ranked],
+    )
+    logging.info("[generate-plasmid] wrote candidate summary: %s", summary_json)
 
     return seq
 
@@ -168,6 +298,13 @@ def generate_protein_sequence(
     reject_tries: int = 40,
     reject_max_run: int = 10,
     reject_max_x_frac: float = 0.15,
+    num_candidates: int = 1,
+    top_k: int = 1,
+    max_homopolymer: Optional[int] = None,
+    max_x_frac: Optional[float] = None,
+    max_internal_stops: int = 0,
+    summary_path: Optional[str] = None,
+    roundtrip_score: bool = False,
 ) -> str:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -242,11 +379,64 @@ def generate_protein_sequence(
     else:
         seq = _sample_once()
 
+    nc = max(1, int(num_candidates))
+    top_k = max(1, min(int(top_k), nc))
+    max_homopolymer = int(max_homopolymer) if max_homopolymer is not None else int(reject_max_run)
+    max_x_frac = float(max_x_frac) if max_x_frac is not None else float(reject_max_x_frac)
+
+    allowed = set(IDX_TO_AA)
+    candidates: List[Dict[str, object]] = []
+    for i in range(nc):
+        cand = seq if i == 0 else _sample_once()
+        run = _max_homopolymer_run(cand)
+        x_frac = cand.count("X") / float(max(1, len(cand)))
+        invalid_frac = sum(1 for ch in cand if ch not in allowed) / float(max(1, len(cand)))
+        stop_count = cand.count("*")
+        pen_run = max(0, run - max_homopolymer) / max(1.0, float(max_homopolymer))
+        pen_x = max(0.0, x_frac - max_x_frac)
+        pen_stop = max(0, stop_count - int(max_internal_stops))
+        pen_invalid = invalid_frac * 2.0
+        recon = _roundtrip_recon_score(model, cand, tok, seq_len, vocab_size, device) if roundtrip_score else None
+        score = -(pen_run + pen_x + pen_stop + pen_invalid) - (0.1 * recon if recon is not None else 0.0)
+        candidates.append({
+            "candidate": i,
+            "sequence": cand,
+            "length": len(cand),
+            "max_homopolymer": run,
+            "x_fraction": x_frac,
+            "invalid_fraction": invalid_frac,
+            "stop_count": stop_count,
+            "roundtrip_recon": recon,
+            "score": score,
+        })
+
+    ranked = sorted(candidates, key=lambda x: float(x["score"]), reverse=True)
+    seq = str(ranked[0]["sequence"])
+
     out_dir = os.path.dirname(output_path) or "."
     os.makedirs(out_dir, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(f">{name}\n")
         for i in range(0, len(seq), 60):
             f.write(seq[i:i+60] + "\n")
+
+    summary_json, summary_csv = _make_out_paths(output_path, summary_path)
+    _write_candidate_summary(
+        summary_json,
+        summary_csv,
+        {
+            "mode": "protein",
+            "num_candidates": nc,
+            "top_k": top_k,
+            "max_homopolymer": max_homopolymer,
+            "max_x_frac": max_x_frac,
+            "max_internal_stops": max_internal_stops,
+            "winner": {k: v for k, v in ranked[0].items() if k != "sequence"},
+            "top_candidates": [{k: v for k, v in c.items() if k != "sequence"} for c in ranked[:top_k]],
+            "output_path": output_path,
+        },
+        [{k: v for k, v in c.items() if k != "sequence"} for c in ranked],
+    )
+    logging.info("[generate-protein] wrote candidate summary: %s", summary_json)
 
     return seq

@@ -15,13 +15,14 @@ except ImportError:
     torch = None  # type: ignore
     DataLoader = None  # type: ignore
 
-from ..model import PlasmidVAE
+from ..model import vae_loss
 from .ui import compute_errors_with_model_and_tensor
 
 
 @dataclass
 class ScopeStreamContext:
-    model: PlasmidVAE
+    # Architecture-agnostic model (MLP VAE, TransformerVAE, etc.)
+    model: Any
     optimizer: "torch.optim.Optimizer"
     device: "torch.device"
     dataloader: DataLoader
