@@ -91,6 +91,8 @@ def train_on_encoded(
     mask_prob: Optional[float] = None,
     span_mask_prob: Optional[float] = None,
     span_mask_len: Optional[int] = None,
+    source_modality: str = "fasta",
+    proteome_flags: Optional[Dict[str, Any]] = None,
 ) -> float:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -123,6 +125,8 @@ def train_on_encoded(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        source_modality=source_modality,
+        proteome_flags=proteome_flags or {},
     )
 
     windows_tensor = torch.from_numpy(encoded)  # (N, L, V)
@@ -202,6 +206,8 @@ def train_on_encoded(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        source_modality=source_modality,
+        proteome_flags=proteome_flags or {},
     )
 
     return last_total
@@ -225,6 +231,8 @@ def compute_window_errors(
     tokenizer: str,
     window_size_bp: int,
     loss_type: Optional[str] = None,
+    source_modality: str = "fasta",
+    proteome_flags: Optional[Dict[str, Any]] = None,
 ) -> np.ndarray:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -254,6 +262,8 @@ def compute_window_errors(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        source_modality=source_modality,
+        proteome_flags=proteome_flags or {},
     )
 
     model.eval()

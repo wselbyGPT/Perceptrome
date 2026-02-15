@@ -1,4 +1,6 @@
 import argparse
+import glob
+import json
 import logging
 import os
 from typing import Any, Dict, Optional, Tuple
@@ -111,6 +113,39 @@ def _cache_kwargs(tok: str, min_orf: int, pol: Dict[str, Any]) -> Dict[str, Any]
     return kw
 
 
+def _checkpoint_context(tok: str, src: str, min_orf: int, pol: Dict[str, Any]) -> Dict[str, Any]:
+    if str(tok).lower() != "aa":
+        return {"source_modality": str(src).lower(), "proteome_flags": {}}
+
+    protein_opts = dict(pol.get("protein_opts") or {})
+    return {
+        "source_modality": str(src).lower(),
+        "proteome_flags": {
+            "min_orf_aa": int(min_orf),
+            "max_windows_per_protein": pol.get("max_windows_per_protein"),
+            "protein_len_min": pol.get("protein_len_min"),
+            "protein_len_max": pol.get("protein_len_max"),
+            "translation_only": bool(pol.get("translation_only", False)),
+            "strict_cds": bool(protein_opts.get("strict_cds", False)),
+            "require_translation": bool(protein_opts.get("require_translation", False)),
+            "x_free": bool(protein_opts.get("x_free", False)),
+            "require_start_m": bool(protein_opts.get("require_start_m", False)),
+            "reject_partial_cds": bool(protein_opts.get("reject_partial_cds", False)),
+            "max_protein_aa": protein_opts.get("max_protein_aa"),
+        },
+    }
+
+
+def _load_checkpoint_sidecar(path: str) -> Dict[str, Any]:
+    meta_path = f"{path}.meta.json"
+    if not os.path.exists(meta_path):
+        return {}
+    with open(meta_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return data if isinstance(data, dict) else {}
+
+
+
 # -----------------------------
 # Commands
 # -----------------------------
@@ -133,6 +168,41 @@ def cmd_catalog_show(args: argparse.Namespace) -> int:
     if len(accessions) > 10:
         print(f"    ... (+{len(accessions)-10} more)")
     return 0
+
+def cmd_model_list(args: argparse.Namespace) -> int:
+    cfg = load_full_config(args.config)
+    _, _, io_cfg = extract_configs(cfg)
+    ensure_dirs(io_cfg)
+
+    pattern = os.path.join(io_cfg.checkpoints_dir, "*.pt")
+    paths = sorted(glob.glob(pattern))
+    if not paths:
+        print(f"No checkpoints found in {io_cfg.checkpoints_dir}")
+        return 0
+
+    for ckpt in paths:
+        sidecar = _load_checkpoint_sidecar(ckpt)
+        print(f"checkpoint: {ckpt}")
+        if not sidecar:
+            print("  metadata: <missing sidecar>")
+            continue
+        print(f"  step={sidecar.get('global_step')} timestamp={sidecar.get('timestamp')}")
+        print(
+            "  tokenizer={tokenizer} seq_len={seq_len} vocab_size={vocab} loss={loss} model={model} source={source}".format(
+                tokenizer=sidecar.get("tokenizer"),
+                seq_len=sidecar.get("seq_len"),
+                vocab=sidecar.get("vocab_size"),
+                loss=sidecar.get("loss_type"),
+                model=sidecar.get("model_type"),
+                source=sidecar.get("source_modality"),
+            )
+        )
+        p = sidecar.get("proteome_flags", {})
+        if isinstance(p, dict):
+            print(f"  proteome_flags={json.dumps(p, sort_keys=True)}")
+    return 0
+
+
 
 
 def cmd_fetch_one(args: argparse.Namespace) -> int:
@@ -232,6 +302,8 @@ def cmd_train_one(args: argparse.Namespace) -> int:
             save_to_disk=True, out_path=enc_path,
         )
 
+    ck_ctx = _checkpoint_context(tok, src, min_orf, pol)
+
     last_total = train_on_encoded(
         args.accession, encoded,
         steps=steps, batch_size=batch_size,
@@ -241,6 +313,8 @@ def cmd_train_one(args: argparse.Namespace) -> int:
         mask_prob=pol.get("mask_prob"),
         span_mask_prob=pol.get("span_mask_prob"),
         span_mask_len=pol.get("span_mask_len"),
+        source_modality=ck_ctx["source_modality"],
+        proteome_flags=ck_ctx["proteome_flags"],
     )
 
     pvc = state["plasmid_visit_counts"]
@@ -293,6 +367,8 @@ def cmd_scope_one(args: argparse.Namespace) -> int:
             save_to_disk=True, out_path=enc_path,
         )
 
+    ck_ctx = _checkpoint_context(tok, src, min_orf, pol)
+
     errors = compute_window_errors(
         args.accession,
         encoded,
@@ -301,6 +377,8 @@ def cmd_scope_one(args: argparse.Namespace) -> int:
         tokenizer=tok,
         window_size_bp=window_size,
         loss_type=getattr(args, "loss_type", None),
+        source_modality=ck_ctx["source_modality"],
+        proteome_flags=ck_ctx["proteome_flags"],
     )
     metric = compute_gc_from_encoded(encoded, tokenizer=tok)
 
@@ -377,6 +455,7 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
     transformer_dropout = train_cfg.transformer_dropout
 
     lt = (args.loss_type if getattr(args, "loss_type", None) is not None else ("ce" if tok == "aa" else "mse"))
+    ck_ctx = _checkpoint_context(tok, src, min_orf, pol)
 
     model, optimizer, global_step, ckpt_path = load_or_init_model(
         io_cfg=io_cfg, seq_len=seq_len, vocab_size=vocab_size,
@@ -387,6 +466,8 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        source_modality=ck_ctx["source_modality"],
+        proteome_flags=ck_ctx["proteome_flags"],
     )
 
     windows_tensor = torch.from_numpy(encoded)
@@ -475,6 +556,8 @@ def cmd_stream(args: argparse.Namespace) -> int:
                     save_to_disk=True, out_path=enc_path,
                 )
 
+            ck_ctx = _checkpoint_context(tok, src, min_orf, pol)
+
             _ = train_on_encoded(
                 acc, encoded,
                 steps=steps_per_plasmid, batch_size=batch_size,
@@ -484,6 +567,8 @@ def cmd_stream(args: argparse.Namespace) -> int:
                 mask_prob=pol.get("mask_prob"),
                 span_mask_prob=pol.get("span_mask_prob"),
                 span_mask_len=pol.get("span_mask_len"),
+                source_modality=ck_ctx["source_modality"],
+                proteome_flags=ck_ctx["proteome_flags"],
             )
 
             pvc = state["plasmid_visit_counts"]
