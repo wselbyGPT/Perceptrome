@@ -1,5 +1,8 @@
-import logging, os
-from typing import Dict, Tuple
+import json
+import logging
+import os
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional, Tuple
 
 try:
     import torch
@@ -12,6 +15,90 @@ except ImportError:
     F = None      # type: ignore
 
 from .config import IOConfig
+
+
+def _checkpoint_meta_path(ckpt_path: str) -> str:
+    return f"{ckpt_path}.meta.json"
+
+
+def _load_sidecar_metadata(ckpt_path: str) -> Dict[str, Any]:
+    meta_path = _checkpoint_meta_path(ckpt_path)
+    if not os.path.exists(meta_path):
+        return {}
+    with open(meta_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"Checkpoint metadata at {meta_path} is not a JSON object.")
+    return data
+
+
+def _build_checkpoint_metadata(
+    *,
+    global_step: int,
+    tokenizer: str,
+    seq_len: int,
+    vocab_size: int,
+    hidden_dim: int,
+    loss_type: str,
+    model_type: str,
+    transformer_d_model: int,
+    transformer_nhead: int,
+    transformer_layers: int,
+    transformer_dropout: float,
+    source_modality: str,
+    proteome_flags: Dict[str, Any],
+) -> Dict[str, Any]:
+    return {
+        "global_step": int(global_step),
+        "training_step": int(global_step),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "tokenizer": str(tokenizer).lower(),
+        "seq_len": int(seq_len),
+        "vocab_size": int(vocab_size),
+        "hidden_dim": int(hidden_dim),
+        "loss_type": str(loss_type).lower(),
+        "model_type": str(model_type).lower(),
+        "transformer_d_model": int(transformer_d_model),
+        "transformer_nhead": int(transformer_nhead),
+        "transformer_layers": int(transformer_layers),
+        "transformer_dropout": float(transformer_dropout),
+        "source_modality": str(source_modality).lower(),
+        "proteome_flags": dict(proteome_flags),
+    }
+
+
+def _require_match(field: str, expected: Any, actual: Any, ckpt_path: str) -> None:
+    if expected != actual:
+        raise ValueError(
+            f"Checkpoint metadata mismatch for {field}: checkpoint={actual!r}, current={expected!r}. "
+            f"Delete {ckpt_path} (and sidecar metadata) or match settings."
+        )
+
+
+def _validate_checkpoint_metadata(
+    ckpt_path: str,
+    current: Dict[str, Any],
+    checkpoint_meta: Dict[str, Any],
+) -> None:
+    _require_match("tokenizer", str(current["tokenizer"]).lower(), str(checkpoint_meta.get("tokenizer", "base")).lower(), ckpt_path)
+    _require_match("seq_len", int(current["seq_len"]), int(checkpoint_meta.get("seq_len", current["seq_len"])), ckpt_path)
+    _require_match("vocab_size", int(current["vocab_size"]), int(checkpoint_meta.get("vocab_size", current["vocab_size"])), ckpt_path)
+    _require_match("loss_type", str(current["loss_type"]).lower(), str(checkpoint_meta.get("loss_type", "mse")).lower(), ckpt_path)
+    _require_match("model_type", str(current["model_type"]).lower(), str(checkpoint_meta.get("model_type", "mlp")).lower(), ckpt_path)
+    _require_match("source_modality", str(current["source_modality"]).lower(), str(checkpoint_meta.get("source_modality", "fasta")).lower(), ckpt_path)
+
+    if str(current["model_type"]).lower() != "transformer":
+        _require_match("hidden_dim", int(current["hidden_dim"]), int(checkpoint_meta.get("hidden_dim", current["hidden_dim"])), ckpt_path)
+    else:
+        _require_match("transformer_d_model", int(current["transformer_d_model"]), int(checkpoint_meta.get("transformer_d_model", current["transformer_d_model"])), ckpt_path)
+        _require_match("transformer_nhead", int(current["transformer_nhead"]), int(checkpoint_meta.get("transformer_nhead", current["transformer_nhead"])), ckpt_path)
+        _require_match("transformer_layers", int(current["transformer_layers"]), int(checkpoint_meta.get("transformer_layers", current["transformer_layers"])), ckpt_path)
+        _require_match("transformer_dropout", float(current["transformer_dropout"]), float(checkpoint_meta.get("transformer_dropout", current["transformer_dropout"])), ckpt_path)
+
+    ck_flags = checkpoint_meta.get("proteome_flags", {})
+    if not isinstance(ck_flags, dict):
+        raise ValueError(f"Checkpoint metadata mismatch: proteome_flags is invalid in {ckpt_path} sidecar.")
+    _require_match("proteome_flags", dict(current["proteome_flags"]), ck_flags, ckpt_path)
 
 class TransformerVAE(nn.Module):  # type: ignore[misc]
     def __init__(
@@ -161,6 +248,8 @@ def load_or_init_model(
     transformer_nhead: int,
     transformer_layers: int,
     transformer_dropout: float,
+    source_modality: str = "fasta",
+    proteome_flags: Optional[Dict[str, Any]] = None,
 ) -> Tuple[nn.Module, "optim.Optimizer", int, str]:
     """
     seq_len: number of positions (bp or codons)
@@ -187,47 +276,28 @@ def load_or_init_model(
     optimizer: optim.Optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     global_step = 0
 
+    current_meta = {
+        "tokenizer": tokenizer,
+        "seq_len": seq_len,
+        "vocab_size": vocab_size,
+        "hidden_dim": hidden_dim,
+        "loss_type": loss_type,
+        "model_type": mt,
+        "transformer_d_model": transformer_d_model,
+        "transformer_nhead": transformer_nhead,
+        "transformer_layers": transformer_layers,
+        "transformer_dropout": transformer_dropout,
+        "source_modality": source_modality,
+        "proteome_flags": dict(proteome_flags or {}),
+    }
+
     if os.path.exists(ckpt_path):
         data = torch.load(ckpt_path, map_location=device)
         meta: Dict[str, object] = data.get("meta", {})
-        ck_tok = str(meta.get("tokenizer", "base")).lower()
-        ck_seq = int(meta.get("seq_len", seq_len))
-        ck_vocab = int(meta.get("vocab_size", vocab_size))
-        ck_hidden = int(meta.get("hidden_dim", hidden_dim))
-        ck_loss = str(meta.get("loss_type", "mse")).lower()
-        ck_model_type = str(meta.get("model_type", "mlp")).lower()
-        ck_d_model = int(meta.get("transformer_d_model", transformer_d_model))
-        ck_nhead = int(meta.get("transformer_nhead", transformer_nhead))
-        ck_layers = int(meta.get("transformer_layers", transformer_layers))
-        ck_dropout = float(meta.get("transformer_dropout", transformer_dropout))
-        
-        if ck_tok != tokenizer.lower():
-            raise ValueError(f"Checkpoint tokenizer={ck_tok} but requested tokenizer={tokenizer}. Delete {ckpt_path} or match settings.")
-        if ck_seq != seq_len:
-            raise ValueError(f"Checkpoint seq_len={ck_seq} but requested seq_len={seq_len}. Delete {ckpt_path} or match settings.")
-        if ck_vocab != vocab_size:
-            raise ValueError(f"Checkpoint vocab_size={ck_vocab} but requested vocab_size={vocab_size}. Delete {ckpt_path} or match settings.")
-        if ck_hidden != hidden_dim and mt != "transformer":
-            raise ValueError(f"Checkpoint hidden_dim={ck_hidden} but requested hidden_dim={hidden_dim}. Delete {ckpt_path} or match settings.")
-        if ck_loss != str(loss_type).lower():
-            raise ValueError(
-                f"Checkpoint loss_type={ck_loss} but requested loss_type={loss_type}. "
-                f"Delete {ckpt_path} or match settings."
-            )
-        if ck_model_type != mt:
-            raise ValueError(
-                f"Checkpoint model_type={ck_model_type} but requested model_type={mt}. "
-                f"Delete {ckpt_path} or match settings."
-            )
-        if mt == "transformer":
-            if ck_d_model != transformer_d_model:
-                raise ValueError(f"Checkpoint transformer_d_model={ck_d_model} but requested {transformer_d_model}. Delete {ckpt_path} or match settings.")
-            if ck_nhead != transformer_nhead:
-                raise ValueError(f"Checkpoint transformer_nhead={ck_nhead} but requested {transformer_nhead}. Delete {ckpt_path} or match settings.")
-            if ck_layers != transformer_layers:
-                raise ValueError(f"Checkpoint transformer_layers={ck_layers} but requested {transformer_layers}. Delete {ckpt_path} or match settings.")
-            if abs(ck_dropout - float(transformer_dropout)) > 1e-8:
-                raise ValueError(f"Checkpoint transformer_dropout={ck_dropout} but requested {transformer_dropout}. Delete {ckpt_path} or match settings.")
+        sidecar_meta = _load_sidecar_metadata(ckpt_path)
+        checkpoint_meta = dict(meta)
+        checkpoint_meta.update(sidecar_meta)
+        _validate_checkpoint_metadata(ckpt_path, current_meta, checkpoint_meta)
 
         model.load_state_dict(data["model"])
         optimizer.load_state_dict(data["optim"])
@@ -235,8 +305,15 @@ def load_or_init_model(
 
         logging.info(
             "Loaded checkpoint %s (tokenizer=%s, seq_len=%s, vocab=%s, hidden=%s, model=%s, step=%s)",
-            ckpt_path, ck_tok, ck_seq, ck_vocab, ck_hidden, ck_model_type, global_step
+            ckpt_path,
+            checkpoint_meta.get("tokenizer"),
+            checkpoint_meta.get("seq_len"),
+            checkpoint_meta.get("vocab_size"),
+            checkpoint_meta.get("hidden_dim"),
+            checkpoint_meta.get("model_type"),
+            global_step,
         )
+    else:
         logging.info(
             "Initializing new VAE (tokenizer=%s, loss_type=%s, model=%s, "
             "seq_len=%s, vocab=%s, input_dim=%s, hidden=%s, d_model=%s, nhead=%s, layers=%s, dropout=%s, lr=%s)",
@@ -271,29 +348,39 @@ def save_checkpoint(
     transformer_nhead: int,
     transformer_layers: int,
     transformer_dropout: float,
+    source_modality: str = "fasta",
+    proteome_flags: Optional[Dict[str, Any]] = None,
 ) -> None:
     if torch is None:
         return
+    metadata = _build_checkpoint_metadata(
+        global_step=global_step,
+        tokenizer=tokenizer,
+        seq_len=seq_len,
+        vocab_size=vocab_size,
+        hidden_dim=hidden_dim,
+        loss_type=loss_type,
+        model_type=model_type,
+        transformer_d_model=transformer_d_model,
+        transformer_nhead=transformer_nhead,
+        transformer_layers=transformer_layers,
+        transformer_dropout=transformer_dropout,
+        source_modality=source_modality,
+        proteome_flags=dict(proteome_flags or {}),
+    )
     payload = {
         "model": model.state_dict(),
         "optim": optimizer.state_dict(),
-        "meta": {
-            "global_step": int(global_step),
-            "tokenizer": str(tokenizer).lower(),
-            "seq_len": int(seq_len),
-            "vocab_size": int(vocab_size),
-            "hidden_dim": int(hidden_dim),
-            "loss_type": str(loss_type).lower(),
-            "model_type": str(model_type).lower(),
-            "transformer_d_model": int(transformer_d_model),
-            "transformer_nhead": int(transformer_nhead),
-            "transformer_layers": int(transformer_layers),
-            "transformer_dropout": float(transformer_dropout),
-        },
+        "meta": metadata,
     }
     tmp = ckpt_path + ".tmp"
+    meta_tmp = _checkpoint_meta_path(ckpt_path) + ".tmp"
     torch.save(payload, tmp)
     os.replace(tmp, ckpt_path)
+    with open(meta_tmp, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(meta_tmp, _checkpoint_meta_path(ckpt_path))
     logging.info(f"Saved checkpoint step={global_step} -> {ckpt_path}")
 
 def vae_loss(

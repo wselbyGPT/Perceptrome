@@ -99,6 +99,8 @@ def generate_plasmid_sequence(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        source_modality="fasta",
+        proteome_flags={},
     )
     model.eval()
 
@@ -203,6 +205,20 @@ def generate_protein_sequence(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        source_modality="genbank",
+        proteome_flags={
+            "min_orf_aa": int(getattr(train_cfg, "min_orf_aa", 90)),
+            "max_windows_per_protein": getattr(train_cfg, "max_windows_per_protein", None),
+            "protein_len_min": getattr(train_cfg, "protein_len_min", None),
+            "protein_len_max": getattr(train_cfg, "protein_len_max", None),
+            "translation_only": bool(getattr(train_cfg, "translation_only", False)),
+            "strict_cds": bool(getattr(train_cfg, "strict_cds", False)),
+            "require_translation": bool(getattr(train_cfg, "require_translation", False)),
+            "x_free": bool(getattr(train_cfg, "x_free", False)),
+            "require_start_m": bool(getattr(train_cfg, "require_start_m", False)),
+            "reject_partial_cds": bool(getattr(train_cfg, "reject_partial_cds", False)),
+            "max_protein_aa": getattr(train_cfg, "max_protein_aa", None),
+        },
     )
     model.eval()
 
