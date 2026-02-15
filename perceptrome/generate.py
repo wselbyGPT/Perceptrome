@@ -99,6 +99,7 @@ def generate_plasmid_sequence(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        beta_kl=train_cfg.beta_kl,
     )
     model.eval()
 
@@ -203,6 +204,7 @@ def generate_protein_sequence(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        beta_kl=train_cfg.beta_kl,
     )
     model.eval()
 
