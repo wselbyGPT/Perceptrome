@@ -4,6 +4,7 @@ import os
 from typing import Any, Dict, List
 
 from .config import IOConfig
+from .genome import DEFAULT_GENE_REGISTRY, Genome
 
 
 def read_catalog(path: str) -> List[str]:
@@ -35,14 +36,36 @@ def ensure_dirs(io_cfg: IOConfig) -> None:
 
 def load_state(path: str) -> Dict[str, Any]:
     if not os.path.exists(path):
-        return {
-            "current_index": 0,
-            "total_steps": 0,
-            "plasmid_visit_counts": {},
-            "last_checkpoint": None,
-        }
+        return default_state()
     with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        return normalize_state(json.load(f))
+
+
+def default_state() -> Dict[str, Any]:
+    genome = Genome.from_dict(None, DEFAULT_GENE_REGISTRY)
+    return {
+        "current_index": 0,
+        "total_steps": 0,
+        "plasmid_visit_counts": {},
+        "epoch": 0,
+        "last_checkpoint": None,
+        "genome": genome.to_dict(),
+    }
+
+
+def normalize_state(raw: Dict[str, Any]) -> Dict[str, Any]:
+    state = default_state()
+    if isinstance(raw, dict):
+        state.update(raw)
+
+    genome_payload = raw.get("genome") if isinstance(raw, dict) else None
+    if genome_payload is None and isinstance(raw, dict):
+        legacy_genes = raw.get("genes")
+        if isinstance(legacy_genes, dict):
+            genome_payload = {"genes": legacy_genes}
+
+    state["genome"] = Genome.from_dict(genome_payload, DEFAULT_GENE_REGISTRY).to_dict()
+    return state
 
 
 def save_state(path: str, state: Dict[str, Any]) -> None:
