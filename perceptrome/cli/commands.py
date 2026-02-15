@@ -19,6 +19,13 @@ from perceptrome.cli.common import (
 )
 
 
+def _scope_color_enabled(args: argparse.Namespace) -> bool:
+    mode = str(getattr(args, "scope_color", "auto") or "auto").lower()
+    if mode == "off":
+        return False
+    return True
+
+
 # -----------------------------
 # Small helpers
 # -----------------------------
@@ -312,6 +319,7 @@ def cmd_scope_one(args: argparse.Namespace) -> int:
         window_size=window_size,
         stride=stride,
         fps=args.fps,
+        color=_scope_color_enabled(args),
     )
     return 0
 
@@ -413,6 +421,7 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
         fps=args.fps,
         update_every=args.update_every,
         ctx=ctx,
+        color=_scope_color_enabled(args),
     )
     return 0
 

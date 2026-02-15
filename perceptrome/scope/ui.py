@@ -1,7 +1,7 @@
 import curses
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 
@@ -16,6 +16,83 @@ from ..encoding_main import compute_gc_from_encoded
 from ..model import PlasmidVAE, get_device, load_or_init_model, vae_loss
 
 
+class TerminalGradient:
+    """ASCII + color gradient renderer for curses windows."""
+
+    def __init__(self, stdscr, use_color: bool = True):
+        self.palette = " .,:;irsXA253hMHGS#9B&@"
+        self.stdscr = stdscr
+        self.use_color = bool(use_color)
+        self._pairs: list[int] = []
+        if self.use_color:
+            self._init_colors()
+
+    def _init_colors(self) -> None:
+        try:
+            curses.start_color()
+            if hasattr(curses, "use_default_colors"):
+                curses.use_default_colors()
+        except curses.error:
+            self.use_color = False
+            return
+
+        can_change = False
+        try:
+            can_change = bool(curses.can_change_color())
+        except curses.error:
+            can_change = False
+
+        if curses.COLORS >= 256 and can_change:
+            gradient_ids = [196, 202, 208, 214, 220, 190, 118, 46, 39, 27, 21]
+        elif curses.COLORS >= 16:
+            gradient_ids = [1, 9, 3, 11, 2, 10, 6, 12, 4, 13]
+        else:
+            gradient_ids = [7]
+
+        max_pairs = max(1, min(len(gradient_ids), curses.COLOR_PAIRS - 1))
+        for i in range(max_pairs):
+            pair_id = i + 1
+            try:
+                curses.init_pair(pair_id, gradient_ids[i], -1)
+                self._pairs.append(pair_id)
+            except curses.error:
+                continue
+
+        if not self._pairs:
+            self.use_color = False
+
+    def _attrs_for_value(self, value: float) -> int:
+        if not self.use_color or not self._pairs:
+            return curses.A_NORMAL
+        v = max(0.0, min(1.0, float(value)))
+        idx = int(v * (len(self._pairs) - 1))
+        return curses.color_pair(self._pairs[idx])
+
+    def glyph_for_value(self, value: float) -> str:
+        v = max(0.0, min(1.0, float(value)))
+        idx = int(v * (len(self.palette) - 1))
+        return self.palette[idx]
+
+    def draw_row(
+        self,
+        y: int,
+        width: int,
+        start_idx: int,
+        end_idx: int,
+        norm_values: np.ndarray,
+    ) -> None:
+        for col, wi in enumerate(range(start_idx, end_idx)):
+            if col >= width - 1:
+                break
+            value = float(norm_values[wi])
+            ch = self.glyph_for_value(value)
+            attrs = self._attrs_for_value(value)
+            try:
+                self.stdscr.addch(y, col, ch, attrs)
+            except curses.error:
+                pass
+
+
 def run_scope_ui(
     stdscr,
     accession: str,
@@ -24,6 +101,7 @@ def run_scope_ui(
     window_size: int,
     stride: int,
     fps: float,
+    color: bool = True,
 ) -> None:
     """
     Curses-based genome scope:
@@ -48,7 +126,7 @@ def run_scope_ui(
             f"gc_values length {gc_values.shape[0]} != errors length {num_windows}"
         )
 
-    palette = " .:-=+*#%@"
+    gradient = TerminalGradient(stdscr, use_color=color)
     start_idx = 0
 
     import time
@@ -83,7 +161,10 @@ def run_scope_ui(
             stdscr.addstr(1, 0, info_err[: w - 1])
 
         if h > 2:
-            info_gc = f"METRIC min={min_gc:.3f} max={max_gc:.3f}"
+            info_gc = (
+                f"METRIC min={min_gc:.3f} max={max_gc:.3f} "
+                f"gradient={'ansi' if gradient.use_color else 'ascii'}"
+            )
             stdscr.addstr(2, 0, info_gc[: w - 1])
 
         if h > 3:
@@ -94,28 +175,10 @@ def run_scope_ui(
         show_gc = h > line_err_y + 1
         line_gc_y = line_err_y + 1 if show_gc else None
 
-        for col, wi in enumerate(range(start_idx, end_idx)):
-            if col >= w - 1:
-                break
-            val = float(norm_err[wi])
-            idx = int(val * (len(palette) - 1))
-            ch = palette[idx]
-            try:
-                stdscr.addch(line_err_y, col, ch)
-            except curses.error:
-                pass
+        gradient.draw_row(line_err_y, w, start_idx, end_idx, norm_err)
 
         if show_gc and line_gc_y is not None:
-            for col, wi in enumerate(range(start_idx, end_idx)):
-                if col >= w - 1:
-                    break
-                val = float(norm_gc[wi])
-                idx = int(val * (len(palette) - 1))
-                ch = palette[idx]
-                try:
-                    stdscr.addch(line_gc_y, col, ch)
-                except curses.error:
-                    pass
+            gradient.draw_row(line_gc_y, w, start_idx, end_idx, norm_gc)
 
         stdscr.refresh()
 
@@ -179,5 +242,4 @@ def compute_errors_with_model_and_tensor(
             recon = torch.sigmoid(logits_flat).view_as(wt)
             mse = (recon - wt).pow(2).mean(dim=(1, 2))
             return mse.cpu().numpy().astype(np.float32)
-
 

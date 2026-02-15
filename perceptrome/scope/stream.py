@@ -15,8 +15,8 @@ except ImportError:
     torch = None  # type: ignore
     DataLoader = None  # type: ignore
 
-from ..model import PlasmidVAE
-from .ui import compute_errors_with_model_and_tensor
+from ..model import PlasmidVAE, vae_loss
+from .ui import TerminalGradient, compute_errors_with_model_and_tensor
 
 
 @dataclass
@@ -48,6 +48,7 @@ def run_scope_stream_ui(
     fps: float,
     update_every: int,
     ctx: ScopeStreamContext,
+    color: bool = True,
 ) -> None:
     """
     Live GenomeScope + VAE training.
@@ -74,7 +75,7 @@ def run_scope_stream_ui(
             f"gc_values length {gc_values.shape[0]} != num_windows {num_windows}"
         )
 
-    palette = " .:-=+*#%@"
+    gradient = TerminalGradient(stdscr, use_color=color)
     start_idx = 0
     paused = False
 
@@ -119,7 +120,8 @@ def run_scope_stream_ui(
         if h > 2:
             info2 = (
                 f"ERROR  min={min_e:.3g} max={max_e:.3g}  "
-                f"METRIC min={min_gc:.3f} max={max_gc:.3f}"
+                f"METRIC min={min_gc:.3f} max={max_gc:.3f} "
+                f"gradient={'ansi' if gradient.use_color else 'ascii'}"
             )
             stdscr.addstr(2, 0, info2[: w - 1])
 
@@ -139,28 +141,10 @@ def run_scope_stream_ui(
         line_gc_y = line_err_y + 1 if show_gc else None
 
         if errors.size > 0:
-            for col, wi in enumerate(range(start_idx, end_idx)):
-                if col >= w - 1:
-                    break
-                val = float(norm_err[wi])
-                idx = int(val * (len(palette) - 1))
-                ch = palette[idx]
-                try:
-                    stdscr.addch(line_err_y, col, ch)
-                except curses.error:
-                    pass
+            gradient.draw_row(line_err_y, w, start_idx, end_idx, norm_err)
 
         if show_gc and line_gc_y is not None:
-            for col, wi in enumerate(range(start_idx, end_idx)):
-                if col >= w - 1:
-                    break
-                val = float(norm_gc[wi])
-                idx = int(val * (len(palette) - 1))
-                ch = palette[idx]
-                try:
-                    stdscr.addch(line_gc_y, col, ch)
-                except curses.error:
-                    pass
+            gradient.draw_row(line_gc_y, w, start_idx, end_idx, norm_gc)
 
         if ctx.steps_done >= ctx.steps_target:
             msg = "Training complete — press [q] to exit."
