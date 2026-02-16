@@ -579,6 +579,8 @@ def cmd_train_one(args: argparse.Namespace) -> int:
         mask_prob=pol.get("mask_prob"),
         span_mask_prob=pol.get("span_mask_prob"),
         span_mask_len=pol.get("span_mask_len"),
+        run_id=getattr(args, "tb_run_id", None),
+        tensorboard_log_every=getattr(args, "tb_log_every", None),
     )
 
     pvc = state["plasmid_visit_counts"]
@@ -996,6 +998,8 @@ def cmd_stream(args: argparse.Namespace) -> int:
                 mask_prob=pol.get("mask_prob"),
                 span_mask_prob=pol.get("span_mask_prob"),
                 span_mask_len=pol.get("span_mask_len"),
+                run_id=getattr(args, "tb_run_id", None),
+                tensorboard_log_every=getattr(args, "tb_log_every", None),
             )
 
             pvc = state["plasmid_visit_counts"]

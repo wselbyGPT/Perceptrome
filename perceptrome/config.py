@@ -34,6 +34,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "beta_kl": 1e-3,
         "kl_warmup_steps": 10000,
         "max_grad_norm": 5.0,
+        "tensorboard_log_every": 10,
+        "tensorboard_run_id": None,
 
         # tokenizer
         "tokenizer": "base",   # "base" | "codon" | "aa"
@@ -134,6 +136,8 @@ class TrainingConfig:
     beta_kl: float
     kl_warmup_steps: int
     max_grad_norm: float
+    tensorboard_log_every: int
+    tensorboard_run_id: Optional[str]
 
     tokenizer: str
     frame_offset: int
@@ -270,6 +274,8 @@ def extract_configs(cfg: Dict[str, Any]) -> Tuple[NCBIConfig, TrainingConfig, IO
         beta_kl=float(t.get("beta_kl", 1e-3)),
         kl_warmup_steps=int(t.get("kl_warmup_steps", 10000)),
         max_grad_norm=float(t.get("max_grad_norm", 5.0)),
+        tensorboard_log_every=int(t.get("tensorboard_log_every", 10)),
+        tensorboard_run_id=(None if t.get("tensorboard_run_id", None) in (None, "") else str(t.get("tensorboard_run_id"))),
 
         tokenizer=str(t.get("tokenizer", "base")),
         frame_offset=int(t.get("frame_offset", 0)),
