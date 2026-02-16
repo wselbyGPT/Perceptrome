@@ -12,6 +12,7 @@ except ImportError:
     F = None      # type: ignore
 
 from .config import IOConfig
+from .genome_schema import CURRENT_GENOME_SCHEMA_VERSION, migrate_genome_payload
 
 class TransformerVAE(nn.Module):  # type: ignore[misc]
     def __init__(
@@ -161,6 +162,7 @@ def load_or_init_model(
     transformer_nhead: int,
     transformer_layers: int,
     transformer_dropout: float,
+    beta_kl: float = 1e-3,
 ) -> Tuple[nn.Module, "optim.Optimizer", int, str]:
     """
     seq_len: number of positions (bp or codons)
@@ -190,16 +192,34 @@ def load_or_init_model(
     if os.path.exists(ckpt_path):
         data = torch.load(ckpt_path, map_location=device)
         meta: Dict[str, object] = data.get("meta", {})
-        ck_tok = str(meta.get("tokenizer", "base")).lower()
-        ck_seq = int(meta.get("seq_len", seq_len))
-        ck_vocab = int(meta.get("vocab_size", vocab_size))
-        ck_hidden = int(meta.get("hidden_dim", hidden_dim))
-        ck_loss = str(meta.get("loss_type", "mse")).lower()
-        ck_model_type = str(meta.get("model_type", "mlp")).lower()
-        ck_d_model = int(meta.get("transformer_d_model", transformer_d_model))
-        ck_nhead = int(meta.get("transformer_nhead", transformer_nhead))
-        ck_layers = int(meta.get("transformer_layers", transformer_layers))
-        ck_dropout = float(meta.get("transformer_dropout", transformer_dropout))
+        genome_payload = migrate_genome_payload(
+            meta.get("genome", meta),
+            tokenizer=tokenizer,
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            loss_type=loss_type,
+            model_type=model_type,
+            transformer_d_model=transformer_d_model,
+            transformer_nhead=transformer_nhead,
+            transformer_layers=transformer_layers,
+            transformer_dropout=transformer_dropout,
+            learning_rate=learning_rate,
+            beta_kl=beta_kl,
+        )
+        migrated_genes: Dict[str, object] = genome_payload["genes"]
+        meta["genome"] = genome_payload
+
+        ck_tok = str(migrated_genes.get("tokenizer", "base")).lower()
+        ck_seq = int(migrated_genes.get("seq_len", seq_len))
+        ck_vocab = int(migrated_genes.get("vocab_size", vocab_size))
+        ck_hidden = int(migrated_genes.get("hidden_dim", hidden_dim))
+        ck_loss = str(migrated_genes.get("loss_type", "mse")).lower()
+        ck_model_type = str(migrated_genes.get("model_type", "mlp")).lower()
+        ck_d_model = int(migrated_genes.get("transformer_d_model", transformer_d_model))
+        ck_nhead = int(migrated_genes.get("transformer_nhead", transformer_nhead))
+        ck_layers = int(migrated_genes.get("transformer_layers", transformer_layers))
+        ck_dropout = float(migrated_genes.get("transformer_dropout", transformer_dropout))
         
         if ck_tok != tokenizer.lower():
             raise ValueError(f"Checkpoint tokenizer={ck_tok} but requested tokenizer={tokenizer}. Delete {ckpt_path} or match settings.")
@@ -237,6 +257,7 @@ def load_or_init_model(
             "Loaded checkpoint %s (tokenizer=%s, seq_len=%s, vocab=%s, hidden=%s, model=%s, step=%s)",
             ckpt_path, ck_tok, ck_seq, ck_vocab, ck_hidden, ck_model_type, global_step
         )
+        logging.info("Migrated genome schema to v%s during load", CURRENT_GENOME_SCHEMA_VERSION)
         logging.info(
             "Initializing new VAE (tokenizer=%s, loss_type=%s, model=%s, "
             "seq_len=%s, vocab=%s, input_dim=%s, hidden=%s, d_model=%s, nhead=%s, layers=%s, dropout=%s, lr=%s)",
@@ -271,6 +292,8 @@ def save_checkpoint(
     transformer_nhead: int,
     transformer_layers: int,
     transformer_dropout: float,
+    learning_rate: float,
+    beta_kl: float,
 ) -> None:
     if torch is None:
         return
@@ -289,6 +312,37 @@ def save_checkpoint(
             "transformer_nhead": int(transformer_nhead),
             "transformer_layers": int(transformer_layers),
             "transformer_dropout": float(transformer_dropout),
+            "genome": migrate_genome_payload(
+                {
+                    "schema_version": CURRENT_GENOME_SCHEMA_VERSION,
+                    "genes": {
+                        "tokenizer": str(tokenizer).lower(),
+                        "seq_len": int(seq_len),
+                        "vocab_size": int(vocab_size),
+                        "hidden_dim": int(hidden_dim),
+                        "loss_type": str(loss_type).lower(),
+                        "model_type": str(model_type).lower(),
+                        "transformer_d_model": int(transformer_d_model),
+                        "transformer_nhead": int(transformer_nhead),
+                        "transformer_layers": int(transformer_layers),
+                        "transformer_dropout": float(transformer_dropout),
+                        "learning_rate": float(learning_rate),
+                        "beta_kl": float(beta_kl),
+                    },
+                },
+                tokenizer=tokenizer,
+                seq_len=seq_len,
+                vocab_size=vocab_size,
+                hidden_dim=hidden_dim,
+                loss_type=loss_type,
+                model_type=model_type,
+                transformer_d_model=transformer_d_model,
+                transformer_nhead=transformer_nhead,
+                transformer_layers=transformer_layers,
+                transformer_dropout=transformer_dropout,
+                learning_rate=learning_rate,
+                beta_kl=beta_kl,
+            ),
         },
     }
     tmp = ckpt_path + ".tmp"

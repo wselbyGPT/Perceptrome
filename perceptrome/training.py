@@ -123,6 +123,7 @@ def train_on_encoded(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        beta_kl=train_cfg.beta_kl,
     )
 
     windows_tensor = torch.from_numpy(encoded)  # (N, L, V)
@@ -202,6 +203,8 @@ def train_on_encoded(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        learning_rate=train_cfg.learning_rate,
+        beta_kl=train_cfg.beta_kl,
     )
 
     return last_total
@@ -254,6 +257,7 @@ def compute_window_errors(
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        beta_kl=train_cfg.beta_kl,
     )
 
     model.eval()

@@ -854,6 +854,7 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
         transformer_nhead=transformer_nhead,
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
+        beta_kl=train_cfg.beta_kl,
     )
 
     windows_tensor = torch.from_numpy(encoded)
