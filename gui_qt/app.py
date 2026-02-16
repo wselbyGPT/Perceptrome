@@ -22,7 +22,9 @@ from .theme import apply_dark_mode
 from .runner import ProcessRunner
 from perceptrome.config import load_full_config, extract_configs
 from perceptrome.io_utils import ensure_dirs
-from perceptrome.ncbi_fetch import fetch_fasta
+from perceptrome.ncbi_fetch import fetch_fasta, fetch_genbank
+from perceptrome.encoding.parse import parse_genbank_dna
+from perceptrome.encoding.genbank_features import parse_cds_features_from_genbank, CDSFeature
 
 
 PCT_RE = re.compile(r"(\d{1,3})\s*%")
@@ -511,23 +513,50 @@ class PerceptromeQt(QMainWindow):
                 seq_parts.append(line)
         return "".join(seq_parts)
 
-    def _resolve_genome_sequence(self) -> tuple[str, str]:
+    def _resolve_genome_sequence(self) -> tuple[str, str, str]:
         accession = self.view_accession.text().strip()
         fasta_path = self.view_fasta_path.text().strip()
+        genbank_path = ""
+
+        def _genbank_candidates_from_fasta(path: str) -> list[str]:
+            base, ext = os.path.splitext(path)
+            candidates = [
+                path,
+                f"{base}.gb",
+                f"{base}.gbk",
+                f"{base}.genbank",
+            ]
+            if ext.lower() in (".fa", ".fna", ".fasta"):
+                stem = os.path.basename(base)
+                candidates.append(os.path.join("cache", "genbank", f"{stem}.gb"))
+            return candidates
+
+        def _first_existing(paths: list[str]) -> str:
+            for p in paths:
+                if p and os.path.exists(p):
+                    return p
+            return ""
+
         if accession:
             cfg_path = self.cfg_stream_yaml.text().strip() or "stream_config.yaml"
             cfg = load_full_config(cfg_path)
             ncbi_cfg, _, io_cfg = extract_configs(cfg)
             ensure_dirs(io_cfg)
             fasta_path = fetch_fasta(accession, io_cfg, ncbi_cfg, force=False)
+            genbank_path = fetch_genbank(accession, io_cfg, ncbi_cfg, force=False)
             seq = self._read_fasta_sequence(fasta_path)
-            return seq, f"accession {accession}"
+            return seq, f"accession {accession}", genbank_path
         if fasta_path:
+            genbank_path = _first_existing(_genbank_candidates_from_fasta(fasta_path))
+            if fasta_path.lower().endswith((".gb", ".gbk", ".genbank")):
+                seq = parse_genbank_dna(fasta_path)
+                return seq, f"genbank {fasta_path}", fasta_path
+
             seq = self._read_fasta_sequence(fasta_path)
-            return seq, f"fasta {fasta_path}"
+            return seq, f"fasta {fasta_path}", genbank_path
         raise ValueError("Provide a genome accession or FASTA path.")
 
-    def _write_circular_pdf(self, seq: str, output_path: str, title: str) -> None:
+    def _write_circular_pdf(self, seq: str, output_path: str, title: str, features: list[CDSFeature] | None = None) -> None:
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         writer = QPdfWriter(output_path)
         writer.setResolution(150)
@@ -549,6 +578,16 @@ class PerceptromeQt(QMainWindow):
             painter.setPen(QPen(QColor("#68d5ff"), 4))
             painter.drawEllipse(cx - radius, cy - radius, radius * 2, radius * 2)
 
+            if features:
+                palette = ["#91ff9d", "#fcbf49", "#ff6f91", "#a0c4ff", "#cdb4db", "#8be9fd"]
+                for idx, feat in enumerate(features):
+                    a0 = 360.0 * ((feat.start - 1) / max(seq_len, 1))
+                    a1 = 360.0 * (feat.end / max(seq_len, 1))
+                    span = max(1.0, a1 - a0)
+                    color = QColor(palette[idx % len(palette)])
+                    painter.setPen(QPen(color, 6))
+                    painter.drawArc(cx - radius, cy - radius, radius * 2, radius * 2, int(-a0 * 16), int(-span * 16))
+
             painter.setPen(QPen(QColor("#3b3f46"), 1))
             for i in range(12):
                 angle = (i / 12.0) * 2.0 * math.pi
@@ -564,17 +603,52 @@ class PerceptromeQt(QMainWindow):
             info = f"Length: {seq_len:,} bp    GC: {gc * 100:.2f}%"
             painter.setPen(QPen(QColor("#a8b0b8"), 1))
             painter.drawText(cx - radius, cy + radius + 12, radius * 2, 30, Qt.AlignCenter, info)
+
+            if features:
+                painter.setPen(QPen(QColor("#d9d9d9"), 1))
+                legend_y = cy - radius + 10
+                painter.drawText(cx + radius + 25, legend_y - 20, 320, 20, Qt.AlignLeft, "CDS legend")
+                max_rows = 18
+                for idx, feat in enumerate(features[:max_rows]):
+                    strand_txt = "+" if feat.strand >= 0 else "-"
+                    label = feat.product or feat.gene_or_locus_tag
+                    tip = (
+                        f"{label} | {feat.gene_or_locus_tag} | {feat.protein_length} aa"
+                        f" ({feat.translation_source}) | {feat.start}..{feat.end} ({strand_txt})"
+                    )
+                    painter.setPen(QPen(QColor(palette[idx % len(palette)]), 2))
+                    painter.drawLine(cx + radius + 25, legend_y + idx * 18 + 6, cx + radius + 40, legend_y + idx * 18 + 6)
+                    painter.setPen(QPen(QColor("#b8c0c8"), 1))
+                    painter.drawText(cx + radius + 44, legend_y + idx * 18, 360, 16, Qt.AlignLeft, tip[:120])
+                if len(features) > max_rows:
+                    painter.drawText(
+                        cx + radius + 44,
+                        legend_y + max_rows * 18,
+                        360,
+                        16,
+                        Qt.AlignLeft,
+                        f"... {len(features) - max_rows} more CDS features",
+                    )
         finally:
             painter.end()
 
     def _view_generate_pdf(self):
         self.view_log.clear()
         try:
-            seq, source = self._resolve_genome_sequence()
+            seq, source, genbank_path = self._resolve_genome_sequence()
             output_path = self.view_pdf_path.text().strip() or "generated/circular_genome.pdf"
             title = self.view_title.text().strip() or f"Circular genome ({source})"
+            features: list[CDSFeature] = []
+            if genbank_path:
+                try:
+                    features = parse_cds_features_from_genbank(genbank_path)
+                    self._append_log(self.view_log, f"[{now_str()}] Loaded {len(features)} CDS features from {genbank_path}\n")
+                except Exception as exc:
+                    self._append_log(self.view_log, f"[{now_str()}] WARNING: Failed to parse CDS features from {genbank_path}: {exc}\n")
+            if not features:
+                self._append_log(self.view_log, f"[{now_str()}] WARNING: No CDS features available; using minimal circle output.\n")
             self._append_log(self.view_log, f"[{now_str()}] Generating PDF from {source}\n")
-            self._write_circular_pdf(seq, output_path, title)
+            self._write_circular_pdf(seq, output_path, title, features=features)
             self._append_log(self.view_log, f"[{now_str()}] Saved PDF -> {output_path}\n")
             self._add_history("view_pdf", output_path)
             self._load_pdf(output_path)
