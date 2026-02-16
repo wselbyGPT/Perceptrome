@@ -16,6 +16,58 @@ from ..encoding_main import compute_gc_from_encoded
 from ..model import get_device, load_or_init_model, vae_loss
 
 
+class TerminalGradient:
+    """Render a normalized 0..1 value as a terminal gradient row."""
+
+    def __init__(self, stdscr: Any, use_color: bool = True) -> None:
+        self.stdscr = stdscr
+        self.palette = " .:-=+*#%@"
+        self.use_color = bool(use_color and curses.has_colors())
+
+        if self.use_color:
+            curses.start_color()
+            curses.use_default_colors()
+            # Use a compact gradient from blue->cyan->green->yellow->red.
+            colors = [
+                curses.COLOR_BLUE,
+                curses.COLOR_CYAN,
+                curses.COLOR_GREEN,
+                curses.COLOR_YELLOW,
+                curses.COLOR_RED,
+            ]
+            self._pair_ids = []
+            for idx, fg in enumerate(colors, start=1):
+                curses.init_pair(idx, fg, -1)
+                self._pair_ids.append(idx)
+        else:
+            self._pair_ids = []
+
+    def draw_row(
+        self,
+        y: int,
+        width: int,
+        start_idx: int,
+        end_idx: int,
+        norm_values: np.ndarray,
+    ) -> None:
+        for col, wi in enumerate(range(start_idx, end_idx)):
+            if col >= width - 1:
+                break
+            val = float(norm_values[wi])
+            val = min(1.0, max(0.0, val))
+            idx = int(val * (len(self.palette) - 1))
+            ch = self.palette[idx]
+
+            try:
+                if self.use_color and self._pair_ids:
+                    cidx = int(val * (len(self._pair_ids) - 1))
+                    self.stdscr.addch(y, col, ch, curses.color_pair(self._pair_ids[cidx]))
+                else:
+                    self.stdscr.addch(y, col, ch)
+            except curses.error:
+                pass
+
+
 def run_scope_ui(
     stdscr,
     accession: str,
@@ -179,4 +231,3 @@ def compute_errors_with_model_and_tensor(
             recon = torch.sigmoid(logits_flat).view_as(wt)
             mse = (recon - wt).pow(2).mean(dim=(1, 2))
             return mse.cpu().numpy().astype(np.float32)
-
