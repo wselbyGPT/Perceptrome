@@ -13,7 +13,7 @@ except ImportError:  # pragma: no cover
     DataLoader = None  # type: ignore[assignment]
 
 from ..encoding_main import compute_gc_from_encoded
-from ..model import PlasmidVAE, get_device, load_or_init_model, vae_loss
+from ..model import get_device, load_or_init_model, vae_loss
 
 
 def run_scope_ui(
@@ -138,7 +138,7 @@ def run_scope_ui(
 
 
 def compute_errors_with_model_and_tensor(
-    model: PlasmidVAE,
+    model: Any,
     windows_tensor: "torch.Tensor",
     device: "torch.device",
     loss_type: str = "mse",
@@ -179,5 +179,4 @@ def compute_errors_with_model_and_tensor(
             recon = torch.sigmoid(logits_flat).view_as(wt)
             mse = (recon - wt).pow(2).mean(dim=(1, 2))
             return mse.cpu().numpy().astype(np.float32)
-
 

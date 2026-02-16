@@ -17,6 +17,62 @@ except ImportError:
 
 from ..scope import run_scope_ui, run_scope_stream_ui, ScopeStreamContext
 
+
+AA_PROFILE_PRESETS = {
+    "conservative": {
+        "strict_cds": True,
+        "require_translation": True,
+        "x_free": True,
+        "require_start_m": True,
+        "reject_partial_cds": True,
+        "translation_only": True,
+        "max_windows_per_protein": 2,
+        "protein_len_min": 100,
+        "protein_len_max": 400,
+        "mask_prob": 0.08,
+        "span_mask_prob": 0.03,
+        "span_mask_len": 10,
+        "no_curriculum": True,
+    },
+    "balanced": {
+        "strict_cds": False,
+        "require_translation": True,
+        "x_free": False,
+        "require_start_m": True,
+        "reject_partial_cds": False,
+        "translation_only": True,
+        "max_windows_per_protein": 4,
+        "protein_len_min": 60,
+        "protein_len_max": 800,
+        "mask_prob": 0.10,
+        "span_mask_prob": 0.05,
+        "span_mask_len": 12,
+        "no_curriculum": False,
+    },
+    "exploratory": {
+        "strict_cds": False,
+        "require_translation": False,
+        "x_free": False,
+        "require_start_m": False,
+        "reject_partial_cds": False,
+        "translation_only": False,
+        "max_windows_per_protein": 6,
+        "protein_len_min": 40,
+        "protein_len_max": None,
+        "mask_prob": 0.12,
+        "span_mask_prob": 0.06,
+        "span_mask_len": 14,
+        "no_curriculum": False,
+    },
+}
+
+
+def _get_aa_profile(args) -> dict[str, Any] | None:
+    name = getattr(args, "aa_profile", None)
+    if not name:
+        return None
+    return AA_PROFILE_PRESETS.get(str(name).lower())
+
 def _get_tok(args, train_cfg):
     return (getattr(args, "tokenizer", None) or train_cfg.tokenizer).lower()
 
@@ -60,13 +116,24 @@ def _get_grounded(args, train_cfg, tok: str, src: str) -> dict:
                 return None if v is None else int(v)
         return None
 
-    strict_cds = bool(getattr(args, "strict_cds", False)) or cfg_bool("protein_strict_cds_only", "strict_cds", default=False)
-    require_translation = bool(getattr(args, "require_translation", False)) or cfg_bool("protein_require_translation", "require_translation", default=False)
-    x_free = bool(getattr(args, "x_free", False)) or cfg_bool("protein_x_free", "x_free", default=False)
-    require_start_m = bool(getattr(args, "require_start_m", False)) or cfg_bool("protein_require_start_m", "require_start_m", default=False)
-    reject_partial_cds = bool(getattr(args, "reject_partial_cds", False)) or cfg_bool("protein_reject_partial_cds", "reject_partial_cds", default=False)
+    profile = _get_aa_profile(args) or {}
+
+    strict_cds = bool(profile.get("strict_cds", cfg_bool("protein_strict_cds_only", "strict_cds", default=False)))
+    require_translation = bool(profile.get("require_translation", cfg_bool("protein_require_translation", "require_translation", default=False)))
+    x_free = bool(profile.get("x_free", cfg_bool("protein_x_free", "x_free", default=False)))
+    require_start_m = bool(profile.get("require_start_m", cfg_bool("protein_require_start_m", "require_start_m", default=False)))
+    reject_partial_cds = bool(profile.get("reject_partial_cds", cfg_bool("protein_reject_partial_cds", "reject_partial_cds", default=False)))
+
+    # explicit CLI flags can force these to True
+    strict_cds = bool(getattr(args, "strict_cds", False)) or strict_cds
+    require_translation = bool(getattr(args, "require_translation", False)) or require_translation
+    x_free = bool(getattr(args, "x_free", False)) or x_free
+    require_start_m = bool(getattr(args, "require_start_m", False)) or require_start_m
+    reject_partial_cds = bool(getattr(args, "reject_partial_cds", False)) or reject_partial_cds
 
     max_protein_aa = getattr(args, "max_protein_aa", None)
+    if max_protein_aa is None:
+        max_protein_aa = profile.get("max_protein_aa", None)
     if max_protein_aa is None:
         max_protein_aa = cfg_int("protein_max_aa", "max_protein_aa")
 
@@ -153,25 +220,43 @@ def _resolve_proteome_params(args: argparse.Namespace, train_cfg, state, tok: st
     tok = (tok or "").lower()
     src = (src or "").lower()
 
-    # Defaults from config
+    # Defaults from config. Curriculum values are treated as fallback defaults
+    # only when the equivalent config value is missing.
     pol: dict[str, Any] = {
         "protein_len_min": getattr(train_cfg, "protein_len_min", None),
         "protein_len_max": getattr(train_cfg, "protein_len_max", None),
         "translation_only": bool(getattr(train_cfg, "translation_only", False)),
         "max_windows_per_protein": getattr(train_cfg, "max_windows_per_protein", None),
-        "mask_prob": float(getattr(train_cfg, "aa_mask_prob", 0.05)) if tok == "aa" else 0.0,
-        "span_mask_prob": float(getattr(train_cfg, "aa_span_mask_prob", 0.0)),
-        "span_mask_len": int(getattr(train_cfg, "aa_span_mask_len", 0)),
+        "mask_prob": (float(getattr(train_cfg, "aa_mask_prob", 0.05)) if getattr(train_cfg, "aa_mask_prob", None) is not None else None) if tok == "aa" else 0.0,
+        "span_mask_prob": float(getattr(train_cfg, "aa_span_mask_prob", 0.0)) if getattr(train_cfg, "aa_span_mask_prob", None) is not None else None,
+        "span_mask_len": int(getattr(train_cfg, "aa_span_mask_len", 0)) if getattr(train_cfg, "aa_span_mask_len", None) is not None else None,
         "curriculum_tag": None,
     }
 
     total_steps = int(state.get("total_steps", 0)) if isinstance(state, dict) else 0
+    profile = _get_aa_profile(args) or {}
+
+    # Profile overrides config defaults, but explicit CLI flags still override later.
+    for k in (
+        "protein_len_min",
+        "protein_len_max",
+        "translation_only",
+        "max_windows_per_protein",
+        "mask_prob",
+        "span_mask_prob",
+        "span_mask_len",
+    ):
+        if k in profile:
+            pol[k] = profile.get(k)
+
+    profile_forces_no_curriculum = bool(profile.get("no_curriculum", False))
 
     # Curriculum (optional)
     if (
         tok == "aa"
         and src == "genbank"
         and not bool(getattr(args, "no_curriculum", False))
+        and not profile_forces_no_curriculum
         and bool(getattr(train_cfg, "curriculum_enabled", False))
     ):
         phases = list(getattr(train_cfg, "curriculum_phases", []) or [])
@@ -189,9 +274,27 @@ def _resolve_proteome_params(args: argparse.Namespace, train_cfg, state, tok: st
             idx = max(0, min(idx, len(phases) - 1))
             phase = phases[idx] if idx < len(phases) else {}
             if isinstance(phase, dict):
-                for k in ("protein_len_min", "protein_len_max", "translation_only", "max_windows_per_protein", "mask_prob", "span_mask_prob", "span_mask_len"):
-                    if k in phase and phase[k] is not None:
-                        pol[k] = phase[k]
+                # Config overrides curriculum. Only apply curriculum value when
+                # the config value for that field is absent/None.
+                if pol["protein_len_min"] is None and phase.get("protein_len_min") is not None:
+                    pol["protein_len_min"] = phase.get("protein_len_min")
+                if pol["protein_len_max"] is None and phase.get("protein_len_max") is not None:
+                    pol["protein_len_max"] = phase.get("protein_len_max")
+                if getattr(train_cfg, "translation_only", None) is None and phase.get("translation_only") is not None:
+                    pol["translation_only"] = bool(phase.get("translation_only"))
+                if pol["max_windows_per_protein"] is None and phase.get("max_windows_per_protein") is not None:
+                    pol["max_windows_per_protein"] = phase.get("max_windows_per_protein")
+
+                phase_mask_prob = phase.get("mask_prob", phase.get("aa_mask_prob"))
+                phase_span_prob = phase.get("span_mask_prob", phase.get("aa_span_mask_prob"))
+                phase_span_len = phase.get("span_mask_len", phase.get("aa_span_mask_len"))
+
+                if getattr(train_cfg, "aa_mask_prob", None) is None and phase_mask_prob is not None:
+                    pol["mask_prob"] = phase_mask_prob
+                if getattr(train_cfg, "aa_span_mask_prob", None) is None and phase_span_prob is not None:
+                    pol["span_mask_prob"] = phase_span_prob
+                if getattr(train_cfg, "aa_span_mask_len", None) is None and phase_span_len is not None:
+                    pol["span_mask_len"] = phase_span_len
             pol["curriculum_tag"] = f"cur{idx}"
 
     # CLI overrides (only override if user explicitly set the flag)
@@ -216,4 +319,3 @@ def _resolve_proteome_params(args: argparse.Namespace, train_cfg, state, tok: st
         pol["span_mask_len"] = int(getattr(args, "span_mask_len"))
 
     return pol
-

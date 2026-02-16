@@ -5,6 +5,7 @@ from typing import Any
 from perceptrome.cli.commands import (
     cmd_init, cmd_catalog_show, cmd_fetch_one, cmd_encode_one, cmd_train_one,
     cmd_scope_one, cmd_scope_stream, cmd_stream, cmd_generate_plasmid, cmd_generate_protein,
+    cmd_split_create, cmd_split_show,
 )
 
 def build_parser() -> argparse.ArgumentParser:
@@ -15,6 +16,20 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("init"); s.set_defaults(func=cmd_init)
     s = sub.add_parser("catalog-show"); s.add_argument("path"); s.set_defaults(func=cmd_catalog_show)
 
+    s = sub.add_parser("split-create")
+    s.add_argument("--catalog", required=True, help="Catalog file used to build splits")
+    s.add_argument("--name", default="default", help="Split set name")
+    s.add_argument("--train-ratio", type=float, default=0.8, help="Train ratio (default: 0.8)")
+    s.add_argument("--val-ratio", type=float, default=0.1, help="Validation ratio (default: 0.1)")
+    s.add_argument("--seed", type=int, default=1337, help="Shuffle seed for deterministic split generation")
+    s.add_argument("--out", default=None, help="Optional output json path (default: <state_dir>/splits/<name>.json)")
+    s.set_defaults(func=cmd_split_create)
+
+    s = sub.add_parser("split-show")
+    s.add_argument("--name", default="default", help="Split set name")
+    s.add_argument("--path", default=None, help="Optional explicit split json path")
+    s.set_defaults(func=cmd_split_show)
+
     s = sub.add_parser("fetch-one")
     s.add_argument("accession"); s.add_argument("--force", action="store_true")
     s.add_argument("--source", choices=["fasta","genbank"], default=None, help="Fetch record source (default: fasta)")
@@ -22,6 +37,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_tok_args(sp):
         sp.add_argument("--tokenizer", choices=["base","codon","aa"], default=None, help="Override tokenizer (default from config)")
+        sp.add_argument(
+            "--aa-profile",
+            choices=["conservative", "balanced", "exploratory"],
+            default=None,
+            help="AA mode preset for filter/sampling knobs (CLI flags still override).",
+        )
         sp.add_argument("--frame-offset", type=int, choices=[0,1,2], default=None, help="Codon frame offset (default from config)")
         sp.add_argument("--min-orf-aa", type=int, default=None, help="AA tokenizer: minimum ORF length in amino acids (default from config)")
         sp.add_argument("--min-protein-aa", type=int, default=None, help="Alias for --min-orf-aa (aa/genbank)")
@@ -70,6 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--window-size", type=int, default=None)
     s.add_argument("--stride", type=int, default=None)
     s.add_argument("--reencode", action="store_true")
+    s.add_argument("--experiment-id", default=None, help="Optional run ID for manifest output (default: auto-generated)")
     add_tok_args(s)
     add_loss_args(s)
     s.set_defaults(func=cmd_train_one)
@@ -105,6 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--window-size", type=int, default=None)
     s.add_argument("--stride", type=int, default=None)
     s.add_argument("--delete-cache", action="store_true")
+    s.add_argument("--experiment-id", default=None, help="Optional run ID for manifest output (default: auto-generated)")
     add_tok_args(s)
     add_loss_args(s)
     s.set_defaults(func=cmd_stream)
@@ -119,6 +142,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--latent-scale", type=float, default=1.0)
     s.add_argument("--temperature", type=float, default=1.0)
     s.add_argument("--gc-bias", type=float, default=1.0)
+    s.add_argument("--num-candidates", type=int, default=1)
+    s.add_argument("--top-k", type=int, default=1)
+    s.add_argument("--target-gc", type=float, default=0.5)
+    s.add_argument("--max-homopolymer", type=int, default=None)
+    s.add_argument("--summary-path", default=None, help="Optional JSON path for candidate summary (CSV written alongside)")
+    s.add_argument("--roundtrip-score", action="store_true", help="Include model round-trip reconstruction score in ranking")
     add_tok_args(s)
     s.set_defaults(func=cmd_generate_plasmid)
 
@@ -135,6 +164,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reject-tries", type=int, default=40)
     s.add_argument("--reject-max-run", type=int, default=10, help="Reject if any AA repeats longer than this")
     s.add_argument("--reject-max-x-frac", type=float, default=0.15, help="Reject if fraction of 'X' exceeds this")
+    s.add_argument("--num-candidates", type=int, default=1)
+    s.add_argument("--top-k", type=int, default=1)
+    s.add_argument("--max-homopolymer", type=int, default=None)
+    s.add_argument("--max-x-frac", type=float, default=None)
+    s.add_argument("--max-internal-stops", type=int, default=0)
+    s.add_argument("--summary-path", default=None, help="Optional JSON path for candidate summary (CSV written alongside)")
+    s.add_argument("--roundtrip-score", action="store_true", help="Include model round-trip reconstruction score in ranking")
     s.set_defaults(func=cmd_generate_protein)
 
     return p
