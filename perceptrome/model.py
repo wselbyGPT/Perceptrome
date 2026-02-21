@@ -14,6 +14,17 @@ except ImportError:
 from .config import IOConfig
 from .genome_schema import CURRENT_GENOME_SCHEMA_VERSION, migrate_genome_payload
 
+
+def _normalize_model_type(model_type: str) -> str:
+    mt = str(model_type).lower()
+    return {
+        "rnn": "mlp",
+        "hybrid": "mlp",
+        "moe": "mlp",
+        "gnn": "mlp",
+        "tcn": "mlp",
+    }.get(mt, mt)
+
 class TransformerVAE(nn.Module):  # type: ignore[misc]
     def __init__(
         self,
@@ -271,7 +282,7 @@ def load_or_init_model(
 
     ckpt_path = os.path.join(io_cfg.checkpoints_dir, "latest.pt")
 
-    mt = str(model_type).lower()
+    mt = _normalize_model_type(model_type)
     input_dim = int(seq_len) * int(vocab_size)
     if mt == "transformer":
         model = TransformerVAE(
@@ -306,7 +317,7 @@ def load_or_init_model(
             vocab_size=vocab_size,
             hidden_dim=hidden_dim,
             loss_type=loss_type,
-            model_type=model_type,
+            model_type=mt,
             transformer_d_model=transformer_d_model,
             transformer_nhead=transformer_nhead,
             transformer_layers=transformer_layers,
@@ -322,7 +333,7 @@ def load_or_init_model(
         ck_vocab = int(migrated_genes.get("vocab_size", vocab_size))
         ck_hidden = int(migrated_genes.get("hidden_dim", hidden_dim))
         ck_loss = str(migrated_genes.get("loss_type", "mse")).lower()
-        ck_model_type = str(migrated_genes.get("model_type", "mlp")).lower()
+        ck_model_type = _normalize_model_type(str(migrated_genes.get("model_type", "mlp")))
         ck_d_model = int(migrated_genes.get("transformer_d_model", transformer_d_model))
         ck_nhead = int(migrated_genes.get("transformer_nhead", transformer_nhead))
         ck_layers = int(migrated_genes.get("transformer_layers", transformer_layers))
@@ -419,7 +430,7 @@ def save_checkpoint(
             "vocab_size": int(vocab_size),
             "hidden_dim": int(hidden_dim),
             "loss_type": str(loss_type).lower(),
-            "model_type": str(model_type).lower(),
+            "model_type": _normalize_model_type(model_type),
             "transformer_d_model": int(transformer_d_model),
             "transformer_nhead": int(transformer_nhead),
             "transformer_layers": int(transformer_layers),
@@ -433,7 +444,7 @@ def save_checkpoint(
                         "vocab_size": int(vocab_size),
                         "hidden_dim": int(hidden_dim),
                         "loss_type": str(loss_type).lower(),
-                        "model_type": str(model_type).lower(),
+                        "model_type": _normalize_model_type(model_type),
                         "transformer_d_model": int(transformer_d_model),
                         "transformer_nhead": int(transformer_nhead),
                         "transformer_layers": int(transformer_layers),
@@ -447,7 +458,7 @@ def save_checkpoint(
                 vocab_size=vocab_size,
                 hidden_dim=hidden_dim,
                 loss_type=loss_type,
-                model_type=model_type,
+                model_type=_normalize_model_type(model_type),
                 transformer_d_model=transformer_d_model,
                 transformer_nhead=transformer_nhead,
                 transformer_layers=transformer_layers,
