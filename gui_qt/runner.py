@@ -87,14 +87,18 @@ class ProcessRunner(QObject):
         self.state.buf = ""
         return True
 
-    def stop(self, on_line: Callable[[str], None]) -> None:
+    def stop(self, on_line: Optional[Callable[[str], None]]) -> None:
         if not self.is_running():
             return
         p = self.state.proc
         if p is None:
             return
 
-        on_line("[gui] Sending terminate()...\n")
+        def emit(msg: str) -> None:
+            if callable(on_line):
+                on_line(msg)
+
+        emit("[gui] Sending terminate()...\n")
         p.terminate()
 
         # escalate to kill if it doesn't stop quickly
@@ -103,7 +107,7 @@ class ProcessRunner(QObject):
 
         def _kill():
             if self.is_running():
-                on_line("[gui] terminate() timed out; sending kill()...\n")
+                emit("[gui] terminate() timed out; sending kill()...\n")
                 p.kill()
 
         kt.timeout.connect(_kill)
