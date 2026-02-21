@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 import argparse
+import importlib
 from typing import Any
 
-from perceptrome.cli.commands import (
-    cmd_init, cmd_catalog_show, cmd_fetch_one, cmd_encode_one, cmd_train_one,
-    cmd_scope_one, cmd_scope_stream, cmd_stream, cmd_generate_plasmid, cmd_generate_protein,
-    cmd_split_create, cmd_split_show,
-)
+
+def _lazy_cmd(func_name: str):
+    def _run(args):
+        mod = importlib.import_module("perceptrome.cli.commands")
+        return getattr(mod, func_name)(args)
+
+    return _run
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="perceptrome", description="Perceptrome streaming VAE trainer + scope.")
     p.add_argument("--config", default="config/stream_config.yaml", help="YAML config path (default: config/stream_config.yaml)")
     sub = p.add_subparsers(dest="command", required=True)
 
-    s = sub.add_parser("init"); s.set_defaults(func=cmd_init)
-    s = sub.add_parser("catalog-show"); s.add_argument("path"); s.set_defaults(func=cmd_catalog_show)
+    s = sub.add_parser("init"); s.set_defaults(func=_lazy_cmd("cmd_init"))
+    s = sub.add_parser("catalog-show"); s.add_argument("path"); s.set_defaults(func=_lazy_cmd("cmd_catalog_show"))
 
     s = sub.add_parser("split-create")
     s.add_argument("--catalog", required=True, help="Catalog file used to build splits")
@@ -23,17 +26,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--val-ratio", type=float, default=0.1, help="Validation ratio (default: 0.1)")
     s.add_argument("--seed", type=int, default=1337, help="Shuffle seed for deterministic split generation")
     s.add_argument("--out", default=None, help="Optional output json path (default: <state_dir>/splits/<name>.json)")
-    s.set_defaults(func=cmd_split_create)
+    s.set_defaults(func=_lazy_cmd("cmd_split_create"))
 
     s = sub.add_parser("split-show")
     s.add_argument("--name", default="default", help="Split set name")
     s.add_argument("--path", default=None, help="Optional explicit split json path")
-    s.set_defaults(func=cmd_split_show)
+    s.set_defaults(func=_lazy_cmd("cmd_split_show"))
 
     s = sub.add_parser("fetch-one")
     s.add_argument("accession"); s.add_argument("--force", action="store_true")
     s.add_argument("--source", choices=["fasta","genbank"], default=None, help="Fetch record source (default: fasta)")
-    s.set_defaults(func=cmd_fetch_one)
+    s.set_defaults(func=_lazy_cmd("cmd_fetch_one"))
 
     def add_tok_args(sp):
         sp.add_argument("--tokenizer", choices=["base","codon","aa"], default=None, help="Override tokenizer (default from config)")
@@ -81,12 +84,20 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--tb-run-id", default=None, help="TensorBoard run id (default: accession or config)")
         sp.add_argument("--tb-log-every", type=int, default=None, help="TensorBoard logging interval in steps (default from config)")
 
+    def add_model_args(sp):
+        sp.add_argument(
+            "--model-type",
+            choices=["mlp", "transformer", "ssm"],
+            default=None,
+            help="Override model architecture for this command (default from config).",
+        )
+
     s = sub.add_parser("encode-one")
     s.add_argument("accession")
     s.add_argument("--window-size", type=int, default=None)
     s.add_argument("--stride", type=int, default=None)
     add_tok_args(s)
-    s.set_defaults(func=cmd_encode_one)
+    s.set_defaults(func=_lazy_cmd("cmd_encode_one"))
 
     s = sub.add_parser("train-one")
     s.add_argument("accession")
@@ -99,7 +110,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_tok_args(s)
     add_loss_args(s)
     add_tensorboard_args(s)
-    s.set_defaults(func=cmd_train_one)
+    add_model_args(s)
+    s.set_defaults(func=_lazy_cmd("cmd_train_one"))
 
     s = sub.add_parser("scope-one")
     s.add_argument("accession")
@@ -109,7 +121,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reencode", action="store_true")
     add_tok_args(s)
     s.add_argument("--loss-type", choices=["mse", "ce"], default=None, help="Override loss used for error metric (default: ce for aa, mse for base/codon)")
-    s.set_defaults(func=cmd_scope_one)
+    add_model_args(s)
+    s.set_defaults(func=_lazy_cmd("cmd_scope_one"))
 
     s = sub.add_parser("scope-stream")
     s.add_argument("accession")
@@ -123,7 +136,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_tok_args(s)
     add_loss_args(s)
     add_tensorboard_args(s)
-    s.set_defaults(func=cmd_scope_stream)
+    add_model_args(s)
+    s.set_defaults(func=_lazy_cmd("cmd_scope_stream"))
 
     s = sub.add_parser("stream")
     s.add_argument("--catalog", required=True)
@@ -137,7 +151,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_tok_args(s)
     add_loss_args(s)
     add_tensorboard_args(s)
-    s.set_defaults(func=cmd_stream)
+    add_model_args(s)
+    s.set_defaults(func=_lazy_cmd("cmd_stream"))
 
     s = sub.add_parser("generate-plasmid")
     s.add_argument("--length-bp", type=int, default=10000)
@@ -156,7 +171,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--summary-path", default=None, help="Optional JSON path for candidate summary (CSV written alongside)")
     s.add_argument("--roundtrip-score", action="store_true", help="Include model round-trip reconstruction score in ranking")
     add_tok_args(s)
-    s.set_defaults(func=cmd_generate_plasmid)
+    add_model_args(s)
+    s.set_defaults(func=_lazy_cmd("cmd_generate_plasmid"))
 
     s = sub.add_parser("generate-protein")
     s.add_argument("--length-aa", type=int, default=600)
@@ -178,7 +194,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--max-internal-stops", type=int, default=0)
     s.add_argument("--summary-path", default=None, help="Optional JSON path for candidate summary (CSV written alongside)")
     s.add_argument("--roundtrip-score", action="store_true", help="Include model round-trip reconstruction score in ranking")
-    s.set_defaults(func=cmd_generate_protein)
+    add_model_args(s)
+    s.set_defaults(func=_lazy_cmd("cmd_generate_protein"))
 
     return p
 

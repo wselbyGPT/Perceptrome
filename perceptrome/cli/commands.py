@@ -117,6 +117,13 @@ def _cache_kwargs(tok: str, min_orf: int, pol: Dict[str, Any]) -> Dict[str, Any]
     return kw
 
 
+def _apply_cli_training_overrides(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+    model_type = getattr(args, "model_type", None)
+    if model_type is not None:
+        cfg.setdefault("training", {})["model_type"] = str(model_type).lower()
+    return cfg
+
+
 # -----------------------------
 # Commands
 # -----------------------------
@@ -395,6 +402,7 @@ def cmd_split_show(args: argparse.Namespace) -> int:
 
 def cmd_fetch_one(args: argparse.Namespace) -> int:
     cfg = load_full_config(args.config)
+    cfg = _apply_cli_training_overrides(cfg, args)
     ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
@@ -419,6 +427,7 @@ def cmd_fetch_one(args: argparse.Namespace) -> int:
 
 def cmd_encode_one(args: argparse.Namespace) -> int:
     cfg = load_full_config(args.config)
+    cfg = _apply_cli_training_overrides(cfg, args)
     ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
@@ -484,6 +493,7 @@ def cmd_encode_one(args: argparse.Namespace) -> int:
 def cmd_train_one(args: argparse.Namespace) -> int:
     run_started = _iso_now()
     cfg = load_full_config(args.config)
+    cfg = _apply_cli_training_overrides(cfg, args)
     ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
@@ -644,6 +654,7 @@ def cmd_scope_one(args: argparse.Namespace) -> int:
     if curses is None:
         raise RuntimeError("curses not available")
     cfg = load_full_config(args.config)
+    cfg = _apply_cli_training_overrides(cfg, args)
     ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
@@ -750,6 +761,7 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
     if curses is None:
         raise RuntimeError("curses not available")
     cfg = load_full_config(args.config)
+    cfg = _apply_cli_training_overrides(cfg, args)
     ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
@@ -892,6 +904,7 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
 def cmd_stream(args: argparse.Namespace) -> int:
     run_started = _iso_now()
     cfg = load_full_config(args.config)
+    cfg = _apply_cli_training_overrides(cfg, args)
     ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
@@ -1078,6 +1091,7 @@ def cmd_stream(args: argparse.Namespace) -> int:
 
 def cmd_generate_plasmid(args: argparse.Namespace) -> int:
     cfg = load_full_config(args.config)
+    cfg = _apply_cli_training_overrides(cfg, args)
     _, train_cfg, io_cfg = extract_configs(cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
@@ -1117,6 +1131,7 @@ def cmd_generate_plasmid(args: argparse.Namespace) -> int:
 
 def cmd_generate_protein(args: argparse.Namespace) -> int:
     cfg = load_full_config(args.config)
+    cfg = _apply_cli_training_overrides(cfg, args)
     _, train_cfg, io_cfg = extract_configs(cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
