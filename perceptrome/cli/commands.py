@@ -15,7 +15,7 @@ from perceptrome.cli.common import (
     extract_configs, load_full_config,
     compute_gc_from_encoded, encode_accession,
     generate_plasmid_sequence, generate_protein_sequence,
-    ensure_dirs, load_state, read_catalog, save_state, setup_logging, encoded_cache_path,
+    ensure_dirs, load_state, read_catalog, save_state, setup_logging, encoded_cache_path, default_state,
     fetch_fasta, fetch_genbank,
     cleanup_accession_files, compute_window_errors, train_on_encoded,
     curses,
@@ -132,7 +132,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     _, _, io_cfg = extract_configs(cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
-    state = {"current_index": 0, "total_steps": 0, "plasmid_visit_counts": {}, "epoch": 0, "last_checkpoint": None}
+    state = default_state()
     save_state(io_cfg.state_file, state)
     print(f"Initialized project. State file at: {io_cfg.state_file}")
     return 0

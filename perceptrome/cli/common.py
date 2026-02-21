@@ -6,7 +6,7 @@ import numpy as np
 from ..config import extract_configs, load_full_config
 from ..encoding_main import compute_gc_from_encoded, encode_accession
 from ..generate import generate_plasmid_sequence, generate_protein_sequence
-from ..io_utils import ensure_dirs, load_state, read_catalog, save_state, setup_logging, encoded_cache_path
+from ..io_utils import ensure_dirs, load_state, read_catalog, save_state, setup_logging, encoded_cache_path, default_state
 from ..ncbi_fetch import fetch_fasta, fetch_genbank
 from ..training import cleanup_accession_files, compute_window_errors, train_on_encoded
 
