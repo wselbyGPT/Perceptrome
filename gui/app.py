@@ -131,9 +131,16 @@ class PerceptromeGUI:
         else:
             var.set(coerce_to_string(value))
 
-    def _apply_form_vars(self, vars_dict: Dict[str, tk.Variable], keys: Tuple[str, ...], args: Dict[str, Any]) -> None:
+    def _apply_form_vars(
+        self,
+        vars_dict: Dict[str, tk.Variable],
+        keys: Tuple[str, ...],
+        args: Dict[str, Any],
+        defaults: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        defaults = defaults or {}
         for key in keys:
-            self._set_var(vars_dict[key], args.get(key))
+            self._set_var(vars_dict[key], args.get(key, defaults.get(key)))
 
     def _load_args_into_form(self, command_key: str, args: Dict[str, Any]) -> None:
         if "config" in args:
@@ -141,9 +148,7 @@ class PerceptromeGUI:
 
         if command_key == "fetch_one":
             v = self.fetch_vars
-            self._apply_form_vars(v, ("accession",), args)
-            self._set_var(v["source"], args.get("source", "fasta"))
-            self._set_var(v["force"], args.get("force", False))
+            self._apply_form_vars(v, ("accession", "source", "force"), args, {"source": "fasta", "force": False})
             self.notebook.select(self.tab_fetch)
             return
 
@@ -182,10 +187,11 @@ class PerceptromeGUI:
                     "mask_prob",
                     "span_mask_prob",
                     "span_mask_len",
+                    "reencode",
                 ),
                 args,
+                {"reencode": False},
             )
-            self._set_var(v["reencode"], args.get("reencode", False))
             self.notebook.select(self.tab_train)
             return
 
@@ -227,10 +233,11 @@ class PerceptromeGUI:
                     "reject_tries",
                     "reject_max_run",
                     "reject_max_x_frac",
+                    "reject",
                 ),
                 args,
+                {"reject": False},
             )
-            self._set_var(v["reject"], args.get("reject", False))
             self._gen_focus = "protein"
             self.notebook.select(self.tab_generate)
             return
@@ -1350,4 +1357,3 @@ class PerceptromeGUI:
     def _on_close(self) -> None:
         self._persist_settings()
         self.root.destroy()
-
