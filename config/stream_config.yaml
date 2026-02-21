@@ -22,6 +22,10 @@ training:
   kl_warmup_steps: 5000
   max_grad_norm: 5.0
 
+  # TensorBoard logging
+  tensorboard_log_every: 10
+  tensorboard_run_id: null
+
   # tokenizer (base|codon|aa)
   tokenizer: base
   frame_offset: 0

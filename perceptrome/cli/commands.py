@@ -6,6 +6,7 @@ import logging
 import os
 import random
 import subprocess
+import sys
 import uuid
 from typing import Any, Dict, Optional, Tuple
 
@@ -425,6 +426,50 @@ def cmd_fetch_one(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_tensorboard(args: argparse.Namespace) -> int:
+    cfg = load_full_config(args.config)
+    _, _, io_cfg = extract_configs(cfg)
+    ensure_dirs(io_cfg)
+
+    logdir = getattr(args, "logdir", None) or os.path.join(io_cfg.logs_dir, "tensorboard")
+    os.makedirs(logdir, exist_ok=True)
+
+    host = str(getattr(args, "host", "127.0.0.1"))
+    port = int(getattr(args, "port", 6006))
+    reload_interval = float(getattr(args, "reload_interval", 5.0))
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "tensorboard.main",
+        "--logdir",
+        logdir,
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--reload_interval",
+        str(reload_interval),
+    ]
+
+    path_prefix = getattr(args, "path_prefix", None)
+    if path_prefix:
+        cmd.extend(["--path_prefix", str(path_prefix)])
+
+    print("Launching TensorBoard:")
+    print(" ".join(cmd))
+    print(f"Open: http://{host}:{port}")
+
+    if getattr(args, "dry_run", False):
+        return 0
+
+    try:
+        return subprocess.call(cmd)
+    except FileNotFoundError:
+        logging.error("TensorBoard is not installed. Install it with: pip install tensorboard")
+        return 2
+
+
 def cmd_encode_one(args: argparse.Namespace) -> int:
     cfg = load_full_config(args.config)
     cfg = _apply_cli_training_overrides(cfg, args)
@@ -640,6 +685,7 @@ def cmd_train_one(args: argparse.Namespace) -> int:
         "artifacts": {
             "checkpoint": os.path.join(io_cfg.checkpoints_dir, "latest.pt"),
             "state_file": io_cfg.state_file,
+            "tensorboard_log_dir": os.path.join(io_cfg.logs_dir, "tensorboard", str(getattr(args, "tb_run_id", None) or getattr(train_cfg, "tensorboard_run_id", None) or str(args.accession))),
         },
         "cli_args": vars(args),
     }
@@ -1078,6 +1124,8 @@ def cmd_stream(args: argparse.Namespace) -> int:
         "artifacts": {
             "checkpoint": os.path.join(io_cfg.checkpoints_dir, "latest.pt"),
             "state_file": io_cfg.state_file,
+            "tensorboard_log_root": os.path.join(io_cfg.logs_dir, "tensorboard"),
+            "tensorboard_run_id": str(getattr(args, "tb_run_id", None) or getattr(train_cfg, "tensorboard_run_id", None) or "stream"),
         },
         "records": run_records,
         "cli_args": vars(args),
