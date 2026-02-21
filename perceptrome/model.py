@@ -95,6 +95,104 @@ class TransformerVAE(nn.Module):  # type: ignore[misc]
         recon_logits = self.decode(z)
         return recon_logits, mu, logvar
 
+
+class StateSpaceVAE(nn.Module):  # type: ignore[misc]
+    """Sequence VAE using lightweight state-space style mixing blocks.
+
+    This keeps the same encode/decode contract used by the other VAE variants,
+    while replacing attention with depthwise temporal convolutions.
+    """
+
+    def __init__(
+        self,
+        seq_len: int,
+        vocab_size: int,
+        hidden_dim: int,
+        num_layers: int,
+        kernel_size: int,
+        dropout: float,
+    ):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for StateSpaceVAE.")
+        super().__init__()
+        self.seq_len = int(seq_len)
+        self.vocab_size = int(vocab_size)
+        self.hidden_dim = int(hidden_dim)
+
+        self.input_proj = nn.Linear(self.vocab_size, self.hidden_dim)
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.seq_len, self.hidden_dim))
+
+        pad = int(kernel_size) // 2
+        self.encoder_blocks = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv1d(self.hidden_dim, self.hidden_dim, kernel_size=int(kernel_size), padding=pad, groups=self.hidden_dim),
+                nn.Conv1d(self.hidden_dim, self.hidden_dim, kernel_size=1),
+                nn.GELU(),
+                nn.Dropout(float(dropout)),
+            )
+            for _ in range(int(num_layers))
+        ])
+
+        self.fc_mu = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.fc_logvar = nn.Linear(self.hidden_dim, self.hidden_dim)
+
+        self.z_to_seq = nn.Linear(self.hidden_dim, self.seq_len * self.hidden_dim)
+        self.decoder_blocks = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv1d(self.hidden_dim, self.hidden_dim, kernel_size=int(kernel_size), padding=pad, groups=self.hidden_dim),
+                nn.Conv1d(self.hidden_dim, self.hidden_dim, kernel_size=1),
+                nn.GELU(),
+                nn.Dropout(float(dropout)),
+            )
+            for _ in range(int(num_layers))
+        ])
+        self.out_proj = nn.Linear(self.hidden_dim, self.vocab_size)
+
+    def _ensure_seq(self, x: "torch.Tensor") -> "torch.Tensor":
+        if x.dim() == 2:
+            return x.view(x.size(0), self.seq_len, self.vocab_size)
+        return x
+
+    def _run_blocks(self, h: "torch.Tensor", blocks: "nn.ModuleList") -> "torch.Tensor":
+        # (B, L, H) -> (B, H, L)
+        y = h.transpose(1, 2)
+        for blk in blocks:
+            y = y + blk(y)
+        return y.transpose(1, 2)
+
+    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+        x_seq = self._ensure_seq(x)
+        h = self.input_proj(x_seq) + self.pos_embed
+        h = self._run_blocks(h, self.encoder_blocks)
+        pooled = h.mean(dim=1)
+        return self.fc_mu(pooled), self.fc_logvar(pooled)
+
+    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
+        h = self.z_to_seq(z).view(z.size(0), self.seq_len, self.hidden_dim)
+        h = self._run_blocks(h + self.pos_embed, self.decoder_blocks)
+        logits = self.out_proj(h)
+        return logits.view(z.size(0), self.seq_len * self.vocab_size)
+
+    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
+        if torch is None or F is None:
+            raise RuntimeError("PyTorch is required.")
+        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
+        lt = str(loss_type).lower()
+        if lt == "ce":
+            return F.softmax(logits, dim=-1)
+        return torch.sigmoid(logits)
+
+    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        recon_logits = self.decode(z)
+        return recon_logits, mu, logvar
+
 class PlasmidVAE(nn.Module):  # type: ignore[misc]
     def __init__(self, input_dim: int, hidden_dim: int):
         if torch is None or nn is None:
@@ -184,6 +282,15 @@ def load_or_init_model(
             num_layers=transformer_layers,
             dropout=transformer_dropout,
         ).to(device)
+    elif mt == "ssm":
+        model = StateSpaceVAE(
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            num_layers=transformer_layers,
+            kernel_size=5,
+            dropout=transformer_dropout,
+        ).to(device)
     else:
         model = PlasmidVAE(input_dim=input_dim, hidden_dim=hidden_dim).to(device)
     optimizer: optim.Optimizer = optim.Adam(model.parameters(), lr=learning_rate)
@@ -248,6 +355,11 @@ def load_or_init_model(
                 raise ValueError(f"Checkpoint transformer_layers={ck_layers} but requested {transformer_layers}. Delete {ckpt_path} or match settings.")
             if abs(ck_dropout - float(transformer_dropout)) > 1e-8:
                 raise ValueError(f"Checkpoint transformer_dropout={ck_dropout} but requested {transformer_dropout}. Delete {ckpt_path} or match settings.")
+        if mt == "ssm":
+            if ck_layers != transformer_layers:
+                raise ValueError(f"Checkpoint ssm_layers={ck_layers} but requested {transformer_layers}. Delete {ckpt_path} or match settings.")
+            if abs(ck_dropout - float(transformer_dropout)) > 1e-8:
+                raise ValueError(f"Checkpoint ssm_dropout={ck_dropout} but requested {transformer_dropout}. Delete {ckpt_path} or match settings.")
 
         model.load_state_dict(data["model"])
         optimizer.load_state_dict(data["optim"])
@@ -279,7 +391,7 @@ def load_or_init_model(
 
 def save_checkpoint(
     ckpt_path: str,
-    model: PlasmidVAE,
+    model: nn.Module,
     optimizer: "optim.Optimizer",
     global_step: int,
     tokenizer: str,
