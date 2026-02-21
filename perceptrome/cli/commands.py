@@ -1120,6 +1120,7 @@ def cmd_generate_plasmid(args: argparse.Namespace) -> int:
         target_gc=float(getattr(args, "target_gc", 0.5)),
         max_homopolymer=getattr(args, "max_homopolymer", None),
         summary_path=getattr(args, "summary_path", None),
+        top_k_output_path=getattr(args, "top_k_output", None),
         roundtrip_score=bool(getattr(args, "roundtrip_score", False)),
         name=args.name,
         output_path=args.output,
@@ -1159,6 +1160,7 @@ def cmd_generate_protein(args: argparse.Namespace) -> int:
         max_x_frac=getattr(args, "max_x_frac", None),
         max_internal_stops=int(getattr(args, "max_internal_stops", 0)),
         summary_path=getattr(args, "summary_path", None),
+        top_k_output_path=getattr(args, "top_k_output", None),
         roundtrip_score=bool(getattr(args, "roundtrip_score", False)),
     )
     print(f"[generate-protein] wrote {len(seq)} aa -> {args.output}")

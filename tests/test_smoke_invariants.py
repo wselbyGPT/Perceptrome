@@ -1,6 +1,7 @@
 import sys
 import types
 import unittest
+import tempfile
 from types import SimpleNamespace
 
 
@@ -47,7 +48,7 @@ if "requests" not in sys.modules:
 from perceptrome.cli.common import _resolve_proteome_params, _validate_tok_params, _get_grounded
 from perceptrome.config import deep_update, extract_configs
 from perceptrome.encoding_main import tokenizer_meta
-from perceptrome.generate import _gc_fraction, _max_homopolymer_run
+from perceptrome.generate import _gc_fraction, _max_homopolymer_run, _write_top_k_fasta
 from perceptrome.scope.stream import ScopeStreamContext
 
 
@@ -255,6 +256,22 @@ class ScopeStreamArchitectureAgnosticTests(unittest.TestCase):
             vocab_size=4,
         )
         self.assertIs(ctx.model, dummy_model)
+
+
+class GenerationTopKOutputTests(unittest.TestCase):
+    def test_write_top_k_fasta_writes_ranked_multifasta(self):
+        ranked = [
+            {"candidate": 3, "sequence": "ACGT", "score": 1.5},
+            {"candidate": 1, "sequence": "TTAA", "score": 0.5},
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            out = f"{td}/topk.fasta"
+            _write_top_k_fasta(out, "demo", ranked, top_k=2)
+            txt = open(out, "r", encoding="utf-8").read()
+        self.assertIn(">demo|rank=1|candidate=3|score=1.500000", txt)
+        self.assertIn("ACGT", txt)
+        self.assertIn(">demo|rank=2|candidate=1|score=0.500000", txt)
+        self.assertIn("TTAA", txt)
 
 
 if __name__ == "__main__":
