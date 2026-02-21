@@ -38,6 +38,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--source", choices=["fasta","genbank"], default=None, help="Fetch record source (default: fasta)")
     s.set_defaults(func=_lazy_cmd("cmd_fetch_one"))
 
+    s = sub.add_parser("tensorboard")
+    s.add_argument("--logdir", default=None, help="TensorBoard log directory (default: <logs_dir>/tensorboard)")
+    s.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
+    s.add_argument("--port", type=int, default=6006, help="Bind port (default: 6006)")
+    s.add_argument("--reload-interval", type=float, default=5.0, help="Reload interval in seconds (default: 5.0)")
+    s.add_argument("--path-prefix", default=None, help="Optional path prefix for reverse-proxy setups")
+    s.add_argument("--dry-run", action="store_true", help="Print launch command and exit")
+    s.set_defaults(func=_lazy_cmd("cmd_tensorboard"))
+
     def add_tok_args(sp):
         sp.add_argument("--tokenizer", choices=["base","codon","aa"], default=None, help="Override tokenizer (default from config)")
         sp.add_argument(
