@@ -212,13 +212,14 @@ class ConfigMergeTests(unittest.TestCase):
     def test_extract_configs_reads_overrides(self):
         cfg = {
             "ncbi": {"email": "a@b.com"},
-            "training": {"tokenizer": "aa", "window_size": 256, "stride": 64},
+            "training": {"tokenizer": "aa", "window_size": 256, "stride": 64, "model_type": "ssm"},
             "io": {"state_file": "state/custom.json"},
         }
         _, train_cfg, io_cfg = extract_configs(cfg)
         self.assertEqual(train_cfg.tokenizer, "aa")
         self.assertEqual(train_cfg.window_size, 256)
         self.assertEqual(train_cfg.stride, 64)
+        self.assertEqual(train_cfg.model_type, "ssm")
         self.assertEqual(io_cfg.state_file, "state/custom.json")
 
 

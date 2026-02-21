@@ -16,6 +16,7 @@ training:
   max_stream_epochs: 10
   shuffle_catalog: true
   hidden_dim: 512
+  model_type: mlp   # mlp | transformer | ssm
   learning_rate: 1.0e-3
   beta_kl: 1.0e-3
   kl_warmup_steps: 5000
