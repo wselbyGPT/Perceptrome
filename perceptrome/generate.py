@@ -93,6 +93,19 @@ def _write_candidate_summary(summary_json: str, summary_csv: str, payload: Dict[
             w.writerow(r)
 
 
+def _write_top_k_fasta(path: str, name: str, ranked: List[Dict[str, object]], top_k: int) -> None:
+    out_dir = os.path.dirname(path) or "."
+    os.makedirs(out_dir, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        for rank, cand in enumerate(ranked[:top_k], start=1):
+            seq = str(cand.get("sequence", ""))
+            idx = cand.get("candidate", rank - 1)
+            score = cand.get("score", 0.0)
+            f.write(f">{name}|rank={rank}|candidate={idx}|score={float(score):.6f}\n")
+            for i in range(0, len(seq), 60):
+                f.write(seq[i:i + 60] + "\n")
+
+
 def _roundtrip_recon_score(model, seq: str, tok: str, seq_len: int, vocab_size: int, device: "torch.device") -> Optional[float]:
     if torch is None:
         return None
@@ -146,6 +159,7 @@ def generate_plasmid_sequence(
     target_gc: Optional[float] = None,
     max_homopolymer: Optional[int] = None,
     summary_path: Optional[str] = None,
+    top_k_output_path: Optional[str] = None,
     roundtrip_score: bool = False,
 ) -> str:
     if torch is None:
@@ -264,6 +278,8 @@ def generate_plasmid_sequence(
             f.write(seq[i:i+60] + "\n")
 
     summary_json, summary_csv = _make_out_paths(output_path, summary_path)
+    top_k_output = top_k_output_path if top_k_output_path else f"{output_path}.top{top_k}.fasta"
+    _write_top_k_fasta(top_k_output, name, ranked, top_k)
     _write_candidate_summary(
         summary_json,
         summary_csv,
@@ -276,6 +292,7 @@ def generate_plasmid_sequence(
             "max_homopolymer": max_homopolymer,
             "winner": {k: v for k, v in winner.items() if k != "sequence"},
             "top_candidates": [{k: v for k, v in c.items() if k != "sequence"} for c in ranked[:top_k]],
+            "top_k_output_path": top_k_output,
             "output_path": output_path,
         },
         [{k: v for k, v in c.items() if k != "sequence"} for c in ranked],
@@ -305,6 +322,7 @@ def generate_protein_sequence(
     max_x_frac: Optional[float] = None,
     max_internal_stops: int = 0,
     summary_path: Optional[str] = None,
+    top_k_output_path: Optional[str] = None,
     roundtrip_score: bool = False,
 ) -> str:
     if torch is None:
@@ -423,6 +441,8 @@ def generate_protein_sequence(
             f.write(seq[i:i+60] + "\n")
 
     summary_json, summary_csv = _make_out_paths(output_path, summary_path)
+    top_k_output = top_k_output_path if top_k_output_path else f"{output_path}.top{top_k}.fasta"
+    _write_top_k_fasta(top_k_output, name, ranked, top_k)
     _write_candidate_summary(
         summary_json,
         summary_csv,
@@ -435,6 +455,7 @@ def generate_protein_sequence(
             "max_internal_stops": max_internal_stops,
             "winner": {k: v for k, v in ranked[0].items() if k != "sequence"},
             "top_candidates": [{k: v for k, v in c.items() if k != "sequence"} for c in ranked[:top_k]],
+            "top_k_output_path": top_k_output,
             "output_path": output_path,
         },
         [{k: v for k, v in c.items() if k != "sequence"} for c in ranked],
