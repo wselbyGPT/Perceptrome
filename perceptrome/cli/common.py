@@ -172,8 +172,16 @@ def _get_source(args, tok: str) -> str:
     #   - aa: GenBank (prefer CDS translations when available)
     return "genbank" if tok == "aa" else "fasta"
 
-def _ensure_record(accession: str, src: str, io_cfg, ncbi_cfg, force: bool = False) -> str:
+def _ensure_record(
+    accession: str,
+    src: str,
+    io_cfg,
+    ncbi_cfg,
+    force: bool = False,
+    config_snapshot=None,
+) -> str:
     """Ensure the requested record exists in cache; fetch if missing."""
+    _ = config_snapshot
     src = (src or "fasta").lower()
     if src == "genbank":
         gb_dir = getattr(io_cfg, "cache_genbank_dir", "cache/genbank")
