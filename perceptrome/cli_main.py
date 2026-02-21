@@ -18,6 +18,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("init"); s.set_defaults(func=_lazy_cmd("cmd_init"))
     s = sub.add_parser("catalog-show"); s.add_argument("path"); s.set_defaults(func=_lazy_cmd("cmd_catalog_show"))
+    s = sub.add_parser("catalog-generate")
+    s.add_argument("--schema", required=True, help="Catalog schema YAML/JSON path")
+    s.add_argument("--output", required=True, help="Output catalog path")
+    s.set_defaults(func=_lazy_cmd("cmd_catalog_generate"))
 
     s = sub.add_parser("split-create")
     s.add_argument("--catalog", required=True, help="Catalog file used to build splits")
