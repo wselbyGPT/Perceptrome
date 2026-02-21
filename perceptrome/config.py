@@ -25,7 +25,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_stream_epochs": 100,
         "shuffle_catalog": True,
         "hidden_dim": 512,
-        "model_type": "mlp",
+        "model_type": "mlp",  # "mlp" | "transformer" | "ssm" | "rnn" | "hybrid" | "moe" | "gnn" | "tcn" | "tree"
         "transformer_d_model": 256,
         "transformer_nhead": 8,
         "transformer_layers": 4,
