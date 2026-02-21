@@ -587,6 +587,8 @@ def cmd_train_one(args: argparse.Namespace) -> int:
     pvc[args.accession] = pvc.get(args.accession, 0) + 1
     save_state(io_cfg.state_file, state)
 
+    cleanup_accession_files(args.accession, io_cfg, enc_path)
+
     run_completed = _iso_now()
     effective_loss_type = str(loss_type).lower() if loss_type is not None else ("ce" if tok == "aa" else "mse")
     manifest = {
