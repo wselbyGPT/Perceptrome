@@ -1,5 +1,6 @@
 import argparse
 import datetime
+import difflib
 import hashlib
 import json
 import logging
@@ -24,6 +25,7 @@ from perceptrome.cli.common import (
     _get_tok, _get_frame, _get_min_orf, _get_grounded, _get_protein_opts,
     _get_source, _ensure_record,
 )
+from perceptrome.encoding.parse import parse_fasta_sequence
 
 
 # -----------------------------
@@ -123,6 +125,57 @@ def _apply_cli_training_overrides(cfg: Dict[str, Any], args: argparse.Namespace)
     if model_type is not None:
         cfg.setdefault("training", {})["model_type"] = str(model_type).lower()
     return cfg
+
+
+def _kmer_set(seq: str, k: int) -> set[str]:
+    if k <= 0 or len(seq) < k:
+        return set()
+    return {seq[i : i + k] for i in range(len(seq) - k + 1)}
+
+
+def _jaccard_kmers(a: str, b: str, k: int = 9) -> float:
+    ka = _kmer_set(a, k)
+    kb = _kmer_set(b, k)
+    if not ka and not kb:
+        return 1.0
+    if not ka or not kb:
+        return 0.0
+    return float(len(ka & kb) / len(ka | kb))
+
+
+def _sequence_similarity(a: str, b: str) -> float:
+    """Similarity score in [0,1] based on global edit-like matching."""
+    if not a and not b:
+        return 1.0
+    if not a or not b:
+        return 0.0
+    return float(difflib.SequenceMatcher(None, a, b).ratio())
+
+
+def _gc_fraction(seq: str) -> float:
+    seq = (seq or "").upper()
+    if not seq:
+        return 0.0
+    return float((seq.count("G") + seq.count("C")) / len(seq))
+
+
+def _reference_score(generated_seq: str, ref_seq: str) -> Dict[str, float]:
+    seq_sim = _sequence_similarity(generated_seq, ref_seq)
+    kmer_sim = _jaccard_kmers(generated_seq, ref_seq, k=9)
+    gc_delta = abs(_gc_fraction(generated_seq) - _gc_fraction(ref_seq))
+    length_ratio = (
+        min(len(generated_seq), len(ref_seq)) / max(len(generated_seq), len(ref_seq))
+        if generated_seq and ref_seq
+        else 0.0
+    )
+    score = (0.55 * seq_sim) + (0.30 * kmer_sim) + (0.10 * length_ratio) + (0.05 * (1.0 - gc_delta))
+    return {
+        "score": float(score),
+        "seq_similarity": float(seq_sim),
+        "kmer_jaccard": float(kmer_sim),
+        "gc_delta": float(gc_delta),
+        "length_ratio": float(length_ratio),
+    }
 
 
 # -----------------------------
@@ -1177,6 +1230,59 @@ def cmd_generate_plasmid(args: argparse.Namespace) -> int:
     print(f"[generate-plasmid] tokenizer={tok} wrote {len(seq)} bp -> {args.output}")
     return 0
 
+
+def cmd_validate_plasmid(args: argparse.Namespace) -> int:
+    cfg = load_full_config(args.config)
+    ncbi_cfg, _, io_cfg = extract_configs(cfg)
+    ensure_dirs(io_cfg)
+
+    generated_path = str(args.generated_fasta)
+    generated_seq = parse_fasta_sequence(generated_path)
+    accessions = read_catalog(str(args.catalog))
+
+    rows = []
+    for accession in accessions:
+        ref_path = _ensure_record(accession, "fasta", io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=bool(getattr(args, "force_fetch", False)))
+        ref_seq = parse_fasta_sequence(ref_path)
+        metrics = _reference_score(generated_seq, ref_seq)
+        rows.append({
+            "accession": accession,
+            "ref_path": ref_path,
+            "ref_len": int(len(ref_seq)),
+            **metrics,
+        })
+
+    rows.sort(key=lambda r: r["score"], reverse=True)
+    top_n = max(1, int(getattr(args, "top_n", 5)))
+    top_rows = rows[:top_n]
+
+    print(
+        f"[validate-plasmid] generated={generated_path} len={len(generated_seq)} "
+        f"catalog={args.catalog} refs={len(rows)}"
+    )
+    print("rank accession score seq_sim kmer_jaccard gc_delta len_ratio ref_len")
+    for i, row in enumerate(top_rows, start=1):
+        print(
+            f"{i:>4d} {row['accession']:<16s} {row['score']:.4f} {row['seq_similarity']:.4f} "
+            f"{row['kmer_jaccard']:.4f} {row['gc_delta']:.4f} {row['length_ratio']:.4f} {row['ref_len']}"
+        )
+
+    if getattr(args, "output_json", None):
+        out_path = str(args.output_json)
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        payload = {
+            "generated_fasta": generated_path,
+            "generated_length": int(len(generated_seq)),
+            "catalog": str(args.catalog),
+            "top_n": int(top_n),
+            "results": top_rows,
+        }
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+            f.write("\n")
+        print(f"[validate-plasmid] wrote {out_path}")
+
+    return 0
 
 def cmd_generate_protein(args: argparse.Namespace) -> int:
     cfg = load_full_config(args.config)

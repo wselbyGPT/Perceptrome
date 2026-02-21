@@ -184,6 +184,15 @@ def build_parser() -> argparse.ArgumentParser:
     add_model_args(s)
     s.set_defaults(func=_lazy_cmd("cmd_generate_plasmid"))
 
+
+    s = sub.add_parser("validate-plasmid")
+    s.add_argument("--generated-fasta", required=True, help="Generated FASTA file to validate")
+    s.add_argument("--catalog", required=True, help="Catalog of reference accessions")
+    s.add_argument("--top-n", type=int, default=5, help="Show top N matching references (default: 5)")
+    s.add_argument("--output-json", default=None, help="Optional JSON report path for top-N matches")
+    s.add_argument("--force-fetch", action="store_true", help="Force re-fetching FASTA records from NCBI")
+    s.set_defaults(func=_lazy_cmd("cmd_validate_plasmid"))
+
     s = sub.add_parser("generate-protein")
     s.add_argument("--length-aa", type=int, default=600)
     s.add_argument("--num-windows", type=int, default=None)
