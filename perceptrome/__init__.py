@@ -14,4 +14,5 @@ __all__ = [
     "classical_baselines",
     "genome_evolution",
     "cli",
+    "genome_spec",
 ]
