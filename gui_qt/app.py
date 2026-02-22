@@ -4,8 +4,8 @@ import re
 import sys
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QSettings, QEvent
-from PySide6.QtGui import QFont, QTextCursor, QPainter, QPen, QColor, QPdfWriter
+from PySide6.QtCore import Qt, QSettings, QEvent, QPoint
+from PySide6.QtGui import QFont, QTextCursor, QPainter, QPen, QColor, QPdfWriter, QPolygon
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
 from shiboken6 import isValid
@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QPushButton,
     QPlainTextEdit, QProgressBar,
     QSpinBox, QDoubleSpinBox, QGroupBox,
-    QTableWidget, QTableWidgetItem, QHeaderView, QSlider
+    QTableWidget, QTableWidgetItem, QHeaderView, QSlider, QComboBox
 )
 
 from .theme import apply_dark_mode
@@ -252,10 +252,13 @@ class PerceptromeQt(QMainWindow):
 
         output_group = QGroupBox("PDF output")
         output_layout = QFormLayout(output_group)
+        self.view_render_mode = QComboBox()
+        self.view_render_mode.addItems(["Circular", "Linear"])
         self.view_pdf_path = QLineEdit()
         self.view_pdf_path.setPlaceholderText("generated/circular_genome.pdf")
         self.view_title = QLineEdit()
         self.view_title.setPlaceholderText("Optional title override")
+        output_layout.addRow("Render mode:", self.view_render_mode)
         output_layout.addRow("Output PDF:", self.view_pdf_path)
         output_layout.addRow("Title:", self.view_title)
 
@@ -277,6 +280,7 @@ class PerceptromeQt(QMainWindow):
 
         self.btn_view_generate.clicked.connect(self._view_generate_pdf)
         self.btn_view_open.clicked.connect(self._view_open_pdf)
+        self.view_render_mode.currentTextChanged.connect(self._view_on_render_mode_changed)
         return w
 
     # -------------------------
@@ -293,6 +297,7 @@ class PerceptromeQt(QMainWindow):
         self.settings.setValue("gen_cmd", self.gen_cmd.text().strip())
         self.settings.setValue("view_accession", self.view_accession.text().strip())
         self.settings.setValue("view_fasta_path", self.view_fasta_path.text().strip())
+        self.settings.setValue("view_render_mode", self.view_render_mode.currentText().strip())
         self.settings.setValue("view_pdf_path", self.view_pdf_path.text().strip())
         self.settings.setValue("view_title", self.view_title.text().strip())
         self.pdf_window.save_window_settings()
@@ -314,7 +319,11 @@ class PerceptromeQt(QMainWindow):
         self.gen_cmd.setText(self.settings.value("gen_cmd", "python stream_train.py generate --help"))
         self.view_accession.setText(self.settings.value("view_accession", ""))
         self.view_fasta_path.setText(self.settings.value("view_fasta_path", "generated/novel_plasmid.fasta"))
-        self.view_pdf_path.setText(self.settings.value("view_pdf_path", "generated/circular_genome.pdf"))
+        render_mode = self.settings.value("view_render_mode", "Circular")
+        mode_idx = self.view_render_mode.findText(render_mode)
+        self.view_render_mode.setCurrentIndex(mode_idx if mode_idx >= 0 else 0)
+        default_pdf = self._default_pdf_output_for_mode(self.view_render_mode.currentText())
+        self.view_pdf_path.setText(self.settings.value("view_pdf_path", default_pdf))
         self.view_title.setText(self.settings.value("view_title", ""))
         self.pdf_window.load_window_settings()
         if self.settings.contains("pdf_last_opened_path") and not self.view_pdf_path.text().strip():
@@ -528,6 +537,21 @@ class PerceptromeQt(QMainWindow):
             return seq, f"fasta {fasta_path}", genbank_path
         raise ValueError("Provide a genome accession or FASTA path.")
 
+    def _default_pdf_output_for_mode(self, mode: str) -> str:
+        return "generated/linear_genome.pdf" if mode.lower() == "linear" else "generated/circular_genome.pdf"
+
+    def _default_title_for_mode(self, mode: str, source: str) -> str:
+        view_name = "Linear genome" if mode.lower() == "linear" else "Circular genome"
+        return f"{view_name} ({source})"
+
+    def _view_on_render_mode_changed(self, mode: str):
+        mode = mode or "Circular"
+        path = self.view_pdf_path.text().strip()
+        circular_default = self._default_pdf_output_for_mode("Circular")
+        linear_default = self._default_pdf_output_for_mode("Linear")
+        if not path or path in {circular_default, linear_default}:
+            self.view_pdf_path.setText(self._default_pdf_output_for_mode(mode))
+
     def _write_circular_pdf(self, seq: str, output_path: str, title: str, features: list[CDSFeature] | None = None) -> None:
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         writer = QPdfWriter(output_path)
@@ -604,12 +628,100 @@ class PerceptromeQt(QMainWindow):
         finally:
             painter.end()
 
+    def _write_linear_pdf(self, seq: str, output_path: str, title: str, features: list[CDSFeature] | None = None) -> None:
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        writer = QPdfWriter(output_path)
+        writer.setResolution(150)
+
+        painter = QPainter(writer)
+        painter.setRenderHint(QPainter.Antialiasing)
+        try:
+            rect = painter.viewport()
+            seq_len = max(1, len(seq))
+            gc = (seq.count("G") + seq.count("C")) / float(seq_len)
+
+            left = int(rect.width() * 0.08)
+            right = int(rect.width() * 0.92)
+            baseline_y = int(rect.height() * 0.45)
+            width = max(1, right - left)
+
+            painter.setPen(QPen(QColor("#d9d9d9"), 2))
+            painter.drawText(left, 70, width, 30, Qt.AlignCenter, title or "Linear genome view")
+
+            painter.setPen(QPen(QColor("#68d5ff"), 3))
+            painter.drawLine(left, baseline_y, right, baseline_y)
+
+            tick_vals = sorted(set([1, seq_len // 4, seq_len // 2, (3 * seq_len) // 4, seq_len]))
+            for tick_bp in tick_vals:
+                x = left + int(((tick_bp - 1) / max(seq_len - 1, 1)) * width)
+                painter.setPen(QPen(QColor("#58616b"), 1))
+                painter.drawLine(x, baseline_y - 8, x, baseline_y + 8)
+                painter.setPen(QPen(QColor("#a8b0b8"), 1))
+                painter.drawText(x - 40, baseline_y + 14, 80, 20, Qt.AlignHCenter | Qt.AlignTop, f"{tick_bp:,}")
+
+            if features:
+                lane_height = 14
+                lane_gap = 6
+                track_gap = 36
+                lane_count = 4
+                track_shift = [-(track_gap // 2), +(track_gap // 2)]
+                palette = ["#91ff9d", "#fcbf49", "#ff6f91", "#a0c4ff", "#cdb4db", "#8be9fd"]
+                lane_last_end = [[0] * lane_count for _ in range(2)]
+
+                for idx, feat in enumerate(sorted(features, key=lambda f: (f.start, f.end))):
+                    track_idx = 0 if feat.strand >= 0 else 1
+                    lane_idx = 0
+                    for i in range(lane_count):
+                        if feat.start > lane_last_end[track_idx][i]:
+                            lane_idx = i
+                            break
+                    lane_last_end[track_idx][lane_idx] = feat.end
+
+                    x0 = left + int(((feat.start - 1) / max(seq_len - 1, 1)) * width)
+                    x1 = left + int(((feat.end - 1) / max(seq_len - 1, 1)) * width)
+                    if x1 < x0:
+                        x0, x1 = x1, x0
+                    x1 = max(x1, x0 + 2)
+
+                    lane_sign = -1 if track_idx == 0 else 1
+                    y = baseline_y + track_shift[track_idx] + lane_sign * (lane_idx * (lane_height + lane_gap))
+
+                    color = QColor(palette[idx % len(palette)])
+                    painter.setPen(QPen(color, 1))
+                    painter.setBrush(color)
+
+                    arrow_len = min(12, max(5, x1 - x0))
+                    if feat.strand >= 0:
+                        points = [
+                            (x0, y - lane_height // 2),
+                            (x1 - arrow_len, y - lane_height // 2),
+                            (x1, y),
+                            (x1 - arrow_len, y + lane_height // 2),
+                            (x0, y + lane_height // 2),
+                        ]
+                    else:
+                        points = [
+                            (x1, y - lane_height // 2),
+                            (x0 + arrow_len, y - lane_height // 2),
+                            (x0, y),
+                            (x0 + arrow_len, y + lane_height // 2),
+                            (x1, y + lane_height // 2),
+                        ]
+                    painter.drawPolygon(QPolygon([QPoint(p[0], p[1]) for p in points]))
+
+            info = f"Length: {len(seq):,} bp    GC: {gc * 100:.2f}%"
+            painter.setPen(QPen(QColor("#a8b0b8"), 1))
+            painter.drawText(left, baseline_y + 90, width, 24, Qt.AlignCenter, info)
+        finally:
+            painter.end()
+
     def _view_generate_pdf(self):
         self.view_log.clear()
         try:
             seq, source, genbank_path = self._resolve_genome_sequence()
-            output_path = self.view_pdf_path.text().strip() or "generated/circular_genome.pdf"
-            title = self.view_title.text().strip() or f"Circular genome ({source})"
+            mode = self.view_render_mode.currentText().strip() or "Circular"
+            output_path = self.view_pdf_path.text().strip() or self._default_pdf_output_for_mode(mode)
+            title = self.view_title.text().strip() or self._default_title_for_mode(mode, source)
             features: list[CDSFeature] = []
             if genbank_path:
                 try:
@@ -618,10 +730,13 @@ class PerceptromeQt(QMainWindow):
                 except Exception as exc:
                     self._append_log(self.view_log, f"[{now_str()}] WARNING: Failed to parse CDS features from {genbank_path}: {exc}\n")
             if not features:
-                self._append_log(self.view_log, f"[{now_str()}] WARNING: No CDS features available; using minimal circle output.\n")
-            self._append_log(self.view_log, f"[{now_str()}] Generating PDF from {source}\n")
-            self._write_circular_pdf(seq, output_path, title, features=features)
-            self._append_log(self.view_log, f"[{now_str()}] Saved PDF -> {output_path}\n")
+                self._append_log(self.view_log, f"[{now_str()}] WARNING: No CDS features available; using minimal {mode.lower()} output.\n")
+            self._append_log(self.view_log, f"[{now_str()}] Generating {mode} PDF from {source}\n")
+            if mode.lower() == "linear":
+                self._write_linear_pdf(seq, output_path, title, features=features)
+            else:
+                self._write_circular_pdf(seq, output_path, title, features=features)
+            self._append_log(self.view_log, f"[{now_str()}] Saved {mode} PDF -> {output_path}\n")
             self._add_history("view_pdf", output_path)
             self._load_pdf(output_path)
             self._show_pdf_window()
