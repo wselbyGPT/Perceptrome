@@ -5,7 +5,7 @@ import sys
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QSettings, QEvent, QPoint
-from PySide6.QtGui import QFont, QTextCursor, QPainter, QPen, QColor, QPdfWriter, QPolygon
+from PySide6.QtGui import QFont, QTextCursor, QPainter, QPen, QColor, QPdfWriter, QPolygon, QFontMetrics
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
 from shiboken6 import isValid
@@ -552,6 +552,111 @@ class PerceptromeQt(QMainWindow):
         if not path or path in {circular_default, linear_default}:
             self.view_pdf_path.setText(self._default_pdf_output_for_mode(mode))
 
+    def _draw_annotation_pages(
+        self,
+        painter: QPainter,
+        writer: QPdfWriter,
+        title: str,
+        features: list[CDSFeature] | None,
+    ) -> None:
+        writer.newPage()
+        rect = painter.viewport()
+        margin_x = int(rect.width() * 0.06)
+        top_margin = int(rect.height() * 0.06)
+        content_w = max(200, rect.width() - (2 * margin_x))
+        bottom_limit = int(rect.height() * 0.94)
+
+        header_font = QFont("Sans Serif", 13)
+        body_font = QFont("Sans Serif", 8)
+        painter.setFont(header_font)
+        painter.setPen(QPen(QColor("#d9d9d9"), 1))
+        painter.drawText(margin_x, top_margin, content_w, 28, Qt.AlignLeft | Qt.AlignVCenter, "Annotations")
+
+        painter.setFont(QFont("Sans Serif", 9))
+        painter.setPen(QPen(QColor("#a8b0b8"), 1))
+        painter.drawText(margin_x, top_margin + 26, content_w, 22, Qt.AlignLeft | Qt.AlignVCenter, title)
+
+        y = top_margin + 58
+        if not features:
+            painter.setFont(QFont("Sans Serif", 10))
+            painter.setPen(QPen(QColor("#b8c0c8"), 1))
+            painter.drawText(
+                margin_x,
+                y,
+                content_w,
+                80,
+                Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap,
+                "No annotations available (GenBank CDS metadata not found for this genome source).",
+            )
+            return
+
+        cols = [
+            ("Gene/Locus", 0.15),
+            ("Product", 0.37),
+            ("Coordinates", 0.16),
+            ("Strand", 0.08),
+            ("Protein length", 0.10),
+            ("Translation source", 0.14),
+        ]
+
+        col_widths = [max(55, int(content_w * frac)) for _, frac in cols]
+        width_over = sum(col_widths) - content_w
+        if width_over > 0:
+            col_widths[-1] = max(55, col_widths[-1] - width_over)
+
+        def draw_header(y_pos: int) -> int:
+            painter.setFont(QFont("Sans Serif", 8, QFont.Bold))
+            painter.setPen(QPen(QColor("#59636e"), 1))
+            painter.drawLine(margin_x, y_pos, margin_x + content_w, y_pos)
+            x = margin_x
+            for (name, _), w in zip(cols, col_widths):
+                painter.drawText(x + 4, y_pos + 3, w - 8, 18, Qt.AlignLeft | Qt.AlignVCenter, name)
+                x += w
+            painter.drawLine(margin_x, y_pos + 20, margin_x + content_w, y_pos + 20)
+            return y_pos + 24
+
+        y = draw_header(y)
+        painter.setFont(body_font)
+        fm = QFontMetrics(body_font)
+
+        for feat in features:
+            values = [
+                feat.gene_or_locus_tag,
+                feat.product,
+                f"{feat.start}..{feat.end}",
+                "+" if feat.strand >= 0 else "-",
+                str(feat.protein_length),
+                feat.translation_source,
+            ]
+
+            row_height = 20
+            for value, width in zip(values, col_widths):
+                text_h = fm.boundingRect(0, 0, width - 8, 1000, Qt.TextWordWrap, value or "-").height()
+                row_height = max(row_height, text_h + 8)
+
+            if y + row_height > bottom_limit:
+                writer.newPage()
+                rect = painter.viewport()
+                margin_x = int(rect.width() * 0.06)
+                content_w = max(200, rect.width() - (2 * margin_x))
+                bottom_limit = int(rect.height() * 0.94)
+                y = int(rect.height() * 0.06)
+                painter.setFont(header_font)
+                painter.setPen(QPen(QColor("#d9d9d9"), 1))
+                painter.drawText(margin_x, y, content_w, 28, Qt.AlignLeft | Qt.AlignVCenter, "Annotations (continued)")
+                y += 34
+                y = draw_header(y)
+                painter.setFont(body_font)
+
+            painter.setPen(QPen(QColor("#3b3f46"), 1))
+            painter.drawLine(margin_x, y + row_height, margin_x + content_w, y + row_height)
+            x = margin_x
+            painter.setPen(QPen(QColor("#b8c0c8"), 1))
+            for value, width in zip(values, col_widths):
+                painter.drawText(x + 4, y + 4, width - 8, row_height - 6, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, value or "-")
+                x += width
+            y += row_height
+
     def _write_circular_pdf(self, seq: str, output_path: str, title: str, features: list[CDSFeature] | None = None) -> None:
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         writer = QPdfWriter(output_path)
@@ -600,31 +705,15 @@ class PerceptromeQt(QMainWindow):
             painter.setPen(QPen(QColor("#a8b0b8"), 1))
             painter.drawText(cx - radius, cy + radius + 12, radius * 2, 30, Qt.AlignCenter, info)
 
-            if features:
-                painter.setPen(QPen(QColor("#d9d9d9"), 1))
-                legend_y = cy - radius + 10
-                painter.drawText(cx + radius + 25, legend_y - 20, 320, 20, Qt.AlignLeft, "CDS legend")
-                max_rows = 18
-                for idx, feat in enumerate(features[:max_rows]):
-                    strand_txt = "+" if feat.strand >= 0 else "-"
-                    label = feat.product or feat.gene_or_locus_tag
-                    tip = (
-                        f"{label} | {feat.gene_or_locus_tag} | {feat.protein_length} aa"
-                        f" ({feat.translation_source}) | {feat.start}..{feat.end} ({strand_txt})"
-                    )
-                    painter.setPen(QPen(QColor(palette[idx % len(palette)]), 2))
-                    painter.drawLine(cx + radius + 25, legend_y + idx * 18 + 6, cx + radius + 40, legend_y + idx * 18 + 6)
-                    painter.setPen(QPen(QColor("#b8c0c8"), 1))
-                    painter.drawText(cx + radius + 44, legend_y + idx * 18, 360, 16, Qt.AlignLeft, tip[:120])
-                if len(features) > max_rows:
-                    painter.drawText(
-                        cx + radius + 44,
-                        legend_y + max_rows * 18,
-                        360,
-                        16,
-                        Qt.AlignLeft,
-                        f"... {len(features) - max_rows} more CDS features",
-                    )
+            painter.setPen(QPen(QColor("#a8b0b8"), 1))
+            legend_msg = (
+                f"CDS features: {len(features)} (see annotation table pages)"
+                if features
+                else "CDS features: none (see annotation table page)"
+            )
+            painter.drawText(cx - radius, cy + radius + 40, radius * 2, 24, Qt.AlignCenter, legend_msg)
+
+            self._draw_annotation_pages(painter, writer, title, features)
         finally:
             painter.end()
 
@@ -712,6 +801,8 @@ class PerceptromeQt(QMainWindow):
             info = f"Length: {len(seq):,} bp    GC: {gc * 100:.2f}%"
             painter.setPen(QPen(QColor("#a8b0b8"), 1))
             painter.drawText(left, baseline_y + 90, width, 24, Qt.AlignCenter, info)
+
+            self._draw_annotation_pages(painter, writer, title, features)
         finally:
             painter.end()
 
@@ -729,8 +820,10 @@ class PerceptromeQt(QMainWindow):
                     self._append_log(self.view_log, f"[{now_str()}] Loaded {len(features)} CDS features from {genbank_path}\n")
                 except Exception as exc:
                     self._append_log(self.view_log, f"[{now_str()}] WARNING: Failed to parse CDS features from {genbank_path}: {exc}\n")
-            if not features:
-                self._append_log(self.view_log, f"[{now_str()}] WARNING: No CDS features available; using minimal {mode.lower()} output.\n")
+            if not genbank_path:
+                self._append_log(self.view_log, f"[{now_str()}] WARNING: Genome source does not include GenBank feature metadata; annotation table will show no annotations available.\n")
+            elif not features:
+                self._append_log(self.view_log, f"[{now_str()}] WARNING: GenBank source had no CDS features; annotation table will show no annotations available.\n")
             self._append_log(self.view_log, f"[{now_str()}] Generating {mode} PDF from {source}\n")
             if mode.lower() == "linear":
                 self._write_linear_pdf(seq, output_path, title, features=features)
