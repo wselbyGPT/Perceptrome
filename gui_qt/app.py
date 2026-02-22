@@ -831,12 +831,13 @@ class PerceptromeQt(QMainWindow):
                 self._write_circular_pdf(seq, output_path, title, features=features)
             self._append_log(self.view_log, f"[{now_str()}] Saved {mode} PDF -> {output_path}\n")
             self._add_history("view_pdf", output_path)
-            self._load_pdf(output_path)
+            self._load_pdf(output_path, mode=mode)
             self._show_pdf_window()
         except Exception as exc:
             self._append_log(self.view_log, f"[{now_str()}] ERROR: {exc}\n")
 
-    def _load_pdf(self, path: str):
+    def _load_pdf(self, path: str, mode: str | None = None):
+        self.pdf_window.set_render_mode(mode or self.view_render_mode.currentText())
         self.pdf_window.load_pdf(path)
         self.view_pdf_path.setText(path)
 
@@ -913,9 +914,11 @@ class GenomePdfWindow(QMainWindow):
         self.pdf_view.setDocument(self.pdf_doc)
         self.pdf_view.setZoomMode(QPdfView.ZoomMode.Custom)
         self.pdf_view.installEventFilter(self)
+        self.pdf_view.setFocusPolicy(Qt.StrongFocus)
 
         self._pdf_drag_active = False
         self._pdf_drag_last_pos = None
+        self._pdf_render_mode = "Circular"
 
         zoom_row = QHBoxLayout()
         self.btn_zoom_out = QPushButton("-")
@@ -947,11 +950,14 @@ class GenomePdfWindow(QMainWindow):
         layout.addWidget(self.pdf_view, 1)
         self.setCentralWidget(root)
 
-        self.zoom_slider.valueChanged.connect(self._zoom_changed)
-        self.btn_zoom_out.clicked.connect(lambda: self._step_zoom(-10))
-        self.btn_zoom_in.clicked.connect(lambda: self._step_zoom(10))
+        self.zoom_slider.valueChanged.connect(self._view_zoom_changed)
+        self.btn_zoom_out.clicked.connect(lambda: self._step_view_zoom(-10))
+        self.btn_zoom_in.clicked.connect(lambda: self._step_view_zoom(10))
         self.btn_pan_left.clicked.connect(lambda: self._pan_horizontal(-120))
         self.btn_pan_right.clicked.connect(lambda: self._pan_horizontal(120))
+
+    def set_render_mode(self, mode: str):
+        self._pdf_render_mode = (mode or "Circular").strip().lower().title()
 
     def load_pdf(self, path: str):
         if not os.path.exists(path):
@@ -967,13 +973,20 @@ class GenomePdfWindow(QMainWindow):
     def set_zoom_percent(self, value: int):
         self.zoom_slider.setValue(max(25, min(400, int(value))))
 
-    def _zoom_changed(self, value: int):
+    def _view_zoom_changed(self, value: int):
         self.pdf_view.setZoomMode(QPdfView.ZoomMode.Custom)
         self.pdf_view.setZoomFactor(value / 100.0)
         self.zoom_label.setText(f"{value}%")
 
-    def _step_zoom(self, delta: int):
+    def _step_view_zoom(self, delta: int):
         self.zoom_slider.setValue(max(25, min(400, self.zoom_slider.value() + delta)))
+
+    def _is_linear_mode(self) -> bool:
+        return self._pdf_render_mode.lower() == "linear"
+
+    def _reset_zoom_fit_width(self):
+        self.pdf_view.setZoomMode(QPdfView.ZoomMode.FitToWidth)
+        self.zoom_label.setText("Fit width")
 
     def _pan_horizontal(self, delta: int):
         hbar = self.pdf_view.horizontalScrollBar()
@@ -1004,13 +1017,35 @@ class GenomePdfWindow(QMainWindow):
                 hbar = self.pdf_view.horizontalScrollBar()
                 vbar = self.pdf_view.verticalScrollBar()
                 hbar.setValue(hbar.value() - delta.x())
-                vbar.setValue(vbar.value() - delta.y())
+                if self._is_linear_mode() and not (event.modifiers() & Qt.ShiftModifier):
+                    delta_y = 0
+                else:
+                    delta_y = delta.y()
+                vbar.setValue(vbar.value() - delta_y)
                 return True
             if event.type() == QEvent.MouseButtonRelease and self._pdf_drag_active:
                 self._pdf_drag_active = False
                 self._pdf_drag_last_pos = None
                 self.pdf_view.setCursor(Qt.ArrowCursor)
                 return True
+            if event.type() == QEvent.KeyPress:
+                key = event.key()
+                mods = event.modifiers()
+                if key in (Qt.Key_Plus, Qt.Key_Equal):
+                    self._step_view_zoom(10)
+                    return True
+                if key == Qt.Key_Minus:
+                    self._step_view_zoom(-10)
+                    return True
+                if key == Qt.Key_Left:
+                    self._pan_horizontal(-120)
+                    return True
+                if key == Qt.Key_Right:
+                    self._pan_horizontal(120)
+                    return True
+                if self._is_linear_mode() and key == Qt.Key_0 and (mods & Qt.ControlModifier):
+                    self._reset_zoom_fit_width()
+                    return True
         return super().eventFilter(watched, event)
 
 
