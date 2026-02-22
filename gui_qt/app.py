@@ -67,6 +67,7 @@ class PerceptromeQt(QMainWindow):
         self.gen_runner = ProcessRunner(self)
 
         self._closing = False
+        self.pdf_window = GenomePdfWindow(self.settings, self)
 
         # Build tabs
         self.tab_home = self._build_home_tab()
@@ -260,7 +261,7 @@ class PerceptromeQt(QMainWindow):
 
         btn_row = QHBoxLayout()
         self.btn_view_generate = QPushButton("Generate PDF")
-        self.btn_view_open = QPushButton("Open PDF")
+        self.btn_view_open = QPushButton("Open PDF Window")
         btn_row.addWidget(self.btn_view_generate)
         btn_row.addWidget(self.btn_view_open)
         btn_row.addStretch(1)
@@ -269,43 +270,13 @@ class PerceptromeQt(QMainWindow):
         self.view_log.setReadOnly(True)
         self.view_log.setPlaceholderText("PDF generation status will appear here...")
 
-        self.view_pdf_doc = QPdfDocument(self)
-        self.view_pdf = QPdfView()
-        self.view_pdf.setDocument(self.view_pdf_doc)
-        self.view_pdf.setZoomMode(QPdfView.ZoomMode.FitInView)
-        self.view_pdf.installEventFilter(self)
-        self._pdf_drag_active = False
-        self._pdf_drag_last_pos = None
-
-        zoom_row = QHBoxLayout()
-        self.btn_view_zoom_out = QPushButton("-")
-        self.btn_view_zoom_out.setFixedWidth(32)
-        self.btn_view_zoom_in = QPushButton("+")
-        self.btn_view_zoom_in.setFixedWidth(32)
-        self.view_zoom_slider = QSlider(Qt.Horizontal)
-        self.view_zoom_slider.setRange(25, 400)
-        self.view_zoom_slider.setSingleStep(5)
-        self.view_zoom_slider.setPageStep(25)
-        self.view_zoom_slider.setValue(100)
-        self.view_zoom_label = QLabel("100%")
-        zoom_row.addWidget(QLabel("Zoom:"))
-        zoom_row.addWidget(self.btn_view_zoom_out)
-        zoom_row.addWidget(self.view_zoom_slider, 1)
-        zoom_row.addWidget(self.btn_view_zoom_in)
-        zoom_row.addWidget(self.view_zoom_label)
-
         layout.addWidget(source_group)
         layout.addWidget(output_group)
         layout.addLayout(btn_row)
-        layout.addLayout(zoom_row)
-        layout.addWidget(self.view_log)
-        layout.addWidget(self.view_pdf, 1)
+        layout.addWidget(self.view_log, 1)
 
         self.btn_view_generate.clicked.connect(self._view_generate_pdf)
         self.btn_view_open.clicked.connect(self._view_open_pdf)
-        self.view_zoom_slider.valueChanged.connect(self._view_zoom_changed)
-        self.btn_view_zoom_out.clicked.connect(lambda: self._step_view_zoom(-10))
-        self.btn_view_zoom_in.clicked.connect(lambda: self._step_view_zoom(10))
         return w
 
     # -------------------------
@@ -324,7 +295,7 @@ class PerceptromeQt(QMainWindow):
         self.settings.setValue("view_fasta_path", self.view_fasta_path.text().strip())
         self.settings.setValue("view_pdf_path", self.view_pdf_path.text().strip())
         self.settings.setValue("view_title", self.view_title.text().strip())
-        self.settings.setValue("view_zoom", int(self.view_zoom_slider.value()))
+        self.pdf_window.save_window_settings()
         self.settings.sync()
 
         self.cfg_status.setText(f"Saved at {now_str()}")
@@ -345,8 +316,9 @@ class PerceptromeQt(QMainWindow):
         self.view_fasta_path.setText(self.settings.value("view_fasta_path", "generated/novel_plasmid.fasta"))
         self.view_pdf_path.setText(self.settings.value("view_pdf_path", "generated/circular_genome.pdf"))
         self.view_title.setText(self.settings.value("view_title", ""))
-        if self.settings.contains("view_zoom"):
-            self.view_zoom_slider.setValue(int(self.settings.value("view_zoom", 100)))
+        self.pdf_window.load_window_settings()
+        if self.settings.contains("pdf_last_opened_path") and not self.view_pdf_path.text().strip():
+            self.view_pdf_path.setText(self.settings.value("pdf_last_opened_path", ""))
 
         self.cfg_status.setText("Loaded saved config (if any).")
 
@@ -652,34 +624,30 @@ class PerceptromeQt(QMainWindow):
             self._append_log(self.view_log, f"[{now_str()}] Saved PDF -> {output_path}\n")
             self._add_history("view_pdf", output_path)
             self._load_pdf(output_path)
+            self._show_pdf_window()
         except Exception as exc:
             self._append_log(self.view_log, f"[{now_str()}] ERROR: {exc}\n")
 
     def _load_pdf(self, path: str):
-        if not os.path.exists(path):
-            raise FileNotFoundError(path)
-        status = self.view_pdf_doc.load(path)
-        if status != QPdfDocument.Error.None_:
-            raise RuntimeError(f"Failed to load PDF (status {status})")
+        self.pdf_window.load_pdf(path)
+        self.view_pdf_path.setText(path)
+
+    def _show_pdf_window(self):
+        self.pdf_window.show()
+        self.pdf_window.raise_()
+        self.pdf_window.activateWindow()
 
     def _view_open_pdf(self):
-        path = self.view_pdf_path.text().strip()
+        path = self.view_pdf_path.text().strip() or self.settings.value("pdf_last_opened_path", "")
         if not path:
             self._append_log(self.view_log, f"[{now_str()}] ERROR: No PDF path set.\n")
             return
         try:
             self._load_pdf(path)
+            self._show_pdf_window()
             self._append_log(self.view_log, f"[{now_str()}] Loaded PDF -> {path}\n")
         except Exception as exc:
             self._append_log(self.view_log, f"[{now_str()}] ERROR: {exc}\n")
-
-    def _view_zoom_changed(self, value: int):
-        self.view_pdf.setZoomMode(QPdfView.ZoomMode.Custom)
-        self.view_pdf.setZoomFactor(value / 100.0)
-        self.view_zoom_label.setText(f"{value}%")
-
-    def _step_view_zoom(self, delta: int):
-        self.view_zoom_slider.setValue(max(25, min(400, self.view_zoom_slider.value() + delta)))
 
     # -------------------------
     # History
@@ -703,6 +671,8 @@ class PerceptromeQt(QMainWindow):
         if self._closing:
             return
         self._closing = True
+        self.pdf_window.save_window_settings()
+        self.settings.sync()
         # Intentionally pass None during shutdown: logs may already be tearing down,
         # but stop() must still terminate/kill child processes safely.
         try:
@@ -718,33 +688,120 @@ class PerceptromeQt(QMainWindow):
         self.shutdown()
         super().closeEvent(event)
 
+
+
+class GenomePdfWindow(QMainWindow):
+    def __init__(self, settings: QSettings, parent=None):
+        super().__init__(parent)
+        self.settings = settings
+        self.setWindowTitle("Genome PDF")
+        self.resize(900, 650)
+
+        root = QWidget()
+        layout = QVBoxLayout(root)
+
+        self.pdf_doc = QPdfDocument(self)
+        self.pdf_view = QPdfView()
+        self.pdf_view.setDocument(self.pdf_doc)
+        self.pdf_view.setZoomMode(QPdfView.ZoomMode.Custom)
+        self.pdf_view.installEventFilter(self)
+
+        self._pdf_drag_active = False
+        self._pdf_drag_last_pos = None
+
+        zoom_row = QHBoxLayout()
+        self.btn_zoom_out = QPushButton("-")
+        self.btn_zoom_out.setFixedWidth(32)
+        self.btn_zoom_in = QPushButton("+")
+        self.btn_zoom_in.setFixedWidth(32)
+        self.zoom_slider = QSlider(Qt.Horizontal)
+        self.zoom_slider.setRange(25, 400)
+        self.zoom_slider.setSingleStep(5)
+        self.zoom_slider.setPageStep(25)
+        self.zoom_slider.setValue(100)
+        self.zoom_label = QLabel("100%")
+        zoom_row.addWidget(QLabel("Zoom:"))
+        zoom_row.addWidget(self.btn_zoom_out)
+        zoom_row.addWidget(self.zoom_slider, 1)
+        zoom_row.addWidget(self.btn_zoom_in)
+        zoom_row.addWidget(self.zoom_label)
+
+        pan_row = QHBoxLayout()
+        self.btn_pan_left = QPushButton("◀")
+        self.btn_pan_right = QPushButton("▶")
+        pan_row.addWidget(QLabel("Pan X:"))
+        pan_row.addWidget(self.btn_pan_left)
+        pan_row.addWidget(self.btn_pan_right)
+        pan_row.addStretch(1)
+
+        layout.addLayout(zoom_row)
+        layout.addLayout(pan_row)
+        layout.addWidget(self.pdf_view, 1)
+        self.setCentralWidget(root)
+
+        self.zoom_slider.valueChanged.connect(self._zoom_changed)
+        self.btn_zoom_out.clicked.connect(lambda: self._step_zoom(-10))
+        self.btn_zoom_in.clicked.connect(lambda: self._step_zoom(10))
+        self.btn_pan_left.clicked.connect(lambda: self._pan_horizontal(-120))
+        self.btn_pan_right.clicked.connect(lambda: self._pan_horizontal(120))
+
+    def load_pdf(self, path: str):
+        if not os.path.exists(path):
+            raise FileNotFoundError(path)
+        status = self.pdf_doc.load(path)
+        if status != QPdfDocument.Error.None_:
+            raise RuntimeError(f"Failed to load PDF (status {status})")
+        self.settings.setValue("pdf_last_opened_path", path)
+
+    def zoom_percent(self) -> int:
+        return int(self.zoom_slider.value())
+
+    def set_zoom_percent(self, value: int):
+        self.zoom_slider.setValue(max(25, min(400, int(value))))
+
+    def _zoom_changed(self, value: int):
+        self.pdf_view.setZoomMode(QPdfView.ZoomMode.Custom)
+        self.pdf_view.setZoomFactor(value / 100.0)
+        self.zoom_label.setText(f"{value}%")
+
+    def _step_zoom(self, delta: int):
+        self.zoom_slider.setValue(max(25, min(400, self.zoom_slider.value() + delta)))
+
+    def _pan_horizontal(self, delta: int):
+        hbar = self.pdf_view.horizontalScrollBar()
+        hbar.setValue(hbar.value() + delta)
+
+    def save_window_settings(self):
+        self.settings.setValue("pdf_window_zoom", self.zoom_percent())
+        self.settings.setValue("pdf_window_geometry", self.saveGeometry())
+
+    def load_window_settings(self):
+        self.set_zoom_percent(int(self.settings.value("pdf_window_zoom", 100)))
+        geometry = self.settings.value("pdf_window_geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+
     def eventFilter(self, watched, event):
-        if watched is self.view_pdf:
+        if watched is self.pdf_view:
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
-                if hasattr(event, "position"):
-                    pos = event.position().toPoint()
-                else:
-                    pos = event.pos()
+                pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
                 self._pdf_drag_active = True
                 self._pdf_drag_last_pos = pos
-                self.view_pdf.setCursor(Qt.ClosedHandCursor)
+                self.pdf_view.setCursor(Qt.ClosedHandCursor)
                 return True
             if event.type() == QEvent.MouseMove and self._pdf_drag_active:
-                if hasattr(event, "position"):
-                    pos = event.position().toPoint()
-                else:
-                    pos = event.pos()
+                pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
                 delta = pos - self._pdf_drag_last_pos
                 self._pdf_drag_last_pos = pos
-                hbar = self.view_pdf.horizontalScrollBar()
-                vbar = self.view_pdf.verticalScrollBar()
+                hbar = self.pdf_view.horizontalScrollBar()
+                vbar = self.pdf_view.verticalScrollBar()
                 hbar.setValue(hbar.value() - delta.x())
                 vbar.setValue(vbar.value() - delta.y())
                 return True
             if event.type() == QEvent.MouseButtonRelease and self._pdf_drag_active:
                 self._pdf_drag_active = False
                 self._pdf_drag_last_pos = None
-                self.view_pdf.setCursor(Qt.ArrowCursor)
+                self.pdf_view.setCursor(Qt.ArrowCursor)
                 return True
         return super().eventFilter(watched, event)
 
