@@ -184,6 +184,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--summary-path", default=None, help="Optional JSON path for candidate summary (CSV written alongside)")
     s.add_argument("--top-k-output", default=None, help="Optional FASTA path for ranked top-k candidates")
     s.add_argument("--roundtrip-score", action="store_true", help="Include model round-trip reconstruction score in ranking")
+    s.add_argument("--recon-weight", type=float, default=0.1, help="Penalty weight applied to reconstruction score")
     add_tok_args(s)
     add_model_args(s)
     s.set_defaults(func=_lazy_cmd("cmd_generate_plasmid"))
@@ -218,6 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--summary-path", default=None, help="Optional JSON path for candidate summary (CSV written alongside)")
     s.add_argument("--top-k-output", default=None, help="Optional FASTA path for ranked top-k candidates")
     s.add_argument("--roundtrip-score", action="store_true", help="Include model round-trip reconstruction score in ranking")
+    s.add_argument("--recon-weight", type=float, default=0.1, help="Penalty weight applied to reconstruction score")
     add_model_args(s)
     s.set_defaults(func=_lazy_cmd("cmd_generate_protein"))
 

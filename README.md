@@ -88,10 +88,34 @@ Generate plasmid sequence:
 perceptrome generate-plasmid --length-bp 10000 --output generated/novel_plasmid.fasta
 ```
 
+Generate multiple plasmid candidates, rank by simple heuristics, and include optional reconstruction scoring:
+
+```bash
+perceptrome generate-plasmid \
+  --length-bp 10000 \
+  --num-candidates 8 \
+  --top-k 3 \
+  --roundtrip-score \
+  --recon-weight 0.1 \
+  --output generated/novel_plasmid.fasta
+```
+
 Generate protein sequence:
 
 ```bash
 perceptrome generate-protein --length-aa 600 --output generated/novel_protein.faa
+```
+
+Generate and rank multiple protein candidates in one request:
+
+```bash
+perceptrome generate-protein \
+  --length-aa 600 \
+  --num-candidates 8 \
+  --top-k 3 \
+  --roundtrip-score \
+  --recon-weight 0.1 \
+  --output generated/novel_protein.faa
 ```
 
 ### 5) Validate a generated plasmid against references

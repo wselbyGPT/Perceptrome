@@ -1257,6 +1257,7 @@ def cmd_generate_plasmid(args: argparse.Namespace) -> int:
         summary_path=getattr(args, "summary_path", None),
         top_k_output_path=getattr(args, "top_k_output", None),
         roundtrip_score=bool(getattr(args, "roundtrip_score", False)),
+        recon_weight=float(getattr(args, "recon_weight", 0.1)),
         name=args.name,
         output_path=args.output,
         tokenizer=tok,
@@ -1350,6 +1351,7 @@ def cmd_generate_protein(args: argparse.Namespace) -> int:
         summary_path=getattr(args, "summary_path", None),
         top_k_output_path=getattr(args, "top_k_output", None),
         roundtrip_score=bool(getattr(args, "roundtrip_score", False)),
+        recon_weight=float(getattr(args, "recon_weight", 0.1)),
     )
     print(f"[generate-protein] wrote {len(seq)} aa -> {args.output}")
     return 0
