@@ -2,6 +2,8 @@ import math
 import os
 import re
 import sys
+import shutil
+from glob import glob
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QSettings, QEvent, QPoint
@@ -15,13 +17,15 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QPushButton,
     QPlainTextEdit, QProgressBar,
     QSpinBox, QDoubleSpinBox, QGroupBox,
-    QTableWidget, QTableWidgetItem, QHeaderView, QSlider, QComboBox
+    QTableWidget, QTableWidgetItem, QHeaderView, QSlider, QComboBox,
+    QMessageBox, QCheckBox
 )
 
 from .theme import apply_dark_mode
 from .runner import ProcessRunner
 from perceptrome.config import load_full_config, extract_configs
 from perceptrome.io_utils import ensure_dirs
+from perceptrome.io_utils import read_catalog, write_catalog, select_unique_accessions
 from perceptrome.ncbi_fetch import fetch_fasta, fetch_genbank
 from perceptrome.encoding.parse import parse_genbank_dna
 from perceptrome.encoding.genbank_features import parse_cds_features_from_genbank, CDSFeature
@@ -29,6 +33,19 @@ from perceptrome.encoding.genbank_features import parse_cds_features_from_genban
 
 PCT_RE = re.compile(r"(\d{1,3})\s*%")
 EPOCH_RE = re.compile(r"(?:epoch|Epoch)\s*[:=]?\s*(\d+)\s*/\s*(\d+)")
+MODEL_TYPES = ["mlp", "transformer", "ssm"]
+DATASET_SOURCE_OPTIONS = [
+    ("Plasmids", "accessions/plasmid_accessions.txt"),
+    ("Viruses", "accessions/viruses_accessions.txt"),
+    ("Eukaryotes", "accessions/eukaryote_accessions.txt"),
+    ("Bacteria", "accessions/bacteria_accessions.txt"),
+    ("Archaea", "accessions/archaea_accessions.txt"),
+    ("Metagenomes", "accessions/metagenome_accessions.txt"),
+    ("Chloroplast", "accessions/chloroplast_accessions.txt"),
+    ("Mitochondrion", "accessions/mitochondrion_accessions.txt"),
+    ("Synthetic construct", "accessions/synthetic_construct_accessions.txt"),
+    ("Viroid", "accessions/viroid_accessions.txt"),
+]
 
 
 def now_str():
@@ -91,7 +108,8 @@ class PerceptromeQt(QMainWindow):
         w = QWidget()
         layout = QVBoxLayout(w)
 
-        form = QFormLayout()
+        settings_group = QGroupBox("Project settings")
+        settings_form = QFormLayout(settings_group)
 
         self.cfg_project_dir = QLineEdit()
         self.cfg_stream_yaml = QLineEdit()
@@ -111,12 +129,60 @@ class PerceptromeQt(QMainWindow):
         self.cfg_lr.setSingleStep(0.0005)
         self.cfg_lr.setValue(0.001)
 
-        form.addRow("Project dir:", self.cfg_project_dir)
-        form.addRow("stream_config.yaml:", self.cfg_stream_yaml)
-        form.addRow("Dataset list file:", self.cfg_dataset_list)
-        form.addRow("Epochs:", self.cfg_epochs)
-        form.addRow("Batch size:", self.cfg_batch)
-        form.addRow("Learning rate:", self.cfg_lr)
+        settings_form.addRow("Project dir:", self.cfg_project_dir)
+        settings_form.addRow("stream_config.yaml:", self.cfg_stream_yaml)
+        settings_form.addRow("Dataset list file:", self.cfg_dataset_list)
+        settings_form.addRow("Epochs:", self.cfg_epochs)
+        settings_form.addRow("Batch size:", self.cfg_batch)
+        settings_form.addRow("Learning rate:", self.cfg_lr)
+
+        dataset_group = QGroupBox("Custom dataset builder")
+        dataset_layout = QVBoxLayout(dataset_group)
+
+        build_form = QFormLayout()
+        self.ds_source = QComboBox()
+        for label, rel_path in DATASET_SOURCE_OPTIONS:
+            self.ds_source.addItem(label, rel_path)
+        self.ds_count = QSpinBox()
+        self.ds_count.setRange(1, 1_000_000)
+        self.ds_count.setValue(100)
+        self.ds_shuffle = QCheckBox("Shuffle inside each category")
+        self.ds_shuffle.setChecked(True)
+        build_form.addRow("Category:", self.ds_source)
+        build_form.addRow("Count:", self.ds_count)
+        build_form.addRow("", self.ds_shuffle)
+
+        ds_btn_row = QHBoxLayout()
+        self.btn_ds_add = QPushButton("Add category quota")
+        self.btn_ds_remove = QPushButton("Remove selected")
+        ds_btn_row.addWidget(self.btn_ds_add)
+        ds_btn_row.addWidget(self.btn_ds_remove)
+        ds_btn_row.addStretch(1)
+
+        self.ds_table = QTableWidget(0, 3)
+        self.ds_table.setHorizontalHeaderLabels(["Category", "Source", "Count"])
+        self.ds_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.ds_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.ds_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.ds_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.ds_table.setEditTriggers(QTableWidget.NoEditTriggers)
+
+        output_form = QFormLayout()
+        self.ds_output_path = QLineEdit("config/custom_dataset.txt")
+        output_form.addRow("Output catalog:", self.ds_output_path)
+
+        ds_create_row = QHBoxLayout()
+        self.btn_ds_create = QPushButton("Create dataset list")
+        self.ds_status = QLabel("Define one or more category quotas and create a list.")
+        ds_create_row.addWidget(self.btn_ds_create)
+        ds_create_row.addStretch(1)
+
+        dataset_layout.addLayout(build_form)
+        dataset_layout.addLayout(ds_btn_row)
+        dataset_layout.addWidget(self.ds_table)
+        dataset_layout.addLayout(output_form)
+        dataset_layout.addLayout(ds_create_row)
+        dataset_layout.addWidget(self.ds_status)
 
         btn_row = QHBoxLayout()
         self.btn_save_cfg = QPushButton("Save config")
@@ -127,32 +193,43 @@ class PerceptromeQt(QMainWindow):
 
         self.cfg_status = QLabel("Config not saved yet.")
 
-        layout.addLayout(form)
+        layout.addWidget(settings_group)
+        layout.addWidget(dataset_group, 1)
         layout.addLayout(btn_row)
         layout.addWidget(self.cfg_status)
-        layout.addStretch(1)
 
         self.btn_save_cfg.clicked.connect(self._save_config)
         self.btn_go_train.clicked.connect(lambda: self.tabs.setCurrentWidget(self.tab_train))
+        self.btn_ds_add.clicked.connect(self._dataset_add_quota)
+        self.btn_ds_remove.clicked.connect(self._dataset_remove_selected)
+        self.btn_ds_create.clicked.connect(self._dataset_create_catalog)
         return w
 
     def _build_train_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
 
-        form = QFormLayout()
+        train_group = QGroupBox("Training setup")
+        train_form = QFormLayout(train_group)
+        self.train_model_type = QComboBox()
+        self.train_model_type.addItems(MODEL_TYPES)
+        self.train_model_type.setToolTip("Select the neural network backbone for stream training")
+        train_form.addRow("Neural network:", self.train_model_type)
+
         self.train_cmd = QLineEdit()
-        self.train_cmd.setPlaceholderText('Example: python stream_train.py train --help')
+        self.train_cmd.setPlaceholderText("perceptrome --config config/stream_config.yaml stream --catalog config/custom_dataset.txt --model-type mlp")
         self.train_cmd.setMinimumHeight(36)
         self.train_cmd.setStyleSheet("QLineEdit { font-family: monospace; }")
-        form.addRow("Command:", self.train_cmd)
+        train_form.addRow("Training command:", self.train_cmd)
 
         btn_row = QHBoxLayout()
         self.btn_train_help = QPushButton("Help")
+        self.btn_train_rebuild = QPushButton("Build command")
         self.btn_train_start = QPushButton("Start")
         self.btn_train_stop = QPushButton("Stop")
         self.btn_train_stop.setEnabled(False)
         btn_row.addWidget(self.btn_train_help)
+        btn_row.addWidget(self.btn_train_rebuild)
         btn_row.addWidget(self.btn_train_start)
         btn_row.addWidget(self.btn_train_stop)
         btn_row.addStretch(1)
@@ -165,33 +242,44 @@ class PerceptromeQt(QMainWindow):
         self.train_log.setReadOnly(True)
         self.train_log.setPlaceholderText("Live training output will appear here...")
 
-        layout.addLayout(form)
+        layout.addWidget(train_group)
         layout.addLayout(btn_row)
         layout.addWidget(self.train_progress)
         layout.addWidget(self.train_log, 1)
 
         self.btn_train_help.clicked.connect(self._train_help)
+        self.btn_train_rebuild.clicked.connect(self._refresh_train_command)
         self.btn_train_start.clicked.connect(self._train_start)
         self.btn_train_stop.clicked.connect(self._train_stop)
+        self.train_model_type.currentTextChanged.connect(self._refresh_train_command)
         return w
 
     def _build_generate_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
 
-        form = QFormLayout()
+        gen_group = QGroupBox("Generation setup")
+        gen_form = QFormLayout(gen_group)
+        self.gen_model_picker = QComboBox()
+        self.gen_model_picker.setToolTip("Select a trained checkpoint to use for generation")
+        gen_form.addRow("Trained model:", self.gen_model_picker)
+
         self.gen_cmd = QLineEdit()
-        self.gen_cmd.setPlaceholderText('Example: python stream_train.py generate --help')
+        self.gen_cmd.setPlaceholderText("perceptrome --config config/stream_config.yaml generate-plasmid --length-bp 10000")
         self.gen_cmd.setMinimumHeight(36)
         self.gen_cmd.setStyleSheet("QLineEdit { font-family: monospace; }")
-        form.addRow("Command:", self.gen_cmd)
+        gen_form.addRow("Generate command:", self.gen_cmd)
 
         btn_row = QHBoxLayout()
         self.btn_gen_help = QPushButton("Help")
+        self.btn_gen_refresh_models = QPushButton("Refresh models")
+        self.btn_gen_rebuild = QPushButton("Build command")
         self.btn_generate = QPushButton("Start")
         self.btn_gen_stop = QPushButton("Stop")
         self.btn_gen_stop.setEnabled(False)
         btn_row.addWidget(self.btn_gen_help)
+        btn_row.addWidget(self.btn_gen_refresh_models)
+        btn_row.addWidget(self.btn_gen_rebuild)
         btn_row.addWidget(self.btn_generate)
         btn_row.addWidget(self.btn_gen_stop)
         btn_row.addStretch(1)
@@ -204,12 +292,14 @@ class PerceptromeQt(QMainWindow):
         self.gen_out.setReadOnly(True)
         self.gen_out.setPlaceholderText("Live generate output will appear here...")
 
-        layout.addLayout(form)
+        layout.addWidget(gen_group)
         layout.addLayout(btn_row)
         layout.addWidget(self.gen_progress)
         layout.addWidget(self.gen_out, 1)
 
         self.btn_gen_help.clicked.connect(self._gen_help)
+        self.btn_gen_refresh_models.clicked.connect(self._refresh_trained_model_list)
+        self.btn_gen_rebuild.clicked.connect(self._refresh_generate_command)
         self.btn_generate.clicked.connect(self._gen_start)
         self.btn_gen_stop.clicked.connect(self._gen_stop)
         return w
@@ -294,7 +384,11 @@ class PerceptromeQt(QMainWindow):
         self.settings.setValue("batch", int(self.cfg_batch.value()))
         self.settings.setValue("lr", float(self.cfg_lr.value()))
         self.settings.setValue("train_cmd", self.train_cmd.text().strip())
+        self.settings.setValue("train_model_type", self.train_model_type.currentText().strip())
         self.settings.setValue("gen_cmd", self.gen_cmd.text().strip())
+        self.settings.setValue("gen_model", self.gen_model_picker.currentData())
+        self.settings.setValue("dataset_builder_output", self.ds_output_path.text().strip())
+        self.settings.setValue("dataset_builder_shuffle", bool(self.ds_shuffle.isChecked()))
         self.settings.setValue("view_accession", self.view_accession.text().strip())
         self.settings.setValue("view_fasta_path", self.view_fasta_path.text().strip())
         self.settings.setValue("view_render_mode", self.view_render_mode.currentText().strip())
@@ -308,15 +402,21 @@ class PerceptromeQt(QMainWindow):
 
     def _load_config(self):
         self.cfg_project_dir.setText(self.settings.value("project_dir", "."))
-        self.cfg_stream_yaml.setText(self.settings.value("stream_yaml", "stream_config.yaml"))
+        self.cfg_stream_yaml.setText(self.settings.value("stream_yaml", "config/stream_config.yaml"))
         self.cfg_dataset_list.setText(self.settings.value("dataset_list", "config/plasmids_10.txt"))
         self.cfg_epochs.setValue(int(self.settings.value("epochs", 10)))
         self.cfg_batch.setValue(int(self.settings.value("batch", 256)))
         self.cfg_lr.setValue(float(self.settings.value("lr", 0.001)))
 
-        # sensible defaults: show subcommand help first; you can replace with real commands
-        self.train_cmd.setText(self.settings.value("train_cmd", "python stream_train.py train --help"))
-        self.gen_cmd.setText(self.settings.value("gen_cmd", "python stream_train.py generate --help"))
+        model_type = self.settings.value("train_model_type", "mlp")
+        idx = self.train_model_type.findText(str(model_type))
+        self.train_model_type.setCurrentIndex(idx if idx >= 0 else 0)
+
+        self.train_cmd.setText(self.settings.value("train_cmd", ""))
+        self.gen_cmd.setText(self.settings.value("gen_cmd", ""))
+        self.ds_output_path.setText(self.settings.value("dataset_builder_output", "config/custom_dataset.txt"))
+        self.ds_shuffle.setChecked(bool(self.settings.value("dataset_builder_shuffle", True, type=bool)))
+
         self.view_accession.setText(self.settings.value("view_accession", ""))
         self.view_fasta_path.setText(self.settings.value("view_fasta_path", "generated/novel_plasmid.fasta"))
         render_mode = self.settings.value("view_render_mode", "Circular")
@@ -329,14 +429,133 @@ class PerceptromeQt(QMainWindow):
         if self.settings.contains("pdf_last_opened_path") and not self.view_pdf_path.text().strip():
             self.view_pdf_path.setText(self.settings.value("pdf_last_opened_path", ""))
 
+        self._refresh_train_command()
+        self._refresh_trained_model_list()
+        saved_model = self.settings.value("gen_model", "")
+        if saved_model:
+            model_idx = self.gen_model_picker.findData(saved_model)
+            if model_idx >= 0:
+                self.gen_model_picker.setCurrentIndex(model_idx)
+        self._refresh_generate_command()
+
         self.cfg_status.setText("Loaded saved config (if any).")
 
-    # -------------------------
-    # Helpers
-    # -------------------------
     def _workdir(self) -> str:
         wd = self.cfg_project_dir.text().strip()
         return wd if wd else "."
+
+    def _refresh_train_command(self):
+        cfg = self.cfg_stream_yaml.text().strip() or "config/stream_config.yaml"
+        catalog = self.cfg_dataset_list.text().strip() or "config/plasmids_10.txt"
+        model_type = self.train_model_type.currentText().strip() or "mlp"
+        cmd = (
+            f"perceptrome --config {cfg} stream "
+            f"--catalog {catalog} "
+            f"--model-type {model_type} "
+            f"--steps-per-plasmid {int(self.cfg_epochs.value())} "
+            f"--batch-size {int(self.cfg_batch.value())}"
+        )
+        self.train_cmd.setText(cmd)
+
+    def _refresh_generate_command(self):
+        cfg = self.cfg_stream_yaml.text().strip() or "config/stream_config.yaml"
+        self.gen_cmd.setText(f"perceptrome --config {cfg} generate-plasmid --length-bp 10000 --output generated/novel_plasmid.fasta")
+
+    def _dataset_add_quota(self):
+        src = self.ds_source.currentData()
+        if not src:
+            return
+        row = self.ds_table.rowCount()
+        self.ds_table.insertRow(row)
+        self.ds_table.setItem(row, 0, QTableWidgetItem(self.ds_source.currentText()))
+        self.ds_table.setItem(row, 1, QTableWidgetItem(str(src)))
+        self.ds_table.setItem(row, 2, QTableWidgetItem(str(int(self.ds_count.value()))))
+
+    def _dataset_remove_selected(self):
+        rows = sorted({i.row() for i in self.ds_table.selectedIndexes()}, reverse=True)
+        for r in rows:
+            self.ds_table.removeRow(r)
+
+    def _dataset_create_catalog(self):
+        if self.ds_table.rowCount() == 0:
+            QMessageBox.warning(self, "No dataset quotas", "Add at least one category quota first.")
+            return
+
+        category_quotas = []
+        category_candidates = {}
+        wd = self._workdir()
+
+        try:
+            for row in range(self.ds_table.rowCount()):
+                name_item = self.ds_table.item(row, 0)
+                source_item = self.ds_table.item(row, 1)
+                count_item = self.ds_table.item(row, 2)
+                if name_item is None or source_item is None or count_item is None:
+                    continue
+                name = name_item.text().strip().lower().replace(" ", "_")
+                rel_source = source_item.text().strip()
+                source = rel_source if os.path.isabs(rel_source) else os.path.join(wd, rel_source)
+                count = int(count_item.text().strip())
+                accessions = read_catalog(source)
+                category_quotas.append((name, count))
+                category_candidates[name] = accessions
+
+            selected = select_unique_accessions(
+                category_quotas,
+                category_candidates,
+                shuffle_within_category=bool(self.ds_shuffle.isChecked()),
+            )
+            output = self.ds_output_path.text().strip() or "config/custom_dataset.txt"
+            output_path = output if os.path.isabs(output) else os.path.join(wd, output)
+            write_catalog(
+                output_path,
+                selected,
+                header=[
+                    f"Generated at {now_str()}",
+                    f"Quotas: {', '.join([f'{c}:{q}' for c, q in category_quotas])}",
+                ],
+            )
+            rel = os.path.relpath(output_path, wd)
+            self.cfg_dataset_list.setText(rel)
+            self.ds_status.setText(f"Created {len(selected)} accessions -> {rel}")
+            self._add_history("dataset_create", f"{len(selected)} -> {rel}")
+            self._refresh_train_command()
+        except Exception as exc:
+            QMessageBox.critical(self, "Dataset creation failed", str(exc))
+            self.ds_status.setText(f"Failed: {exc}")
+
+    def _refresh_trained_model_list(self):
+        wd = self._workdir()
+        candidates = []
+        for pattern in ("model/checkpoints/*.pt", "model/*.pt"):
+            candidates.extend(glob(os.path.join(wd, pattern)))
+        unique_sorted = sorted(set(candidates))
+
+        self.gen_model_picker.blockSignals(True)
+        self.gen_model_picker.clear()
+        if not unique_sorted:
+            self.gen_model_picker.addItem("No checkpoints found (using default latest.pt)", "")
+        else:
+            for path in unique_sorted:
+                rel = os.path.relpath(path, wd)
+                self.gen_model_picker.addItem(rel, path)
+        self.gen_model_picker.blockSignals(False)
+
+    def _activate_selected_model_checkpoint(self) -> str:
+        selected = self.gen_model_picker.currentData()
+        if not selected:
+            return ""
+        wd = self._workdir()
+        latest = os.path.join(wd, "model", "checkpoints", "latest.pt")
+        selected_path = str(selected)
+        if os.path.abspath(selected_path) == os.path.abspath(latest):
+            return f"[gui] using checkpoint: {os.path.relpath(selected_path, wd)}"
+        os.makedirs(os.path.dirname(latest), exist_ok=True)
+        shutil.copy2(selected_path, latest)
+        return (
+            f"[gui] activated checkpoint {os.path.relpath(selected_path, wd)} "
+            f"-> {os.path.relpath(latest, wd)}"
+        )
 
     def _append_log(self, box: QPlainTextEdit, text: str, max_lines: int = 5000):
         if not isValid(box) or self._closing:
@@ -387,7 +606,7 @@ class PerceptromeQt(QMainWindow):
     # Train actions (real QProcess)
     # -------------------------
     def _train_help(self):
-        self.train_cmd.setText("python stream_train.py --help")
+        self.train_cmd.setText("perceptrome --help")
 
     def _train_start(self):
         cmd = self.train_cmd.text().strip()
@@ -414,6 +633,7 @@ class PerceptromeQt(QMainWindow):
             self.btn_train_start.setEnabled(True)
             self.btn_train_stop.setEnabled(False)
             self._add_history("train_done", status)
+            self._refresh_trained_model_list()
 
         def on_error(msg: str):
             self._set_busy(self.train_progress, False)
@@ -435,14 +655,18 @@ class PerceptromeQt(QMainWindow):
     # Generate actions (real QProcess)
     # -------------------------
     def _gen_help(self):
-        self.gen_cmd.setText("python stream_train.py --help")
+        self.gen_cmd.setText("perceptrome --help")
 
     def _gen_start(self):
         cmd = self.gen_cmd.text().strip()
         wd = self._workdir()
 
+        checkpoint_note = self._activate_selected_model_checkpoint()
+
         self.gen_out.clear()
         self._append_log(self.gen_out, f"[{now_str()}] [generate] start\n$ {cmd}\n\n")
+        if checkpoint_note:
+            self._append_log(self.gen_out, checkpoint_note + "\n")
         self._set_busy(self.gen_progress, True)
         self.gen_progress.setValue(0)
 
