@@ -71,6 +71,48 @@ def _gc_fraction(seq: str) -> float:
     return gc / float(len(seq))
 
 
+def _plasmid_candidate_score(
+    *,
+    gc_dev: float,
+    homopolymer_run: int,
+    max_homopolymer: Optional[int],
+    recon: Optional[float],
+    recon_weight: float,
+) -> Tuple[float, float]:
+    run_pen = 0.0 if max_homopolymer is None else max(0, homopolymer_run - max_homopolymer) / max(1.0, float(max_homopolymer))
+    score = -float(gc_dev) - float(run_pen) - (float(recon_weight) * float(recon) if recon is not None else 0.0)
+    return float(score), float(run_pen)
+
+
+def _protein_candidate_score(
+    *,
+    seq: str,
+    max_homopolymer: int,
+    max_x_frac: float,
+    max_internal_stops: int,
+    recon: Optional[float],
+    recon_weight: float,
+    allowed: Optional[set] = None,
+) -> Dict[str, float]:
+    allowed = allowed if allowed is not None else set(IDX_TO_AA)
+    run = _max_homopolymer_run(seq)
+    x_frac = seq.count("X") / float(max(1, len(seq)))
+    invalid_frac = sum(1 for ch in seq if ch not in allowed) / float(max(1, len(seq)))
+    stop_count = seq.count("*")
+    pen_run = max(0, run - max_homopolymer) / max(1.0, float(max_homopolymer))
+    pen_x = max(0.0, x_frac - max_x_frac)
+    pen_stop = max(0, stop_count - int(max_internal_stops))
+    pen_invalid = invalid_frac * 2.0
+    score = -(pen_run + pen_x + pen_stop + pen_invalid) - (float(recon_weight) * float(recon) if recon is not None else 0.0)
+    return {
+        "score": float(score),
+        "max_homopolymer": float(run),
+        "x_fraction": float(x_frac),
+        "invalid_fraction": float(invalid_frac),
+        "stop_count": float(stop_count),
+    }
+
+
 def _make_out_paths(output_path: str, summary_path: Optional[str]) -> Tuple[str, str]:
     out_dir = os.path.dirname(output_path) or "."
     os.makedirs(out_dir, exist_ok=True)
@@ -161,6 +203,7 @@ def generate_plasmid_sequence(
     summary_path: Optional[str] = None,
     top_k_output_path: Optional[str] = None,
     roundtrip_score: bool = False,
+    recon_weight: float = 0.1,
 ) -> str:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -251,9 +294,14 @@ def generate_plasmid_sequence(
         gc = _gc_fraction(seq)
         run = _max_homopolymer_run(seq)
         gc_dev = abs(gc - target_gc)
-        run_pen = 0.0 if max_homopolymer is None else max(0, run - max_homopolymer) / max(1.0, float(max_homopolymer))
         recon = _roundtrip_recon_score(model, seq, tok, seq_len, vocab_size, device) if roundtrip_score else None
-        score = -gc_dev - run_pen - (0.1 * recon if recon is not None else 0.0)
+        score, run_pen = _plasmid_candidate_score(
+            gc_dev=gc_dev,
+            homopolymer_run=run,
+            max_homopolymer=max_homopolymer,
+            recon=recon,
+            recon_weight=recon_weight,
+        )
         candidates.append({
             "candidate": i,
             "sequence": seq,
@@ -263,6 +311,7 @@ def generate_plasmid_sequence(
             "max_homopolymer": run,
             "homopolymer_penalty": run_pen,
             "roundtrip_recon": recon,
+            "recon_weight": float(recon_weight),
             "score": score,
         })
 
@@ -290,6 +339,7 @@ def generate_plasmid_sequence(
             "top_k": top_k,
             "target_gc": target_gc,
             "max_homopolymer": max_homopolymer,
+            "recon_weight": float(recon_weight),
             "winner": {k: v for k, v in winner.items() if k != "sequence"},
             "top_candidates": [{k: v for k, v in c.items() if k != "sequence"} for c in ranked[:top_k]],
             "top_k_output_path": top_k_output,
@@ -324,6 +374,7 @@ def generate_protein_sequence(
     summary_path: Optional[str] = None,
     top_k_output_path: Optional[str] = None,
     roundtrip_score: bool = False,
+    recon_weight: float = 0.1,
 ) -> str:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -385,19 +436,19 @@ def generate_protein_sequence(
                     aa_chars.append(IDX_TO_AA[idx])
         return "".join(aa_chars)[:target_aa]
 
-    if reject:
+    def _sample_candidate() -> str:
+        if not reject:
+            return _sample_once()
         tries = max(1, int(reject_tries))
+        candidate = ""
         for t in range(tries):
-            seq = _sample_once()
-            if _passes_protein_filters(seq, max_run=int(reject_max_run), max_x_frac=float(reject_max_x_frac)):
-                break
+            candidate = _sample_once()
+            if _passes_protein_filters(candidate, max_run=int(reject_max_run), max_x_frac=float(reject_max_x_frac)):
+                return candidate
             if (t + 1) % 10 == 0:
                 logging.info(f"[generate-protein] rejection: {t+1}/{tries} rejected")
-        else:
-            logging.warning("[generate-protein] rejection-sampling exhausted tries; using last sample")
-            seq = _sample_once()
-    else:
-        seq = _sample_once()
+        logging.warning("[generate-protein] rejection-sampling exhausted tries; using last sample")
+        return candidate if candidate else _sample_once()
 
     nc = max(1, int(num_candidates))
     top_k = max(1, min(int(top_k), nc))
@@ -407,27 +458,28 @@ def generate_protein_sequence(
     allowed = set(IDX_TO_AA)
     candidates: List[Dict[str, object]] = []
     for i in range(nc):
-        cand = seq if i == 0 else _sample_once()
-        run = _max_homopolymer_run(cand)
-        x_frac = cand.count("X") / float(max(1, len(cand)))
-        invalid_frac = sum(1 for ch in cand if ch not in allowed) / float(max(1, len(cand)))
-        stop_count = cand.count("*")
-        pen_run = max(0, run - max_homopolymer) / max(1.0, float(max_homopolymer))
-        pen_x = max(0.0, x_frac - max_x_frac)
-        pen_stop = max(0, stop_count - int(max_internal_stops))
-        pen_invalid = invalid_frac * 2.0
+        cand = _sample_candidate()
         recon = _roundtrip_recon_score(model, cand, tok, seq_len, vocab_size, device) if roundtrip_score else None
-        score = -(pen_run + pen_x + pen_stop + pen_invalid) - (0.1 * recon if recon is not None else 0.0)
+        metrics = _protein_candidate_score(
+            seq=cand,
+            max_homopolymer=max_homopolymer,
+            max_x_frac=max_x_frac,
+            max_internal_stops=max_internal_stops,
+            recon=recon,
+            recon_weight=recon_weight,
+            allowed=allowed,
+        )
         candidates.append({
             "candidate": i,
             "sequence": cand,
             "length": len(cand),
-            "max_homopolymer": run,
-            "x_fraction": x_frac,
-            "invalid_fraction": invalid_frac,
-            "stop_count": stop_count,
+            "max_homopolymer": int(metrics["max_homopolymer"]),
+            "x_fraction": metrics["x_fraction"],
+            "invalid_fraction": metrics["invalid_fraction"],
+            "stop_count": int(metrics["stop_count"]),
             "roundtrip_recon": recon,
-            "score": score,
+            "recon_weight": float(recon_weight),
+            "score": metrics["score"],
         })
 
     ranked = sorted(candidates, key=lambda x: float(x["score"]), reverse=True)
@@ -453,6 +505,7 @@ def generate_protein_sequence(
             "max_homopolymer": max_homopolymer,
             "max_x_frac": max_x_frac,
             "max_internal_stops": max_internal_stops,
+            "recon_weight": float(recon_weight),
             "winner": {k: v for k, v in ranked[0].items() if k != "sequence"},
             "top_candidates": [{k: v for k, v in c.items() if k != "sequence"} for c in ranked[:top_k]],
             "top_k_output_path": top_k_output,

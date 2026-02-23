@@ -48,7 +48,13 @@ if "requests" not in sys.modules:
 from perceptrome.cli.common import _resolve_proteome_params, _validate_tok_params, _get_grounded
 from perceptrome.config import deep_update, extract_configs
 from perceptrome.encoding_main import tokenizer_meta
-from perceptrome.generate import _gc_fraction, _max_homopolymer_run, _write_top_k_fasta
+from perceptrome.generate import (
+    _gc_fraction,
+    _max_homopolymer_run,
+    _plasmid_candidate_score,
+    _protein_candidate_score,
+    _write_top_k_fasta,
+)
 from perceptrome.scope.stream import ScopeStreamContext
 
 
@@ -276,3 +282,39 @@ class GenerationTopKOutputTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CandidateScoringTests(unittest.TestCase):
+    def test_plasmid_score_includes_optional_reconstruction_penalty(self):
+        score_no_recon, run_pen = _plasmid_candidate_score(
+            gc_dev=0.05,
+            homopolymer_run=8,
+            max_homopolymer=10,
+            recon=None,
+            recon_weight=0.1,
+        )
+        self.assertAlmostEqual(run_pen, 0.0)
+        self.assertAlmostEqual(score_no_recon, -0.05)
+
+        score_recon, _ = _plasmid_candidate_score(
+            gc_dev=0.05,
+            homopolymer_run=8,
+            max_homopolymer=10,
+            recon=2.0,
+            recon_weight=0.2,
+        )
+        self.assertAlmostEqual(score_recon, -0.45)
+
+    def test_protein_score_tracks_penalties(self):
+        metrics = _protein_candidate_score(
+            seq="MXX**",
+            max_homopolymer=1,
+            max_x_frac=0.2,
+            max_internal_stops=0,
+            recon=1.0,
+            recon_weight=0.1,
+            allowed=set("ACDEFGHIKLMNPQRSTVWY*X"),
+        )
+        self.assertEqual(metrics["max_homopolymer"], 2.0)
+        self.assertEqual(metrics["stop_count"], 2.0)
+        self.assertAlmostEqual(metrics["score"], -3.3, places=6)
