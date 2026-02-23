@@ -36,21 +36,24 @@ git clone <your-fork-or-this-repo-url>
 cd Perceptrome
 ```
 
-### 2) Create an environment
+### 2) One-command setup + run (recommended)
+
+```bash
+make
+```
+
+This bootstraps `.venv`, installs dependencies (including `setup.py` editable install), initializes project state, and runs a default Perceptrome command (`catalog-show config/plasmids_100.txt`).
+
+### 3) Manual environment setup (optional)
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-```
-
-### 3) Install dependencies
-
-```bash
 pip install -r requirements.txt
 pip install -e .
 ```
 
-> `setup.py` also defines a console entrypoint named `perceptrome`.
+> `setup.py` defines the `perceptrome` console entrypoint used by `make`.
 
 ## Quick start
 
