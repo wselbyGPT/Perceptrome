@@ -2,7 +2,7 @@ import re
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from PySide6.QtCore import QObject, QProcess, QTimer
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -54,6 +54,17 @@ class ProcessRunner(QObject):
         p = QProcess(self)
         p.setWorkingDirectory(workdir if workdir else ".")
         p.setProcessChannelMode(QProcess.MergedChannels)
+
+        # Ensure local virtualenv entry points (e.g., `perceptrome`) resolve when
+        # launching from the GUI, even if the desktop shell PATH is minimal.
+        env = QProcessEnvironment.systemEnvironment()
+        env_path = env.value("PATH", "")
+        venv_bin = f"{workdir.rstrip('/')}/.venv/bin" if workdir else ".venv/bin"
+        if env_path:
+            env.insert("PATH", f"{venv_bin}:{env_path}")
+        else:
+            env.insert("PATH", venv_bin)
+        p.setProcessEnvironment(env)
 
         # wire signals
         p.started.connect(on_started)

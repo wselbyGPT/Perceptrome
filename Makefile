@@ -17,7 +17,7 @@ setup:
 	$(PIP) install -e .
 
 init: setup
-	$(PERCEPTROME) init --config config/stream_config.yaml
+	$(PERCEPTROME) --config config/stream_config.yaml init
 
 run: init
 	$(PERCEPTROME) $(RUN_ARGS)
