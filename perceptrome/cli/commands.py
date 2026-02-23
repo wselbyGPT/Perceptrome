@@ -129,6 +129,11 @@ def _apply_cli_training_overrides(cfg: Dict[str, Any], args: argparse.Namespace)
     return cfg
 
 
+def _is_checkpoint_model_mismatch(err: Exception) -> bool:
+    msg = str(err)
+    return "Checkpoint model_type=" in msg and "requested model_type=" in msg
+
+
 def _kmer_set(seq: str, k: int) -> set[str]:
     if k <= 0 or len(seq) < k:
         return set()
@@ -1137,18 +1142,40 @@ def cmd_stream(args: argparse.Namespace) -> int:
                     ),
                 )
 
-            last_total = train_on_encoded(
-                acc, encoded,
-                steps=steps_per_plasmid, batch_size=batch_size,
-                state=state, io_cfg=io_cfg, train_cfg=train_cfg,
-                tokenizer=tok, window_size_bp=window_size,
-                loss_type=loss_type,
-                mask_prob=pol.get("mask_prob"),
-                span_mask_prob=pol.get("span_mask_prob"),
-                span_mask_len=pol.get("span_mask_len"),
-                run_id=getattr(args, "tb_run_id", None),
-                tensorboard_log_every=getattr(args, "tb_log_every", None),
-            )
+            try:
+                last_total = train_on_encoded(
+                    acc, encoded,
+                    steps=steps_per_plasmid, batch_size=batch_size,
+                    state=state, io_cfg=io_cfg, train_cfg=train_cfg,
+                    tokenizer=tok, window_size_bp=window_size,
+                    loss_type=loss_type,
+                    mask_prob=pol.get("mask_prob"),
+                    span_mask_prob=pol.get("span_mask_prob"),
+                    span_mask_len=pol.get("span_mask_len"),
+                    run_id=getattr(args, "tb_run_id", None),
+                    tensorboard_log_every=getattr(args, "tb_log_every", None),
+                )
+            except ValueError as exc:
+                ckpt_path = os.path.join(io_cfg.checkpoints_dir, "latest.pt")
+                if not _is_checkpoint_model_mismatch(exc) or not os.path.exists(ckpt_path):
+                    raise
+                logging.warning(
+                    "Detected checkpoint model_type mismatch. Removing %s and retrying from scratch.",
+                    ckpt_path,
+                )
+                os.remove(ckpt_path)
+                last_total = train_on_encoded(
+                    acc, encoded,
+                    steps=steps_per_plasmid, batch_size=batch_size,
+                    state=state, io_cfg=io_cfg, train_cfg=train_cfg,
+                    tokenizer=tok, window_size_bp=window_size,
+                    loss_type=loss_type,
+                    mask_prob=pol.get("mask_prob"),
+                    span_mask_prob=pol.get("span_mask_prob"),
+                    span_mask_len=pol.get("span_mask_len"),
+                    run_id=getattr(args, "tb_run_id", None),
+                    tensorboard_log_every=getattr(args, "tb_log_every", None),
+                )
 
             pvc = state["plasmid_visit_counts"]
             pvc[acc] = pvc.get(acc, 0) + 1
