@@ -3,6 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, List, Optional, Sequence, Set, Tuple
 
+from perceptrome.genome_ast import (
+    MutualExclusionConstraint,
+    RelationshipConstraintSet,
+    RelationshipEdge,
+    WeightedBudgetConstraint,
+    evaluate_relationship_constraints,
+)
+
 
 @dataclass(frozen=True)
 class Gene:
@@ -49,6 +57,8 @@ class GenomeSpec:
     required_gene_groups: Set[str] = field(default_factory=set)
     optional_gene_groups: Set[str] = field(default_factory=set)
     incompatible_gene_pairs: Set[Tuple[str, str]] = field(default_factory=set)
+    relationship_edges: Tuple[RelationshipEdge, ...] = ()
+    global_constraints: RelationshipConstraintSet = field(default_factory=RelationshipConstraintSet)
 
     def normalized_incompatibilities(self) -> Set[Tuple[str, str]]:
         return {tuple(sorted(pair)) for pair in self.incompatible_gene_pairs}
@@ -114,13 +124,44 @@ def validate_genome(genome: Genome, spec: GenomeSpec) -> None:
             )
 
     present_ids = {g.gene_id for g in genes}
-    for left, right in sorted(spec.normalized_incompatibilities()):
-        if left in present_ids and right in present_ids:
-            raise GenomeValidationError(
-                rule_name="incompatible_gene_pair",
-                gene_ids=(left, right),
-                details=f"incompatible pair present together: {left} and {right}",
-            )
+    relationship_schema = RelationshipConstraintSet(
+        edges=tuple(spec.relationship_edges),
+        constraints=tuple(spec.global_constraints.constraints)
+        + tuple(
+            MutualExclusionConstraint(name=f"incompatible:{left}:{right}", genes=(left, right))
+            for left, right in sorted(spec.normalized_incompatibilities())
+        )
+        + (
+            WeightedBudgetConstraint(
+                name="max_total_weight",
+                limit=float(spec.max_total_weight),
+                genes=tuple(g.gene_id for g in genes),
+            ),
+        )
+        if spec.max_total_weight is not None
+        else tuple(spec.global_constraints.constraints)
+        + tuple(
+            MutualExclusionConstraint(name=f"incompatible:{left}:{right}", genes=(left, right))
+            for left, right in sorted(spec.normalized_incompatibilities())
+        ),
+    )
+    violations = evaluate_relationship_constraints(
+        values={g.gene_id: True for g in genes},
+        enabled_genes=present_ids,
+        gene_groups={g.gene_id: g.group for g in genes},
+        weighted_values={g.gene_id: float(g.weight) for g in genes},
+        schema=relationship_schema,
+    )
+    if violations:
+        first = violations[0]
+        details = first.get("message", "relationship/global constraint violation")
+        if first.get("type") == "mutual_exclusion":
+            ids = tuple(first.get("details", {}).get("genes", []))
+            rule = "incompatible_gene_pair"
+        else:
+            ids = (str(first.get("gene", "")),)
+            rule = str(first.get("type", "relationship_constraint"))
+        raise GenomeValidationError(rule_name=rule, gene_ids=ids, details=details)
 
 
 def create_genome(genes: Sequence[Gene], spec: GenomeSpec) -> Genome:

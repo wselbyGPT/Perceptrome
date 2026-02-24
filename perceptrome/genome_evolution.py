@@ -3,6 +3,8 @@ import logging
 import random
 from typing import Any, Dict, List, Optional, Tuple
 
+from perceptrome.genome_ast import evaluate_relationship_constraints, parse_relationship_spec
+
 
 Violation = Dict[str, Any]
 ValidationResult = Dict[str, Any]
@@ -100,46 +102,27 @@ def validate(genome: Dict[str, Any], registry: Dict[str, Any], spec: Dict[str, A
                 }
             )
 
-    for pair in spec.get("conflicts", []):
-        if len(pair) != 2:
-            continue
-        left, right = pair
-        if _is_enabled(genome.get(left)) and _is_enabled(genome.get(right)):
+    relationship_schema = parse_relationship_spec(spec)
+    relationship_violations = evaluate_relationship_constraints(
+        values=genome,
+        enabled_genes=[g for g in genome.keys() if _is_enabled(genome.get(g))],
+        weighted_values={g: _as_weighted_value(v) for g, v in genome.items()},
+        schema=relationship_schema,
+    )
+    for violation in relationship_violations:
+        if violation.get("type") == "mutual_exclusion" and str(violation.get("gene", "")).startswith("conflict:"):
+            details = violation.get("details", {})
+            genes = details.get("genes", [])
             violations.append(
                 {
                     "type": "conflict",
-                    "gene": f"{left},{right}",
-                    "message": f"Conflicting genes are simultaneously enabled: {left}, {right}.",
-                    "details": {"genes": [left, right]},
+                    "gene": ",".join(genes),
+                    "message": f"Conflicting genes are simultaneously enabled: {', '.join(genes)}.",
+                    "details": {"genes": genes},
                 }
             )
-
-    budgets = spec.get("budgets", {})
-    for budget_name, budget_cfg in budgets.items():
-        limit = float(budget_cfg.get("limit", 0.0))
-        genes = list(budget_cfg.get("genes", []))
-        weights = budget_cfg.get("weights", {}) or {}
-        total = 0.0
-        used: Dict[str, float] = {}
-
-        for gene in genes:
-            if gene not in genome:
-                continue
-            v = _as_weighted_value(genome[gene])
-            w = float(weights.get(gene, 1.0))
-            contribution = v * w
-            used[gene] = contribution
-            total += contribution
-
-        if total > limit:
-            violations.append(
-                {
-                    "type": "budget_exceeded",
-                    "gene": budget_name,
-                    "message": f"Budget '{budget_name}' exceeded ({total} > {limit}).",
-                    "details": {"budget": budget_name, "total": total, "limit": limit, "contributions": used},
-                }
-            )
+        else:
+            violations.append(violation)
 
     summary: Dict[str, int] = {}
     for v in violations:

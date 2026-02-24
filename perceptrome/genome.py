@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
+from perceptrome.genome_ast import RelationshipEdge
+
 
 @dataclass(frozen=True)
 class GeneDefinition:
@@ -12,7 +14,14 @@ class GeneDefinition:
     min_value: Optional[float] = None
     max_value: Optional[float] = None
     choices: Optional[List[Any]] = None
-    depends_on: Optional[str] = None
+    outgoing_relationships: List[RelationshipEdge] = None
+    incoming_relationships: List[RelationshipEdge] = None
+
+    def __post_init__(self) -> None:
+        if self.outgoing_relationships is None:
+            self.outgoing_relationships = []
+        if self.incoming_relationships is None:
+            self.incoming_relationships = []
 
 
 class GeneRegistry:
@@ -149,7 +158,14 @@ DEFAULT_GENE_REGISTRY = GeneRegistry(
             mutation_rate=0.08,
             novelty_weight=1.15,
             default=4,
-            depends_on="model_type",
+            incoming_relationships=[
+                RelationshipEdge(
+                    type="requires",
+                    source="transformer_layers",
+                    target="model_type",
+                    condition={"gene": "model_type", "op": "eq", "value": "transformer"},
+                )
+            ],
         ),
     ]
 )

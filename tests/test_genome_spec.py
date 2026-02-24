@@ -1,5 +1,11 @@
 import unittest
 
+from perceptrome.genome_ast import (
+    ConditionalEnablementConstraint,
+    GroupCardinalityConstraint,
+    RelationshipConstraintSet,
+    RelationshipEdge,
+)
 from perceptrome.genome_spec import (
     Gene,
     GenomeSpec,
@@ -53,6 +59,37 @@ class GenomeSpecTests(unittest.TestCase):
         genome = create_genome([Gene("g1", "core", 1.0, 1.0)], self.spec)
         score = evaluate_genome(genome, self.spec, lambda g: len(g.genes) * 2)
         self.assertEqual(score, 2.0)
+
+    def test_relationship_requires_target_gene(self):
+        spec = GenomeSpec(
+            min_gene_count=1,
+            required_gene_groups={"core"},
+            optional_gene_groups={"aux"},
+            relationship_edges=(RelationshipEdge(type="requires", source="g1", target="g2"),),
+        )
+        with self.assertRaises(GenomeValidationError) as ctx:
+            create_genome([Gene("g1", "core", weight=1.0, complexity=1.0)], spec)
+        self.assertEqual(ctx.exception.rule_name, "relationship_requires")
+
+    def test_global_constraints_group_and_conditional(self):
+        spec = GenomeSpec(
+            min_gene_count=1,
+            required_gene_groups={"core"},
+            optional_gene_groups={"aux"},
+            global_constraints=RelationshipConstraintSet(
+                constraints=(
+                    GroupCardinalityConstraint(group="aux", min_count=1),
+                    ConditionalEnablementConstraint(
+                        name="if_g1_then_g2",
+                        trigger_gene="g1",
+                        trigger_value=True,
+                        required_genes=("g2",),
+                    ),
+                )
+            ),
+        )
+        with self.assertRaises(GenomeValidationError):
+            create_genome([Gene("g1", "core", 1.0, 1.0)], spec)
 
 
 if __name__ == "__main__":

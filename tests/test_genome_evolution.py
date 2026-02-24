@@ -69,3 +69,22 @@ def test_generation_flow_runs_validate_repair_validate():
     assert "post_repair_validation" in result
     assert result["post_repair_validation"]["valid"] is True
     assert isinstance(result["repair_actions"], list)
+
+
+def test_validate_relationship_edges_and_global_constraints():
+    registry = _registry()
+    genome = {"gene_a": 1.0, "gene_b": 0.0, "gene_c": 0.0}
+    spec = {
+        "relationship_edges": [
+            {"type": "requires", "source": "gene_a", "target": "gene_b"},
+        ],
+        "global_constraints": [
+            {"kind": "mutual_exclusion", "name": "ab_mutex", "genes": ["gene_a", "gene_b"]},
+            {"kind": "weighted_budget", "name": "tiny", "limit": 0.5, "genes": ["gene_a"]},
+        ],
+    }
+    result = validate(genome, registry, spec)
+    assert result["valid"] is False
+    kinds = {v["type"] for v in result["violations"]}
+    assert "relationship_requires" in kinds
+    assert "budget_exceeded" in kinds
