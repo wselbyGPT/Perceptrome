@@ -3,26 +3,67 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, List, Optional, Sequence, Set, Tuple
 
+from .bio_ast import AttributeNode, BioAST, GeneNode
+
 
 @dataclass(frozen=True)
 class Gene:
     """A simple gene model used by the evolutionary utilities."""
 
-    gene_id: str
-    group: str
-    weight: float = 0.0
-    complexity: float = 0.0
+    ast_node: GeneNode
+
+    def __init__(self, gene_id: str, group: str, weight: float = 0.0, complexity: float = 0.0):
+        object.__setattr__(
+            self,
+            "ast_node",
+            GeneNode(
+                gene_id=gene_id,
+                attributes=(
+                    AttributeNode("group", group),
+                    AttributeNode("weight", float(weight)),
+                    AttributeNode("complexity", float(complexity)),
+                ),
+            ),
+        )
+
+    @property
+    def gene_id(self) -> str:
+        return self.ast_node.gene_id
+
+    @property
+    def group(self) -> str:
+        return str(self.ast_node.get_attribute("group", ""))
+
+    @property
+    def weight(self) -> float:
+        return float(self.ast_node.get_attribute("weight", 0.0))
+
+    @property
+    def complexity(self) -> float:
+        return float(self.ast_node.get_attribute("complexity", 0.0))
 
 
 @dataclass(frozen=True)
 class Genome:
     """A genome represented as an ordered list of genes."""
 
-    genes: Tuple[Gene, ...]
+    ast: BioAST
+
+    @property
+    def genes(self) -> Tuple[Gene, ...]:
+        return tuple(
+            Gene(
+                node.gene_id,
+                str(node.get_attribute("group", "")),
+                float(node.get_attribute("weight", 0.0)),
+                float(node.get_attribute("complexity", 0.0)),
+            )
+            for node in self.ast.genes
+        )
 
     @classmethod
     def from_genes(cls, genes: Iterable[Gene]) -> "Genome":
-        return cls(tuple(genes))
+        return cls(BioAST(genes=tuple(g.ast_node for g in genes)))
 
 
 @dataclass(frozen=True)

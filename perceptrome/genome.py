@@ -1,6 +1,13 @@
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
+from .bio_ast import (
+    ast_from_flat_genes_payload,
+    ast_to_flat_genes_payload,
+    definition_map_from_registry_ast,
+    registry_ast_from_definitions,
+)
+
 
 @dataclass(frozen=True)
 class GeneDefinition:
@@ -17,26 +24,43 @@ class GeneDefinition:
 
 class GeneRegistry:
     def __init__(self, definitions: Iterable[GeneDefinition]):
-        self._definitions: Dict[str, GeneDefinition] = {}
+        serialized = []
+        seen: set[str] = set()
         for definition in definitions:
-            if definition.id in self._definitions:
+            if definition.id in seen:
                 raise ValueError(f"Duplicate gene id: {definition.id}")
-            self._definitions[definition.id] = definition
+            seen.add(definition.id)
+            serialized.append(
+                {
+                    "id": definition.id,
+                    "dtype": definition.dtype,
+                    "mutation_rate": definition.mutation_rate,
+                    "novelty_weight": definition.novelty_weight,
+                    "default": definition.default,
+                    "min_value": definition.min_value,
+                    "max_value": definition.max_value,
+                    "choices": definition.choices,
+                    "depends_on": definition.depends_on,
+                }
+            )
+        self._ast = registry_ast_from_definitions(serialized)
 
     @property
     def definitions(self) -> Dict[str, GeneDefinition]:
-        return dict(self._definitions)
+        definition_map = definition_map_from_registry_ast(self._ast)
+        return {gene_id: GeneDefinition(**payload) for gene_id, payload in definition_map.items()}
 
     def defaults(self) -> Dict[str, Any]:
-        return {gene_id: definition.default for gene_id, definition in self._definitions.items()}
+        return {gene_id: definition.default for gene_id, definition in self.definitions.items()}
 
     def hydrate(self, genome_values: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        hydrated = self.defaults()
+        definitions = self.definitions
+        hydrated = {gene_id: definition.default for gene_id, definition in definitions.items()}
         if not isinstance(genome_values, dict):
             return hydrated
 
         for gene_id, value in genome_values.items():
-            definition = self._definitions.get(gene_id)
+            definition = definitions.get(gene_id)
             if definition is None:
                 continue
             hydrated[gene_id] = self._coerce_value(definition, value)
@@ -79,12 +103,12 @@ class Genome:
 
     @classmethod
     def from_dict(cls, payload: Optional[Dict[str, Any]], registry: GeneRegistry) -> "Genome":
-        # Backward compatibility: older payloads may be {"gene_id": value} directly.
-        raw_genes = payload.get("genes") if isinstance(payload, dict) and "genes" in payload else payload
-        return cls(genes=registry.hydrate(raw_genes if isinstance(raw_genes, dict) else None))
+        ast = ast_from_flat_genes_payload(payload)
+        return cls(genes=registry.hydrate({gene.gene_id: gene.value for gene in ast.genes}))
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"genes": dict(self.genes)}
+        ast = ast_from_flat_genes_payload({"genes": dict(self.genes)})
+        return ast_to_flat_genes_payload(ast)
 
 
 DEFAULT_GENE_REGISTRY = GeneRegistry(
