@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
+from .genome_schema import extract_genes_from_payload
+
 
 @dataclass(frozen=True)
 class GeneDefinition:
@@ -80,7 +82,9 @@ class Genome:
     @classmethod
     def from_dict(cls, payload: Optional[Dict[str, Any]], registry: GeneRegistry) -> "Genome":
         # Backward compatibility: older payloads may be {"gene_id": value} directly.
-        raw_genes = payload.get("genes") if isinstance(payload, dict) and "genes" in payload else payload
+        raw_genes = extract_genes_from_payload(payload or {}) if isinstance(payload, dict) else {}
+        if not raw_genes and isinstance(payload, dict):
+            raw_genes = payload
         return cls(genes=registry.hydrate(raw_genes if isinstance(raw_genes, dict) else None))
 
     def to_dict(self) -> Dict[str, Any]:

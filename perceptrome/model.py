@@ -12,7 +12,11 @@ except ImportError:
     F = None      # type: ignore
 
 from .config import IOConfig
-from .genome_schema import CURRENT_GENOME_SCHEMA_VERSION, migrate_genome_payload
+from .genome_schema import (
+    CURRENT_GENOME_SCHEMA_VERSION,
+    extract_genes_from_payload,
+    migrate_genome_payload,
+)
 
 
 def _normalize_model_type(model_type: str) -> str:
@@ -325,7 +329,7 @@ def load_or_init_model(
             learning_rate=learning_rate,
             beta_kl=beta_kl,
         )
-        migrated_genes: Dict[str, object] = genome_payload["genes"]
+        migrated_genes: Dict[str, object] = extract_genes_from_payload(genome_payload)
         meta["genome"] = genome_payload
 
         ck_tok = str(migrated_genes.get("tokenizer", "base")).lower()
