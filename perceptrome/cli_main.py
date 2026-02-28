@@ -223,6 +223,19 @@ def build_parser() -> argparse.ArgumentParser:
     add_model_args(s)
     s.set_defaults(func=_lazy_cmd("cmd_generate_protein"))
 
+    s = sub.add_parser("pretrain")
+    s.add_argument("--dataset", default=None, help="Path to tensorized pretraining .npz archive")
+    s.add_argument("--vocab-size", type=int, default=None, help="Tokenizer vocabulary size")
+    s.add_argument("--batch-size", type=int, default=None, help="Pretraining batch size")
+    s.add_argument("--epochs", type=int, default=None, help="Number of pretraining epochs")
+    s.add_argument("--hidden-size", type=int, default=None, help="Backbone hidden size")
+    s.add_argument("--learning-rate", type=float, default=None, help="Optimizer learning rate")
+    s.add_argument("--output-dir", default=None, help="Checkpoint/log output directory")
+    s.add_argument("--disable-mlm", action="store_true", help="Disable masked token objective")
+    s.add_argument("--disable-sme", action="store_true", help="Disable masked SME objective")
+    s.add_argument("--disable-contrastive", action="store_true", help="Disable contrastive objective")
+    s.set_defaults(func=_lazy_cmd("cmd_pretrain"))
+
     return p
 
 def main(argv: Any = None) -> int:

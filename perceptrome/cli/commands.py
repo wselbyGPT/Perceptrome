@@ -30,6 +30,7 @@ from perceptrome.encoding.bio_ast_builder import BioASTBuilder
 from perceptrome.encoding.genbank_features import parse_cds_features_from_genbank
 from perceptrome.io_utils import select_unique_accessions, write_catalog
 from perceptrome.encoding.parse import parse_fasta_sequence, parse_genbank_dna
+from perceptrome.pretrain import PretrainPipelineConfig, run_pretraining
 
 
 # -----------------------------
@@ -1439,4 +1440,34 @@ def cmd_generate_protein(args: argparse.Namespace) -> int:
         recon_weight=float(getattr(args, "recon_weight", 0.1)),
     )
     print(f"[generate-protein] wrote {len(seq)} aa -> {args.output}")
+    return 0
+
+
+def cmd_pretrain(args: argparse.Namespace) -> int:
+    cfg = load_full_config(args.config)
+    pre_cfg = dict(cfg.get("pretrain", {}) or {})
+
+    dataset_path = str(getattr(args, "dataset", None) or pre_cfg.get("dataset_path", "")).strip()
+    if not dataset_path:
+        raise ValueError("Pretraining requires --dataset (or pretrain.dataset_path in config).")
+
+    pipeline_cfg = PretrainPipelineConfig(
+        dataset_path=dataset_path,
+        vocab_size=int(getattr(args, "vocab_size", None) or pre_cfg.get("vocab_size", 32)),
+        batch_size=int(getattr(args, "batch_size", None) or pre_cfg.get("batch_size", 16)),
+        epochs=int(getattr(args, "epochs", None) or pre_cfg.get("epochs", 1)),
+        hidden_size=int(getattr(args, "hidden_size", None) or pre_cfg.get("hidden_size", 256)),
+        lr=float(getattr(args, "learning_rate", None) or pre_cfg.get("learning_rate", 1e-4)),
+        output_dir=str(getattr(args, "output_dir", None) or pre_cfg.get("output_dir", "model/pretrain")),
+        enable_mlm=bool(pre_cfg.get("enable_mlm", True)) if not getattr(args, "disable_mlm", False) else False,
+        enable_sme=bool(pre_cfg.get("enable_sme", True)) if not getattr(args, "disable_sme", False) else False,
+        enable_contrastive=bool(pre_cfg.get("enable_contrastive", True)) if not getattr(args, "disable_contrastive", False) else False,
+    )
+    if not (pipeline_cfg.enable_mlm or pipeline_cfg.enable_sme or pipeline_cfg.enable_contrastive):
+        raise ValueError("At least one pretraining objective must be enabled.")
+
+    metrics = run_pretraining(pipeline_cfg)
+    print("[pretrain] complete")
+    for k, v in sorted(metrics.items()):
+        print(f"  {k}: {v:.6f}")
     return 0
