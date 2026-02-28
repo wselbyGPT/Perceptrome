@@ -15,4 +15,5 @@ __all__ = [
     "genome_evolution",
     "cli",
     "genome_spec",
+    "pretrain",
 ]

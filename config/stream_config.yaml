@@ -56,3 +56,16 @@ io:
   checkpoints_dir: "model/checkpoints"
   logs_dir: "logs"
   state_file: "state/progress.json"
+
+pretrain:
+  # tensorized pretraining dataset archive (.npz)
+  dataset_path: ""
+  vocab_size: 32
+  batch_size: 16
+  epochs: 1
+  hidden_size: 256
+  learning_rate: 1.0e-4
+  output_dir: "model/pretrain"
+  enable_mlm: true
+  enable_sme: true
+  enable_contrastive: true
