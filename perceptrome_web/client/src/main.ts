@@ -142,7 +142,8 @@ app.innerHTML = `
                 <input
                   class="field-input"
                   type="text"
-                  value=".yaml stream --catalog config/plasmids_10.txt --model-type mlp --steps-per-plasmid 10 --batch-size 256"
+                  data-action="train-command"
+                  value="perceptrome --config config/stream_config.yaml stream --catalog config/plasmids_10.txt --model-type mlp --steps-per-plasmid 10 --batch-size 256"
                 />
               </label>
             </div>
@@ -150,8 +151,8 @@ app.innerHTML = `
             <div class="button-row">
               <button class="btn btn-secondary" type="button">Help</button>
               <button class="btn btn-secondary" type="button">Build command</button>
-              <button class="btn" type="button">Start</button>
-              <button class="btn btn-danger" type="button">Stop</button>
+              <button class="btn" type="button" data-action="train-start">Start</button>
+              <button class="btn btn-danger" type="button" data-action="train-stop" disabled>Stop</button>
             </div>
 
             <div class="progress-bar">
@@ -163,7 +164,7 @@ app.innerHTML = `
 
             <div class="log-area">
               <div class="log-area__label">Live training output will appear here...</div>
-              <pre class="log-area__body"></pre>
+              <pre class="log-area__body" data-action="train-log"></pre>
             </div>
           </section>
         </section>
@@ -186,7 +187,8 @@ app.innerHTML = `
                 <input
                   class="field-input"
                   type="text"
-                  value="--config stream_config.yaml generate-plasmid --length-bp 10000 --output generated/novel_plasmid.fasta"
+                  data-action="generate-command"
+                  value="perceptrome --config config/stream_config.yaml generate-plasmid --length-bp 10000 --output generated/novel_plasmid.fasta"
                 />
               </label>
             </div>
@@ -195,8 +197,8 @@ app.innerHTML = `
               <button class="btn btn-secondary" type="button">Help</button>
               <button class="btn btn-secondary" type="button">Refresh models</button>
               <button class="btn btn-secondary" type="button">Build command</button>
-              <button class="btn" type="button">Start</button>
-              <button class="btn btn-danger" type="button">Stop</button>
+              <button class="btn" type="button" data-action="generate-start">Start</button>
+              <button class="btn btn-danger" type="button" data-action="generate-stop" disabled>Stop</button>
             </div>
 
             <div class="progress-bar">
@@ -208,7 +210,7 @@ app.innerHTML = `
 
             <div class="log-area">
               <div class="log-area__label">Live generate output will appear here...</div>
-              <pre class="log-area__body"></pre>
+              <pre class="log-area__body" data-action="generate-log"></pre>
             </div>
           </section>
         </section>
@@ -330,3 +332,146 @@ const goTrainBtn = document.querySelector<HTMLButtonElement>(
 if (goTrainBtn) {
   goTrainBtn.addEventListener("click", () => setActiveTab("train"));
 }
+
+// --- backend wiring --------------------------------------------------------
+
+type RunScope = "train" | "generate";
+
+type WsMessage =
+  | { type: "status"; status: "pending" | "running" | "done" | "error"; progress?: number | null }
+  | { type: "log"; message: string }
+  | { type: "result"; payload: { exit_code?: number; ok?: boolean; command?: string } };
+
+const trainCommandEl = document.querySelector<HTMLInputElement>('[data-action="train-command"]');
+const generateCommandEl = document.querySelector<HTMLInputElement>('[data-action="generate-command"]');
+const trainStartBtn = document.querySelector<HTMLButtonElement>('[data-action="train-start"]');
+const trainStopBtn = document.querySelector<HTMLButtonElement>('[data-action="train-stop"]');
+const generateStartBtn = document.querySelector<HTMLButtonElement>('[data-action="generate-start"]');
+const generateStopBtn = document.querySelector<HTMLButtonElement>('[data-action="generate-stop"]');
+const trainLogEl = document.querySelector<HTMLPreElement>('[data-action="train-log"]');
+const generateLogEl = document.querySelector<HTMLPreElement>('[data-action="generate-log"]');
+
+let ws: WebSocket | null = null;
+let activeScope: RunScope | null = null;
+
+function appendLog(scope: RunScope, line: string) {
+  const target = scope === "train" ? trainLogEl : generateLogEl;
+  if (!target) return;
+  target.textContent += `${line}\n`;
+  target.scrollTop = target.scrollHeight;
+}
+
+function setRunState(scope: RunScope, running: boolean) {
+  if (scope === "train") {
+    if (trainStartBtn) trainStartBtn.disabled = running;
+    if (trainStopBtn) trainStopBtn.disabled = !running;
+  } else {
+    if (generateStartBtn) generateStartBtn.disabled = running;
+    if (generateStopBtn) generateStopBtn.disabled = !running;
+  }
+}
+
+function ensureWs(): WebSocket {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    return ws;
+  }
+
+  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${protocol}://${window.location.host}/ws`);
+
+  ws.addEventListener("open", () => {
+    appendLog("train", "[web] Connected to backend.");
+    appendLog("generate", "[web] Connected to backend.");
+  });
+
+  ws.addEventListener("close", () => {
+    appendLog("train", "[web] Backend connection closed.");
+    appendLog("generate", "[web] Backend connection closed.");
+    if (activeScope) {
+      setRunState(activeScope, false);
+      activeScope = null;
+    }
+  });
+
+  ws.addEventListener("message", (event) => {
+    if (!activeScope) return;
+    let msg: WsMessage;
+    try {
+      msg = JSON.parse(String(event.data)) as WsMessage;
+    } catch {
+      appendLog(activeScope, `[web] Invalid backend message: ${String(event.data)}`);
+      return;
+    }
+
+    if (msg.type === "log") {
+      appendLog(activeScope, msg.message);
+      return;
+    }
+
+    if (msg.type === "status") {
+      if (msg.status === "done" || msg.status === "error" || msg.status === "pending") {
+        setRunState(activeScope, false);
+        activeScope = null;
+      }
+      return;
+    }
+
+    if (msg.type === "result") {
+      const code = msg.payload.exit_code;
+      appendLog(activeScope, `[web] Run finished (exit code: ${code ?? "unknown"}).`);
+    }
+  });
+
+  return ws;
+}
+
+function startRun(scope: RunScope, command: string) {
+  const socket = ensureWs();
+  if (!command.trim()) {
+    appendLog(scope, "[web] Command is empty.");
+    return;
+  }
+  if (activeScope) {
+    appendLog(scope, "[web] Another run is active. Stop it before starting a new one.");
+    return;
+  }
+
+  activeScope = scope;
+  setRunState(scope, true);
+  appendLog(scope, `[web] Starting: ${command}`);
+
+  const send = () => {
+    socket.send(
+      JSON.stringify({
+        type: "start_run",
+        command,
+        cwd: ".",
+      }),
+    );
+  };
+
+  if (socket.readyState === WebSocket.OPEN) {
+    send();
+  } else {
+    socket.addEventListener("open", send, { once: true });
+  }
+}
+
+function stopRun(scope: RunScope) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    appendLog(scope, "[web] Backend is not connected.");
+    return;
+  }
+  if (activeScope !== scope) {
+    appendLog(scope, "[web] No active run in this tab.");
+    return;
+  }
+
+  ws.send(JSON.stringify({ type: "stop_run" }));
+  appendLog(scope, "[web] Stop requested.");
+}
+
+trainStartBtn?.addEventListener("click", () => startRun("train", trainCommandEl?.value ?? ""));
+trainStopBtn?.addEventListener("click", () => stopRun("train"));
+generateStartBtn?.addEventListener("click", () => startRun("generate", generateCommandEl?.value ?? ""));
+generateStopBtn?.addEventListener("click", () => stopRun("generate"));
