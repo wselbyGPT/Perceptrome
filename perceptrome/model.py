@@ -19,11 +19,169 @@ def _normalize_model_type(model_type: str) -> str:
     mt = str(model_type).lower()
     return {
         "rnn": "mlp",
-        "hybrid": "mlp",
         "moe": "mlp",
         "gnn": "mlp",
         "tcn": "mlp",
     }.get(mt, mt)
+
+
+class TreeEncoder(nn.Module):  # type: ignore[misc]
+    """Bottom-up binary tree encoder used for Bio-AST message passing."""
+
+    def __init__(self, seq_len: int, vocab_size: int, hidden_dim: int, tree_layers: int, dropout: float):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for TreeEncoder.")
+        super().__init__()
+        self.seq_len = int(seq_len)
+        self.vocab_size = int(vocab_size)
+        self.hidden_dim = int(hidden_dim)
+        self.tree_layers = max(1, int(tree_layers))
+
+        self.leaf_proj = nn.Linear(self.vocab_size, self.hidden_dim)
+        self.msg_layers = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(self.hidden_dim * 2, self.hidden_dim),
+                    nn.GELU(),
+                    nn.Dropout(float(dropout)),
+                )
+                for _ in range(self.tree_layers)
+            ]
+        )
+        self.readout = nn.Linear(self.hidden_dim, self.hidden_dim)
+
+    def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+        leaves = x.view(x.size(0), self.seq_len, self.vocab_size)
+        nodes = self.leaf_proj(leaves)
+        for layer in self.msg_layers:
+            if nodes.size(1) > 1:
+                even = nodes[:, 0::2, :]
+                odd = nodes[:, 1::2, :]
+                if even.size(1) > odd.size(1):
+                    odd = torch.cat([odd, even[:, -1:, :]], dim=1)
+                nodes = layer(torch.cat([even, odd], dim=-1))
+            else:
+                nodes = layer(torch.cat([nodes, nodes], dim=-1))
+        root = nodes.mean(dim=1)
+        return self.readout(root)
+
+
+class TreeVAE(nn.Module):  # type: ignore[misc]
+    def __init__(self, seq_len: int, vocab_size: int, hidden_dim: int, tree_layers: int, dropout: float):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for TreeVAE.")
+        super().__init__()
+        input_dim = int(seq_len) * int(vocab_size)
+        self.encoder_tree = TreeEncoder(seq_len, vocab_size, hidden_dim, tree_layers, dropout)
+        self.fc_mu = nn.Linear(hidden_dim, hidden_dim)
+        self.fc_logvar = nn.Linear(hidden_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc_out = nn.Linear(hidden_dim, input_dim)
+        self.act = nn.GELU()
+
+    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+        h = self.encoder_tree(x)
+        return self.fc_mu(h), self.fc_logvar(h)
+
+    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
+        return self.fc_out(self.act(self.fc2(z)))
+
+    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
+        if torch is None or F is None:
+            raise RuntimeError("PyTorch is required.")
+        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
+        return F.softmax(logits, dim=-1) if str(loss_type).lower() == "ce" else torch.sigmoid(logits)
+
+    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar
+
+
+class HybridVAE(nn.Module):  # type: ignore[misc]
+    """Fuses raw sequence, local motif (CNN), and Bio-AST tree branches."""
+
+    def __init__(
+        self,
+        seq_len: int,
+        vocab_size: int,
+        hidden_dim: int,
+        tree_layers: int,
+        motif_kernel_size: int,
+        motif_channels: int,
+        dropout: float,
+    ):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for HybridVAE.")
+        super().__init__()
+        self.seq_len = int(seq_len)
+        self.vocab_size = int(vocab_size)
+        input_dim = self.seq_len * self.vocab_size
+
+        self.raw_fc = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+        )
+
+        pad = int(motif_kernel_size) // 2
+        self.motif_conv = nn.Sequential(
+            nn.Conv1d(self.vocab_size, int(motif_channels), kernel_size=int(motif_kernel_size), padding=pad),
+            nn.GELU(),
+            nn.Conv1d(int(motif_channels), int(motif_channels), kernel_size=1),
+            nn.GELU(),
+        )
+        self.motif_fc = nn.Linear(int(motif_channels), hidden_dim)
+
+        self.tree_encoder = TreeEncoder(seq_len, vocab_size, hidden_dim, tree_layers, dropout)
+
+        self.fuse = nn.Sequential(
+            nn.Linear(hidden_dim * 3, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+        )
+        self.fc_mu = nn.Linear(hidden_dim, hidden_dim)
+        self.fc_logvar = nn.Linear(hidden_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc_out = nn.Linear(hidden_dim, input_dim)
+
+    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+        x_flat = x.view(x.size(0), -1)
+        x_seq = x.view(x.size(0), self.seq_len, self.vocab_size)
+
+        raw_h = self.raw_fc(x_flat)
+
+        motif_in = x_seq.transpose(1, 2)
+        motif_h = self.motif_conv(motif_in).mean(dim=2)
+        motif_h = self.motif_fc(motif_h)
+
+        tree_h = self.tree_encoder(x_flat)
+        h = self.fuse(torch.cat([raw_h, motif_h, tree_h], dim=-1))
+        return self.fc_mu(h), self.fc_logvar(h)
+
+    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
+        return self.fc_out(F.gelu(self.fc2(z)))
+
+    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
+        if torch is None or F is None:
+            raise RuntimeError("PyTorch is required.")
+        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
+        return F.softmax(logits, dim=-1) if str(loss_type).lower() == "ce" else torch.sigmoid(logits)
+
+    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar
 
 class TransformerVAE(nn.Module):  # type: ignore[misc]
     def __init__(
@@ -271,6 +429,9 @@ def load_or_init_model(
     transformer_nhead: int,
     transformer_layers: int,
     transformer_dropout: float,
+    ast_tree_layers: int = 4,
+    ast_motif_kernel_size: int = 7,
+    ast_motif_channels: int = 64,
     beta_kl: float = 1e-3,
 ) -> Tuple[nn.Module, "optim.Optimizer", int, str]:
     """
@@ -300,6 +461,24 @@ def load_or_init_model(
             hidden_dim=hidden_dim,
             num_layers=transformer_layers,
             kernel_size=5,
+            dropout=transformer_dropout,
+        ).to(device)
+    elif mt == "tree":
+        model = TreeVAE(
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            tree_layers=ast_tree_layers,
+            dropout=transformer_dropout,
+        ).to(device)
+    elif mt == "hybrid":
+        model = HybridVAE(
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            tree_layers=ast_tree_layers,
+            motif_kernel_size=ast_motif_kernel_size,
+            motif_channels=ast_motif_channels,
             dropout=transformer_dropout,
         ).to(device)
     else:
@@ -338,6 +517,9 @@ def load_or_init_model(
         ck_nhead = int(migrated_genes.get("transformer_nhead", transformer_nhead))
         ck_layers = int(migrated_genes.get("transformer_layers", transformer_layers))
         ck_dropout = float(migrated_genes.get("transformer_dropout", transformer_dropout))
+        ck_ast_tree_layers = int(migrated_genes.get("ast_tree_layers", ast_tree_layers))
+        ck_ast_motif_kernel_size = int(migrated_genes.get("ast_motif_kernel_size", ast_motif_kernel_size))
+        ck_ast_motif_channels = int(migrated_genes.get("ast_motif_channels", ast_motif_channels))
         
         if ck_tok != tokenizer.lower():
             raise ValueError(f"Checkpoint tokenizer={ck_tok} but requested tokenizer={tokenizer}. Delete {ckpt_path} or match settings.")
@@ -371,6 +553,23 @@ def load_or_init_model(
                 raise ValueError(f"Checkpoint ssm_layers={ck_layers} but requested {transformer_layers}. Delete {ckpt_path} or match settings.")
             if abs(ck_dropout - float(transformer_dropout)) > 1e-8:
                 raise ValueError(f"Checkpoint ssm_dropout={ck_dropout} but requested {transformer_dropout}. Delete {ckpt_path} or match settings.")
+        if mt in {"tree", "hybrid"}:
+            if ck_ast_tree_layers != ast_tree_layers:
+                raise ValueError(
+                    f"Checkpoint ast_tree_layers={ck_ast_tree_layers} but requested {ast_tree_layers}. "
+                    f"Delete {ckpt_path} or match settings."
+                )
+        if mt == "hybrid":
+            if ck_ast_motif_kernel_size != ast_motif_kernel_size:
+                raise ValueError(
+                    f"Checkpoint ast_motif_kernel_size={ck_ast_motif_kernel_size} but requested {ast_motif_kernel_size}. "
+                    f"Delete {ckpt_path} or match settings."
+                )
+            if ck_ast_motif_channels != ast_motif_channels:
+                raise ValueError(
+                    f"Checkpoint ast_motif_channels={ck_ast_motif_channels} but requested {ast_motif_channels}. "
+                    f"Delete {ckpt_path} or match settings."
+                )
 
         model.load_state_dict(data["model"])
         optimizer.load_state_dict(data["optim"])
@@ -417,6 +616,9 @@ def save_checkpoint(
     transformer_dropout: float,
     learning_rate: float,
     beta_kl: float,
+    ast_tree_layers: int = 4,
+    ast_motif_kernel_size: int = 7,
+    ast_motif_channels: int = 64,
 ) -> None:
     if torch is None:
         return
@@ -435,6 +637,9 @@ def save_checkpoint(
             "transformer_nhead": int(transformer_nhead),
             "transformer_layers": int(transformer_layers),
             "transformer_dropout": float(transformer_dropout),
+            "ast_tree_layers": int(ast_tree_layers),
+            "ast_motif_kernel_size": int(ast_motif_kernel_size),
+            "ast_motif_channels": int(ast_motif_channels),
             "genome": migrate_genome_payload(
                 {
                     "schema_version": CURRENT_GENOME_SCHEMA_VERSION,
@@ -449,6 +654,9 @@ def save_checkpoint(
                         "transformer_nhead": int(transformer_nhead),
                         "transformer_layers": int(transformer_layers),
                         "transformer_dropout": float(transformer_dropout),
+                        "ast_tree_layers": int(ast_tree_layers),
+                        "ast_motif_kernel_size": int(ast_motif_kernel_size),
+                        "ast_motif_channels": int(ast_motif_channels),
                         "learning_rate": float(learning_rate),
                         "beta_kl": float(beta_kl),
                     },
