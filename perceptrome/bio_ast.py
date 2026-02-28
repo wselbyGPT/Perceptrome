@@ -1,10 +1,128 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar, Dict, Iterable, List, Mapping, Optional, Tuple, Type, TypeVar, Union
 
 
 SCHEMA_VERSION = 2
+
+SECONDARY_TAG_VOCAB = frozenset({"H", "E", "C", "T", "G", "I"})
+MOTIF_FAMILY_VOCAB = frozenset(
+    {
+        "STRUCTURAL",
+        "REGULATORY",
+        "CATALYTIC",
+        "INTERACTION",
+        "SIGNALING",
+        "OTHER",
+    }
+)
+MOTIF_SUBTYPE_VOCAB = frozenset(
+    {
+        "BINDING_LOOP",
+        "ACTIVE_SITE",
+        "LOW_COMPLEXITY",
+        "TRANSMEMBRANE",
+        "COILED_COIL",
+        "OTHER",
+    }
+)
+
+
+def _normalize_optional_float(value: Any, *, field_name: str, minimum: Optional[float] = None, maximum: Optional[float] = None) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be numeric or null") from exc
+
+    if minimum is not None and normalized < minimum:
+        raise ValueError(f"{field_name} must be >= {minimum}")
+    if maximum is not None and normalized > maximum:
+        raise ValueError(f"{field_name} must be <= {maximum}")
+    return normalized
+
+
+def _normalize_optional_token(value: Any, *, field_name: str, vocab: Iterable[str]) -> Optional[str]:
+    if value is None:
+        return None
+    token = str(value).strip().upper()
+    if not token:
+        return None
+    vocab_set = set(vocab)
+    if token not in vocab_set:
+        raise ValueError(f"{field_name} must be one of {sorted(vocab_set)}")
+    return token
+
+
+def validate_secondary_tag(value: Any) -> Optional[str]:
+    return _normalize_optional_token(value, field_name="secondary_tag", vocab=SECONDARY_TAG_VOCAB)
+
+
+def validate_motif_family(value: Any) -> Optional[str]:
+    return _normalize_optional_token(value, field_name="motif_family", vocab=MOTIF_FAMILY_VOCAB)
+
+
+def validate_motif_subtype(value: Any) -> Optional[str]:
+    return _normalize_optional_token(value, field_name="motif_subtype", vocab=MOTIF_SUBTYPE_VOCAB)
+
+
+@dataclass(frozen=True)
+class EnergeticEvolutionaryPayload:
+    folding_energy_estimate: Optional[float] = None
+    phi_bin: Optional[float] = None
+    psi_bin: Optional[float] = None
+    conservation_score: Optional[float] = None
+    prion_likelihood: Optional[float] = None
+    variant_sensitivity: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "folding_energy_estimate",
+            _normalize_optional_float(self.folding_energy_estimate, field_name="folding_energy_estimate"),
+        )
+        object.__setattr__(self, "phi_bin", _normalize_optional_float(self.phi_bin, field_name="phi_bin", minimum=-180.0, maximum=180.0))
+        object.__setattr__(self, "psi_bin", _normalize_optional_float(self.psi_bin, field_name="psi_bin", minimum=-180.0, maximum=180.0))
+        object.__setattr__(
+            self,
+            "conservation_score",
+            _normalize_optional_float(self.conservation_score, field_name="conservation_score", minimum=0.0, maximum=1.0),
+        )
+        object.__setattr__(
+            self,
+            "prion_likelihood",
+            _normalize_optional_float(self.prion_likelihood, field_name="prion_likelihood", minimum=0.0, maximum=1.0),
+        )
+        object.__setattr__(
+            self,
+            "variant_sensitivity",
+            _normalize_optional_float(self.variant_sensitivity, field_name="variant_sensitivity", minimum=0.0, maximum=1.0),
+        )
+
+    def to_dict(self) -> Dict[str, Optional[float]]:
+        return {
+            "folding_energy_estimate": self.folding_energy_estimate,
+            "phi_bin": self.phi_bin,
+            "psi_bin": self.psi_bin,
+            "conservation_score": self.conservation_score,
+            "prion_likelihood": self.prion_likelihood,
+            "variant_sensitivity": self.variant_sensitivity,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Optional[Mapping[str, Any]]) -> "EnergeticEvolutionaryPayload":
+        if not isinstance(payload, Mapping):
+            return cls()
+        return cls(
+            folding_energy_estimate=payload.get("folding_energy_estimate"),
+            phi_bin=payload.get("phi_bin"),
+            psi_bin=payload.get("psi_bin"),
+            conservation_score=payload.get("conservation_score"),
+            prion_likelihood=payload.get("prion_likelihood"),
+            variant_sensitivity=payload.get("variant_sensitivity"),
+        )
 
 
 @dataclass(frozen=True)
@@ -167,7 +285,44 @@ class RegionNode(HierarchicalNode):
 
 @dataclass(frozen=True)
 class SMENode(HierarchicalNode):
+    secondary_tag: Optional[str] = None
+    motif_family: Optional[str] = None
+    motif_subtype: Optional[str] = None
+    energetic_evolutionary: EnergeticEvolutionaryPayload = field(default_factory=EnergeticEvolutionaryPayload)
+
     node_type: ClassVar[str] = "sme"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "secondary_tag", validate_secondary_tag(self.secondary_tag))
+        object.__setattr__(self, "motif_family", validate_motif_family(self.motif_family))
+        object.__setattr__(self, "motif_subtype", validate_motif_subtype(self.motif_subtype))
+        if isinstance(self.energetic_evolutionary, Mapping):
+            object.__setattr__(self, "energetic_evolutionary", EnergeticEvolutionaryPayload.from_dict(self.energetic_evolutionary))
+        elif self.energetic_evolutionary is None:
+            object.__setattr__(self, "energetic_evolutionary", EnergeticEvolutionaryPayload())
+        super().__post_init__()
+
+    def to_dict(self) -> Dict[str, Any]:
+        payload = super().to_dict()
+        payload.update(
+            {
+                "secondary_tag": self.secondary_tag,
+                "motif_family": self.motif_family,
+                "motif_subtype": self.motif_subtype,
+                "energetic_evolutionary": self.energetic_evolutionary.to_dict(),
+            }
+        )
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "SMENode":
+        return cls(
+            **cls._base_kwargs(payload),
+            secondary_tag=payload.get("secondary_tag"),
+            motif_family=payload.get("motif_family"),
+            motif_subtype=payload.get("motif_subtype"),
+            energetic_evolutionary=EnergeticEvolutionaryPayload.from_dict(payload.get("energetic_evolutionary")),
+        )
 
 
 @dataclass(frozen=True)
@@ -227,7 +382,67 @@ def _node_from_dict(payload: Mapping[str, Any]) -> Optional[ASTNode]:
 
     if node_cls is GeneNode:
         return GeneNode.from_dict(payload)
+    if node_cls is SMENode:
+        return SMENode.from_dict(payload)
     return node_cls(**node_cls._base_kwargs(payload))
+
+
+def _normalize_window_positions(window: Optional[Iterable[Union[int, Tuple[int, int]]]]) -> Tuple[Tuple[int, int], ...]:
+    if window is None:
+        return ()
+    normalized: List[Tuple[int, int]] = []
+    for item in window:
+        if isinstance(item, int):
+            start, end = item, item
+        elif isinstance(item, tuple) and len(item) == 2 and all(isinstance(value, int) for value in item):
+            start, end = item
+        else:
+            raise ValueError("Window values must be ints or (start, end) integer tuples")
+        if start > end:
+            raise ValueError("Window start must be <= end")
+        normalized.append((start, end))
+    return tuple(normalized)
+
+
+def build_sme_node(
+    *,
+    parent: Union[DomainNode, RegionNode],
+    sme_id: str,
+    residue_window: Optional[Iterable[Union[int, Tuple[int, int]]]] = None,
+    kmer_window: Optional[Iterable[Union[int, Tuple[int, int]]]] = None,
+    secondary_tag: Optional[str] = None,
+    motif_family: Optional[str] = None,
+    motif_subtype: Optional[str] = None,
+    energetic_evolutionary: Optional[Mapping[str, Any]] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> Tuple[Union[DomainNode, RegionNode], SMENode, Tuple[Union[ResidueNode, KmerNode], ...]]:
+    parent_id = parent.canonical_id
+    residue_ranges = _normalize_window_positions(residue_window)
+    kmer_ranges = _normalize_window_positions(kmer_window)
+
+    child_nodes: List[Union[ResidueNode, KmerNode]] = []
+    child_ids: List[str] = []
+    for index, (start, end) in enumerate(residue_ranges, start=1):
+        canonical_id = f"residue:{sme_id}:{index}"
+        child_ids.append(canonical_id)
+        child_nodes.append(ResidueNode(canonical_id=canonical_id, parent_id=sme_id, start=start, end=end))
+    for index, (start, end) in enumerate(kmer_ranges, start=1):
+        canonical_id = f"kmer:{sme_id}:{index}"
+        child_ids.append(canonical_id)
+        child_nodes.append(KmerNode(canonical_id=canonical_id, parent_id=sme_id, start=start, end=end))
+
+    sme_node = SMENode(
+        canonical_id=sme_id,
+        parent_id=parent_id,
+        child_ids=tuple(child_ids),
+        secondary_tag=secondary_tag,
+        motif_family=motif_family,
+        motif_subtype=motif_subtype,
+        energetic_evolutionary=EnergeticEvolutionaryPayload.from_dict(energetic_evolutionary),
+        metadata=dict(metadata) if isinstance(metadata, Mapping) else {},
+    )
+    updated_parent = replace(parent, child_ids=parent.child_ids + (sme_id,))
+    return updated_parent, sme_node, tuple(child_nodes)
 
 
 @dataclass(frozen=True)

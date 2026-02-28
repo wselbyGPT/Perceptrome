@@ -16,6 +16,7 @@ from perceptrome.bio_ast import (
     VirusNode,
     ast_from_flat_genes_payload,
     ast_to_flat_genes_payload,
+    build_sme_node,
 )
 
 
@@ -77,6 +78,59 @@ class BioASTTests(unittest.TestCase):
             }
         )
         self.assertEqual(ast_to_flat_genes_payload(modern), {"genes": {"g3": 30}})
+
+
+    def test_sme_payload_validation_and_roundtrip(self):
+        sme = SMENode(
+            canonical_id="sme:g:1",
+            secondary_tag="h",
+            motif_family="structural",
+            motif_subtype="coiled_coil",
+            energetic_evolutionary={
+                "folding_energy_estimate": -2.5,
+                "phi_bin": -60,
+                "psi_bin": -35,
+                "conservation_score": 0.9,
+                "prion_likelihood": 0.1,
+                "variant_sensitivity": 0.4,
+            },
+        )
+
+        restored = SMENode.from_dict(sme.to_dict())
+
+        self.assertEqual(restored.secondary_tag, "H")
+        self.assertEqual(restored.motif_family, "STRUCTURAL")
+        self.assertEqual(restored.motif_subtype, "COILED_COIL")
+        self.assertEqual(restored.energetic_evolutionary.phi_bin, -60.0)
+
+    def test_build_sme_node_attaches_to_domain(self):
+        parent = DomainNode(canonical_id="domain:g:1", child_ids=("existing",))
+
+        updated_parent, sme, children = build_sme_node(
+            parent=parent,
+            sme_id="sme:g:1",
+            residue_window=[(10, 10), 11],
+            kmer_window=[(12, 14)],
+            secondary_tag="E",
+            motif_family="interaction",
+            motif_subtype="binding_loop",
+            energetic_evolutionary={"conservation_score": 0.5},
+        )
+
+        self.assertEqual(updated_parent.child_ids, ("existing", "sme:g:1"))
+        self.assertEqual(sme.parent_id, "domain:g:1")
+        self.assertEqual(len(children), 3)
+        self.assertEqual(children[0].parent_id, "sme:g:1")
+
+    def test_sme_validation_rejects_invalid_values(self):
+        with self.assertRaises(ValueError):
+            SMENode(canonical_id="sme:bad:1", secondary_tag="X")
+
+        with self.assertRaises(ValueError):
+            SMENode(
+                canonical_id="sme:bad:2",
+                energetic_evolutionary={"conservation_score": 1.5},
+            )
 
 
 if __name__ == "__main__":
