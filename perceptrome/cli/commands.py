@@ -26,8 +26,10 @@ from perceptrome.cli.common import (
     _get_source, _ensure_record,
 )
 from perceptrome.catalog_schema import parse_catalog_schema
+from perceptrome.encoding.bio_ast_builder import BioASTBuilder
+from perceptrome.encoding.genbank_features import parse_cds_features_from_genbank
 from perceptrome.io_utils import select_unique_accessions, write_catalog
-from perceptrome.encoding.parse import parse_fasta_sequence
+from perceptrome.encoding.parse import parse_fasta_sequence, parse_genbank_dna
 
 
 # -----------------------------
@@ -360,6 +362,55 @@ def _build_encoded_manifest_payload(
     }
 
 
+def _infer_top_level_type(accession: str, source: str) -> str:
+    lowered = str(accession).lower()
+    if source == "genbank" and ("virus" in lowered or lowered.startswith("nc_00")):
+        return "virus"
+    if source == "genbank":
+        return "plasmid"
+    return "genome"
+
+
+def _build_and_write_bio_ast(accession: str, source: str, io_cfg) -> Optional[str]:
+    src = source.lower()
+    builder = BioASTBuilder()
+    try:
+        if src == "genbank":
+            gb_path = os.path.join(io_cfg.cache_genbank_dir, f"{accession}.gb")
+            sequence = parse_genbank_dna(gb_path)
+            cds_features = parse_cds_features_from_genbank(gb_path)
+        else:
+            fasta_path = os.path.join(io_cfg.cache_fasta_dir, f"{accession}.fasta")
+            sequence = parse_fasta_sequence(fasta_path)
+            cds_features = None
+
+        built = builder.build(
+            sequence=sequence,
+            cds_features=cds_features,
+            top_level_type=_infer_top_level_type(accession, src),
+            accession=str(accession),
+        )
+    except Exception as exc:
+        logging.warning("%s: failed to build bio AST (%s)", accession, exc)
+        return None
+
+    ast_dir = os.path.join(io_cfg.cache_encoded_dir, "bio_ast")
+    os.makedirs(ast_dir, exist_ok=True)
+    out_path = os.path.join(ast_dir, f"{accession}.bio_ast.json")
+    payload = {
+        "ast": built.ast.to_dict(),
+        "serialized_paths": built.to_serialized_paths(),
+        "tree_message_passing": {
+            key: value.tolist() for key, value in built.to_tree_message_passing_tensors().items()
+        },
+        "local_windows_shape": list(built.to_local_windows().shape),
+    }
+    with open(out_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    return out_path
+
+
 def _warn_if_encoded_manifest_incompatible(encoded_path: str, expected: Dict[str, Any]) -> None:
     mpath = _sidecar_manifest_path(encoded_path)
     if not os.path.exists(mpath):
@@ -623,6 +674,9 @@ def cmd_encode_one(args: argparse.Namespace) -> int:
         protein_opts=protein_opts,
     )
     _write_sidecar_manifest(out_path, payload)
+    ast_path = _build_and_write_bio_ast(args.accession, src, io_cfg)
+    if ast_path:
+        logging.info("%s: bio AST artifact written at %s", args.accession, ast_path)
     print(f"{args.accession}: encoded tokenizer={tok} source={src} -> shape={encoded.shape} saved={out_path}")
     return 0
 
@@ -716,6 +770,10 @@ def cmd_train_one(args: argparse.Namespace) -> int:
                 protein_opts=protein_opts,
             ),
         )
+
+    ast_path = _build_and_write_bio_ast(args.accession, src, io_cfg)
+    if ast_path:
+        logging.info("%s: bio AST artifact written at %s", args.accession, ast_path)
 
     last_total = train_on_encoded(
         args.accession, encoded,
