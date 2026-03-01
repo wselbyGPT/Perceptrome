@@ -27,6 +27,10 @@ It provides a CLI-first workflow for:
 - `gui_qt/` and `gui.py` – Qt GUI entry points for running commands interactively.
 - `raylib_visualizer/` – optional C/Raylib scope visualizer.
 
+## AWS EC2 deployment
+
+For a ready-to-run EC2 + Nginx + Route53 deployment bundle, see [`infra/aws/README.md`](infra/aws/README.md).
+
 ## Installation
 
 ### 1) Clone and enter the repo
