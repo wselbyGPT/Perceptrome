@@ -37,7 +37,7 @@ app.innerHTML = `
 
                 <label class="field">
                   <span class="field-label">Dataset list file:</span>
-                  <input class="field-input" type="text" value="config/plasmids_10.txt" />
+                  <input class="field-input" type="text" data-action="dataset-list-file" value="config/plasmids_10.txt" />
                 </label>
 
                 <label class="field">
@@ -63,7 +63,7 @@ app.innerHTML = `
               <div class="form-grid form-grid--two">
                 <label class="field">
                   <span class="field-label">Category:</span>
-                  <select class="field-input">
+                  <select class="field-input" data-action="quota-category">
                     <option>Plasmids</option>
                     <option>Bacterial genomes</option>
                     <option>Custom</option>
@@ -71,19 +71,24 @@ app.innerHTML = `
                 </label>
 
                 <label class="field">
+                  <span class="field-label">Source catalog:</span>
+                  <input class="field-input" type="text" data-action="quota-source" value="config/plasmids_10.txt" />
+                </label>
+
+                <label class="field">
                   <span class="field-label">Count:</span>
-                  <input class="field-input" type="number" value="100" />
+                  <input class="field-input" type="number" data-action="quota-count" value="100" />
                 </label>
               </div>
 
               <label class="checkbox">
-                <input type="checkbox" checked />
+                <input type="checkbox" data-action="shuffle-categories" checked />
                 <span>Shuffle inside each category</span>
               </label>
 
               <div class="button-row">
-                <button class="btn btn-secondary" type="button">Add category quota</button>
-                <button class="btn btn-secondary" type="button">Remove selected</button>
+                <button class="btn btn-secondary" type="button" data-action="add-quota-row">Add category quota</button>
+                <button class="btn btn-secondary" type="button" data-action="remove-quota-row">Remove selected</button>
               </div>
 
               <div class="table-wrapper">
@@ -95,7 +100,7 @@ app.innerHTML = `
                       <th>Count</th>
                     </tr>
                   </thead>
-                  <tbody>
+                  <tbody data-action="quota-table-body">
                     <!-- Empty state, matches Qt view -->
                   </tbody>
                 </table>
@@ -104,12 +109,12 @@ app.innerHTML = `
               <div class="form-grid">
                 <label class="field">
                   <span class="field-label">Output catalog:</span>
-                  <input class="field-input" type="text" value="config/custom_dataset.txt" />
+                  <input class="field-input" type="text" data-action="output-catalog" value="config/custom_dataset.txt" />
                 </label>
               </div>
 
               <div class="button-row">
-                <button class="btn" type="button">Create dataset list</button>
+                <button class="btn" type="button" data-action="create-dataset-list">Create dataset list</button>
               </div>
 
               <div class="button-row button-row--end">
@@ -117,7 +122,7 @@ app.innerHTML = `
                 <button class="btn" type="button" data-action="go-train">Go to Train tab</button>
               </div>
 
-              <p class="panel-footer-text">Loaded saved config (if any).</p>
+              <p class="panel-footer-text" data-action="config-status">Loaded saved config (if any).</p>
             </section>
           </div>
         </section>
@@ -336,11 +341,13 @@ if (goTrainBtn) {
 // --- backend wiring --------------------------------------------------------
 
 type RunScope = "train" | "generate";
+type DatasetCategoryQuota = { category: string; source: string; count: number };
 
 type WsMessage =
   | { type: "status"; status: "pending" | "running" | "done" | "error"; progress?: number | null }
   | { type: "log"; message: string }
-  | { type: "result"; payload: { exit_code?: number; ok?: boolean; command?: string } };
+  | { type: "result"; payload: { exit_code?: number; ok?: boolean; command?: string } }
+  | { type: "create_dataset_result"; payload: { ok: boolean; output_catalog?: string; selected_count?: number; logs?: string[]; error?: string } };
 
 const trainCommandEl = document.querySelector<HTMLInputElement>('[data-action="train-command"]');
 const generateCommandEl = document.querySelector<HTMLInputElement>('[data-action="generate-command"]');
@@ -350,9 +357,59 @@ const generateStartBtn = document.querySelector<HTMLButtonElement>('[data-action
 const generateStopBtn = document.querySelector<HTMLButtonElement>('[data-action="generate-stop"]');
 const trainLogEl = document.querySelector<HTMLPreElement>('[data-action="train-log"]');
 const generateLogEl = document.querySelector<HTMLPreElement>('[data-action="generate-log"]');
+const datasetListFileEl = document.querySelector<HTMLInputElement>('[data-action="dataset-list-file"]');
+const quotaCategoryEl = document.querySelector<HTMLSelectElement>('[data-action="quota-category"]');
+const quotaSourceEl = document.querySelector<HTMLInputElement>('[data-action="quota-source"]');
+const quotaCountEl = document.querySelector<HTMLInputElement>('[data-action="quota-count"]');
+const shuffleCategoriesEl = document.querySelector<HTMLInputElement>('[data-action="shuffle-categories"]');
+const addQuotaRowBtn = document.querySelector<HTMLButtonElement>('[data-action="add-quota-row"]');
+const removeQuotaRowBtn = document.querySelector<HTMLButtonElement>('[data-action="remove-quota-row"]');
+const quotaTableBodyEl = document.querySelector<HTMLTableSectionElement>('[data-action="quota-table-body"]');
+const outputCatalogEl = document.querySelector<HTMLInputElement>('[data-action="output-catalog"]');
+const createDatasetListBtn = document.querySelector<HTMLButtonElement>('[data-action="create-dataset-list"]');
+const configStatusEl = document.querySelector<HTMLParagraphElement>('[data-action="config-status"]');
 
 let ws: WebSocket | null = null;
 let activeScope: RunScope | null = null;
+
+function setConfigStatus(message: string) {
+  if (configStatusEl) configStatusEl.textContent = message;
+}
+
+function getSelectedQuotaRow(): HTMLTableRowElement | null {
+  return quotaTableBodyEl?.querySelector<HTMLTableRowElement>('tr[data-action="quota-row"].is-selected') ?? null;
+}
+
+function clearQuotaRowSelection() {
+  quotaTableBodyEl?.querySelectorAll<HTMLTableRowElement>('tr[data-action="quota-row"]').forEach((row) => {
+    row.classList.remove("is-selected");
+  });
+}
+
+function addQuotaRow(quota: DatasetCategoryQuota) {
+  if (!quotaTableBodyEl) return;
+  const row = document.createElement("tr");
+  row.dataset.action = "quota-row";
+  row.dataset.category = quota.category;
+  row.dataset.source = quota.source;
+  row.dataset.count = String(quota.count);
+  row.innerHTML = `<td>${quota.category}</td><td>${quota.source}</td><td>${quota.count}</td>`;
+  row.addEventListener("click", () => {
+    const alreadySelected = row.classList.contains("is-selected");
+    clearQuotaRowSelection();
+    if (!alreadySelected) row.classList.add("is-selected");
+  });
+  quotaTableBodyEl.appendChild(row);
+}
+
+function collectCategoryQuotas(): DatasetCategoryQuota[] {
+  const rows = quotaTableBodyEl?.querySelectorAll<HTMLTableRowElement>('tr[data-action="quota-row"]') ?? [];
+  return Array.from(rows).map((row) => ({
+    category: row.dataset.category ?? "",
+    source: row.dataset.source ?? "",
+    count: Number(row.dataset.count ?? "0"),
+  }));
+}
 
 function appendLog(scope: RunScope, line: string) {
   const target = scope === "train" ? trainLogEl : generateLogEl;
@@ -394,14 +451,31 @@ function ensureWs(): WebSocket {
   });
 
   ws.addEventListener("message", (event) => {
-    if (!activeScope) return;
     let msg: WsMessage;
     try {
       msg = JSON.parse(String(event.data)) as WsMessage;
     } catch {
+      if (!activeScope) return;
       appendLog(activeScope, `[web] Invalid backend message: ${String(event.data)}`);
       return;
     }
+
+    if (msg.type === "create_dataset_result") {
+      if (msg.payload.logs?.length) {
+        setConfigStatus(msg.payload.logs.join(" | "));
+      }
+      if (msg.payload.ok && msg.payload.output_catalog) {
+        if (outputCatalogEl) outputCatalogEl.value = msg.payload.output_catalog;
+        if (datasetListFileEl) datasetListFileEl.value = msg.payload.output_catalog;
+        const selectedCount = msg.payload.selected_count ?? 0;
+        setConfigStatus(`Created dataset list with ${selectedCount} accessions at ${msg.payload.output_catalog}.`);
+      } else {
+        setConfigStatus(`Failed to create dataset list: ${msg.payload.error ?? "unknown error"}`);
+      }
+      return;
+    }
+
+    if (!activeScope) return;
 
     if (msg.type === "log") {
       appendLog(activeScope, msg.message);
@@ -475,3 +549,61 @@ trainStartBtn?.addEventListener("click", () => startRun("train", trainCommandEl?
 trainStopBtn?.addEventListener("click", () => stopRun("train"));
 generateStartBtn?.addEventListener("click", () => startRun("generate", generateCommandEl?.value ?? ""));
 generateStopBtn?.addEventListener("click", () => stopRun("generate"));
+
+addQuotaRowBtn?.addEventListener("click", () => {
+  const category = quotaCategoryEl?.value?.trim() ?? "";
+  const source = quotaSourceEl?.value?.trim() ?? "";
+  const count = Number(quotaCountEl?.value ?? "0");
+  if (!category || !source || !Number.isFinite(count) || count <= 0) {
+    setConfigStatus("Please provide category, source catalog, and count > 0 before adding a quota row.");
+    return;
+  }
+  addQuotaRow({ category, source, count: Math.trunc(count) });
+  setConfigStatus(`Added quota row for ${category}.`);
+});
+
+removeQuotaRowBtn?.addEventListener("click", () => {
+  const selected = getSelectedQuotaRow();
+  if (!selected) {
+    setConfigStatus("Select a quota row to remove.");
+    return;
+  }
+  selected.remove();
+  setConfigStatus("Removed selected quota row.");
+});
+
+createDatasetListBtn?.addEventListener("click", () => {
+  const socket = ensureWs();
+  const categoryQuotas = collectCategoryQuotas();
+  if (!categoryQuotas.length) {
+    setConfigStatus("Add at least one category quota row before creating a dataset list.");
+    return;
+  }
+  const outputCatalog = outputCatalogEl?.value?.trim() ?? "";
+  if (!outputCatalog) {
+    setConfigStatus("Output catalog path is required.");
+    return;
+  }
+
+  const send = () => {
+    socket.send(JSON.stringify({
+      type: "create_dataset",
+      payload: {
+        category_quotas: categoryQuotas,
+        selected_category_sources: categoryQuotas.map((quota) => ({
+          category: quota.category,
+          source: quota.source,
+        })),
+        shuffle_within_category: Boolean(shuffleCategoriesEl?.checked),
+        output_catalog: outputCatalog,
+      },
+    }));
+    setConfigStatus("Creating dataset list...");
+  };
+
+  if (socket.readyState === WebSocket.OPEN) {
+    send();
+  } else {
+    socket.addEventListener("open", send, { once: true });
+  }
+});
