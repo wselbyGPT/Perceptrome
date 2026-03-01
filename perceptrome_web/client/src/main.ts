@@ -280,7 +280,7 @@ app.innerHTML = `
           <section class="panel">
             <div class="panel-header-row">
               <h2 class="panel-title">History</h2>
-              <button class="btn btn-secondary" type="button">Clear history</button>
+              <button class="btn btn-secondary" type="button" data-action="clear-history">Clear history</button>
             </div>
 
             <div class="table-wrapper">
@@ -292,7 +292,7 @@ app.innerHTML = `
                     <th>Details</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody data-action="history-table-body">
                   <!-- Empty, matches Qt screenshot -->
                 </tbody>
               </table>
@@ -342,6 +342,13 @@ if (goTrainBtn) {
 
 type RunScope = "train" | "generate";
 type DatasetCategoryQuota = { category: string; source: string; count: number };
+type HistoryAction = "start" | "stop" | "success" | "failure" | "dataset-create" | "view-generate";
+type HistoryEntry = { time: string; action: HistoryAction; details: string };
+type PersistedState = {
+  config: Record<string, string | boolean>;
+  categoryQuotas: DatasetCategoryQuota[];
+  history: HistoryEntry[];
+};
 
 type WsMessage =
   | { type: "status"; status: "pending" | "running" | "done" | "error"; progress?: number | null }
@@ -379,6 +386,26 @@ const viewTitleEl = document.querySelector<HTMLInputElement>('[data-action="view
 const viewGenerateBtn = document.querySelector<HTMLButtonElement>('[data-action="view-generate-pdf"]');
 const viewOpenBtn = document.querySelector<HTMLButtonElement>('[data-action="view-open-pdf"]');
 const viewLogEl = document.querySelector<HTMLPreElement>('[data-action="view-log"]');
+const historyTableBodyEl = document.querySelector<HTMLTableSectionElement>('[data-action="history-table-body"]');
+const clearHistoryBtn = document.querySelector<HTMLButtonElement>('[data-action="clear-history"]');
+
+const STORAGE_KEY = "perceptrome.web.state.v1";
+const PERSISTED_FIELDS: Record<string, HTMLInputElement | HTMLSelectElement | null> = {
+  datasetListFile: datasetListFileEl,
+  quotaCategory: quotaCategoryEl,
+  quotaSource: quotaSourceEl,
+  quotaCount: quotaCountEl,
+  shuffleCategories: shuffleCategoriesEl,
+  outputCatalog: outputCatalogEl,
+  trainCommand: trainCommandEl,
+  generateCommand: generateCommandEl,
+  viewAccession: viewAccessionEl,
+  viewFastaPath: viewFastaPathEl,
+  viewRenderMode: viewRenderModeEl,
+  viewOutputPath: viewOutputPathEl,
+  viewTitle: viewTitleEl,
+};
+const historyEntries: HistoryEntry[] = [];
 
 let ws: WebSocket | null = null;
 let activeScope: RunScope | null = null;
@@ -386,6 +413,83 @@ let generatedPdfUrl: string | null = null;
 
 function setConfigStatus(message: string) {
   if (configStatusEl) configStatusEl.textContent = message;
+}
+
+function persistState() {
+  const config: PersistedState["config"] = {};
+  Object.entries(PERSISTED_FIELDS).forEach(([key, el]) => {
+    if (!el) return;
+    if (el instanceof HTMLInputElement && el.type === "checkbox") {
+      config[key] = el.checked;
+      return;
+    }
+    config[key] = el.value;
+  });
+
+  const state: PersistedState = {
+    config,
+    categoryQuotas: collectCategoryQuotas(),
+    history: historyEntries,
+  };
+
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+function appendHistoryRow(entry: HistoryEntry) {
+  if (!historyTableBodyEl) return;
+  const row = document.createElement("tr");
+  row.innerHTML = `<td>${entry.time}</td><td>${entry.action}</td><td>${entry.details}</td>`;
+  historyTableBodyEl.appendChild(row);
+}
+
+function addHistoryEvent(action: HistoryAction, details: string) {
+  const entry: HistoryEntry = {
+    time: new Date().toLocaleString(),
+    action,
+    details,
+  };
+  historyEntries.push(entry);
+  appendHistoryRow(entry);
+  persistState();
+}
+
+function hydrateState() {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (!raw) {
+    setConfigStatus("No saved config found.");
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<PersistedState>;
+    const config = parsed.config ?? {};
+
+    Object.entries(PERSISTED_FIELDS).forEach(([key, el]) => {
+      if (!el) return;
+      const value = config[key];
+      if (value === undefined) return;
+      if (el instanceof HTMLInputElement && el.type === "checkbox") {
+        el.checked = Boolean(value);
+      } else {
+        el.value = String(value);
+      }
+    });
+
+    if (quotaTableBodyEl) {
+      quotaTableBodyEl.innerHTML = "";
+      (parsed.categoryQuotas ?? []).forEach((quota) => addQuotaRow(quota));
+    }
+
+    if (historyTableBodyEl) {
+      historyTableBodyEl.innerHTML = "";
+    }
+    historyEntries.splice(0, historyEntries.length, ...((parsed.history ?? []) as HistoryEntry[]));
+    historyEntries.forEach((entry) => appendHistoryRow(entry));
+
+    setConfigStatus("Loaded saved config.");
+  } catch {
+    setConfigStatus("Saved config could not be loaded.");
+  }
 }
 
 function getSelectedQuotaRow(): HTMLTableRowElement | null {
@@ -412,6 +516,7 @@ function addQuotaRow(quota: DatasetCategoryQuota) {
     if (!alreadySelected) row.classList.add("is-selected");
   });
   quotaTableBodyEl.appendChild(row);
+  persistState();
 }
 
 function collectCategoryQuotas(): DatasetCategoryQuota[] {
@@ -493,9 +598,12 @@ function ensureWs(): WebSocket {
         if (datasetListFileEl) datasetListFileEl.value = msg.payload.output_catalog;
         const selectedCount = msg.payload.selected_count ?? 0;
         setConfigStatus(`Created dataset list with ${selectedCount} accessions at ${msg.payload.output_catalog}.`);
+        addHistoryEvent("dataset-create", `Created ${msg.payload.output_catalog} (${selectedCount} accessions)`);
       } else {
         setConfigStatus(`Failed to create dataset list: ${msg.payload.error ?? "unknown error"}`);
+        addHistoryEvent("failure", `Dataset create failed: ${msg.payload.error ?? "unknown error"}`);
       }
+      persistState();
       return;
     }
 
@@ -522,11 +630,14 @@ function ensureWs(): WebSocket {
           viewOutputPathEl.value = msg.payload.output_path;
         }
         appendViewLog(`[web] ${msg.payload.status ?? "PDF generated."}`);
+        addHistoryEvent("view-generate", `Generated ${msg.payload.output_path ?? "PDF"}`);
       } else {
         generatedPdfUrl = null;
         setViewOpenState(false);
         appendViewLog(`[web] ERROR: ${msg.payload.error ?? "Failed to generate PDF."}`);
+        addHistoryEvent("failure", `View generate failed: ${msg.payload.error ?? "unknown error"}`);
       }
+      persistState();
       return;
     }
 
@@ -539,6 +650,8 @@ function ensureWs(): WebSocket {
 
     if (msg.type === "status") {
       if (msg.status === "done" || msg.status === "error" || msg.status === "pending") {
+        if (msg.status === "done") addHistoryEvent("success", `${activeScope}: run completed`);
+        if (msg.status === "error") addHistoryEvent("failure", `${activeScope}: run failed`);
         setRunState(activeScope, false);
         activeScope = null;
       }
@@ -568,6 +681,7 @@ function startRun(scope: RunScope, command: string) {
   activeScope = scope;
   setRunState(scope, true);
   appendLog(scope, `[web] Starting: ${command}`);
+  addHistoryEvent("start", `${scope}: ${command}`);
 
   const send = () => {
     socket.send(
@@ -598,6 +712,7 @@ function stopRun(scope: RunScope) {
 
   ws.send(JSON.stringify({ type: "stop_run" }));
   appendLog(scope, "[web] Stop requested.");
+  addHistoryEvent("stop", `${scope}: stop requested`);
 }
 
 trainStartBtn?.addEventListener("click", () => startRun("train", trainCommandEl?.value ?? ""));
@@ -615,6 +730,7 @@ addQuotaRowBtn?.addEventListener("click", () => {
   }
   addQuotaRow({ category, source, count: Math.trunc(count) });
   setConfigStatus(`Added quota row for ${category}.`);
+  persistState();
 });
 
 function generateViewPdf() {
@@ -661,6 +777,7 @@ viewRenderModeEl?.addEventListener("change", () => {
   if (viewOutputPathEl && defaults.has(output)) {
     viewOutputPathEl.value = mode === "linear" ? "generated/linear_genome.pdf" : "generated/circular_genome.pdf";
   }
+  persistState();
 });
 
 viewGenerateBtn?.addEventListener("click", generateViewPdf);
@@ -674,6 +791,7 @@ removeQuotaRowBtn?.addEventListener("click", () => {
   }
   selected.remove();
   setConfigStatus("Removed selected quota row.");
+  persistState();
 });
 
 createDatasetListBtn?.addEventListener("click", () => {
@@ -711,3 +829,19 @@ createDatasetListBtn?.addEventListener("click", () => {
     socket.addEventListener("open", send, { once: true });
   }
 });
+
+
+clearHistoryBtn?.addEventListener("click", () => {
+  historyEntries.length = 0;
+  if (historyTableBodyEl) historyTableBodyEl.innerHTML = "";
+  persistState();
+  setConfigStatus("History cleared.");
+});
+
+Object.values(PERSISTED_FIELDS).forEach((el) => {
+  if (!el) return;
+  const eventName = el instanceof HTMLInputElement && el.type === "checkbox" ? "change" : "input";
+  el.addEventListener(eventName, () => persistState());
+});
+
+hydrateState();
