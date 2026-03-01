@@ -27,29 +27,16 @@ From repository root:
 
 ```bash
 chmod +x infra/aws/*.sh
+cd infra/aws
+cp .env.example .env
+$EDITOR .env
+set -a; source .env; set +a
+cd ../..
 ```
 
 Launch an EC2 instance:
 
 ```bash
-export AWS_REGION=us-east-1
-export AMI_ID=ami-xxxxxxxxxxxxxxxxx          # Ubuntu 22.04/24.04 AMI in your region
-export INSTANCE_TYPE=t3.medium
-export KEY_NAME=my-keypair
-export SECURITY_GROUP_ID=sg-xxxxxxxxxxxxxxxxx
-export SUBNET_ID=subnet-xxxxxxxxxxxxxxxxx
-export IAM_INSTANCE_PROFILE=ec2-profile-name
-
-# Bootstrap customization used by ec2_bootstrap.sh as user-data:
-export REPO_URL=https://github.com/<your-org>/Perceptrome.git
-export REPO_BRANCH=main
-export DOMAIN_NAME=perceptrome.com
-
-# Optional Route53 settings:
-export HOSTED_ZONE_ID=Z1234567890ABC
-export RECORD_NAME=perceptrome.com
-export TTL=300
-
 ./infra/aws/provision_ec2.sh
 ```
 
@@ -77,6 +64,20 @@ Verify HTTP response:
 ```bash
 curl -I http://perceptrome.com
 ```
+
+
+## Environment file and secrets
+
+- Commit `infra/aws/.env.example`: it should contain only placeholders/defaults and non-sensitive identifiers.
+- Do **not** commit `infra/aws/.env`: this can contain account- or environment-specific values.
+- Treat these as sensitive and keep them out of git:
+  - `NCBI_API_KEY`
+  - `LETSENCRYPT_EMAIL`
+  - any private/internal values you add (for example private repo URLs or credentials)
+- Usually safe to commit as examples (but still environment-specific):
+  - `AWS_REGION`, `AMI_ID`, `INSTANCE_TYPE`
+  - `KEY_NAME`, `SECURITY_GROUP_ID`, `SUBNET_ID`, `HOSTED_ZONE_ID`, `RECORD_NAME`
+  - toggles/defaults like `ENABLE_TLS`, `APP_DIR`, `EC2_BOOTSTRAP_USER`
 
 ## Rollback
 
