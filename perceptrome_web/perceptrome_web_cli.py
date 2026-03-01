@@ -7,15 +7,150 @@ import os
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
+
+from perceptrome.config import extract_configs, load_full_config
+from perceptrome.encoding.parse import parse_fasta_sequence
+from perceptrome.ncbi_fetch import fetch_fasta
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QColor, QFont, QPainter, QPdfWriter, QPen, QPolygon
 
 from perceptrome.io_utils import read_catalog, select_unique_accessions, write_catalog
 
 ROOT_DIR = Path(__file__).resolve().parent
 DEFAULT_STATIC_DIR = ROOT_DIR / "client" / "dist"
 REPO_ROOT = ROOT_DIR.parent
+
+
+def _read_fasta_sequence(path: str) -> str:
+    seq = parse_fasta_sequence(path)
+    if not seq:
+        raise ValueError(f"No sequence found in FASTA: {path}")
+    return seq
+
+
+def _default_pdf_output_for_mode(mode: str) -> str:
+    return "generated/linear_genome.pdf" if mode.lower() == "linear" else "generated/circular_genome.pdf"
+
+
+def _default_title_for_mode(mode: str, source: str) -> str:
+    view_name = "Linear genome" if mode.lower() == "linear" else "Circular genome"
+    return f"{view_name} ({source})"
+
+
+def _write_circular_pdf(seq: str, output_path: str, title: str) -> None:
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    writer = QPdfWriter(output_path)
+    writer.setPageSize(QPdfWriter.PageSize.A4)
+    painter = QPainter(writer)
+    try:
+        rect = painter.viewport()
+        cx = rect.width() // 2
+        cy = rect.height() // 2
+        radius = min(rect.width(), rect.height()) // 3
+        gc_ratio = ((seq.count("G") + seq.count("C")) / max(1, len(seq)))
+
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(QPen(QColor("#2f3b45"), 10))
+        painter.drawEllipse(cx - radius, cy - radius, radius * 2, radius * 2)
+
+        arc_color = QColor("#20b2aa")
+        painter.setPen(QPen(arc_color, 10))
+        span = int(360 * 16 * gc_ratio)
+        painter.drawArc(cx - radius, cy - radius, radius * 2, radius * 2, 90 * 16, -span)
+
+        painter.setPen(QPen(QColor("#111111"), 1))
+        painter.setFont(QFont("Sans Serif", 14))
+        painter.drawText(cx - radius, cy - radius - 35, radius * 2, 30, Qt.AlignCenter, title)
+        painter.setFont(QFont("Sans Serif", 11))
+        painter.drawText(cx - radius, cy + radius + 15, radius * 2, 24, Qt.AlignCenter, f"Length: {len(seq):,} bp")
+        painter.drawText(cx - radius, cy + radius + 38, radius * 2, 24, Qt.AlignCenter, f"GC: {gc_ratio * 100:.2f}%")
+    finally:
+        painter.end()
+
+
+def _write_linear_pdf(seq: str, output_path: str, title: str) -> None:
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    writer = QPdfWriter(output_path)
+    writer.setPageSize(QPdfWriter.PageSize.A4)
+    painter = QPainter(writer)
+    try:
+        rect = painter.viewport()
+        left = int(rect.width() * 0.08)
+        top = rect.height() // 2
+        width = int(rect.width() * 0.84)
+        gc_ratio = ((seq.count("G") + seq.count("C")) / max(1, len(seq)))
+
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(QPen(QColor("#2f3b45"), 8))
+        painter.drawLine(left, top, left + width, top)
+
+        gc_width = int(width * gc_ratio)
+        painter.setPen(QPen(QColor("#20b2aa"), 8))
+        painter.drawLine(left, top, left + gc_width, top)
+
+        arrow = [
+            QPoint(left + width, top),
+            QPoint(left + width - 18, top - 12),
+            QPoint(left + width - 18, top + 12),
+        ]
+        painter.setBrush(QColor("#2f3b45"))
+        painter.drawPolygon(QPolygon(arrow))
+
+        painter.setPen(QPen(QColor("#111111"), 1))
+        painter.setFont(QFont("Sans Serif", 14))
+        painter.drawText(left, top - 70, width, 30, Qt.AlignCenter, title)
+        painter.setFont(QFont("Sans Serif", 11))
+        painter.drawText(left, top + 30, width, 24, Qt.AlignCenter, f"Length: {len(seq):,} bp")
+        painter.drawText(left, top + 53, width, 24, Qt.AlignCenter, f"GC: {gc_ratio * 100:.2f}%")
+    finally:
+        painter.end()
+
+
+async def _build_view_pdf(payload: dict[str, Any]) -> dict[str, Any]:
+    accession = str(payload.get("accession") or "").strip()
+    fasta_path = str(payload.get("fasta_path") or "").strip()
+    render_mode = str(payload.get("render_mode") or "circular").strip().lower()
+    output_path = str(payload.get("output_path") or "").strip()
+    title = str(payload.get("title") or "").strip()
+
+    if render_mode not in {"circular", "linear"}:
+        render_mode = "circular"
+
+    source = ""
+    if accession:
+        cfg = load_full_config("stream_config.yaml")
+        ncbi_cfg, _, io_cfg = extract_configs(cfg)
+        fasta_path = fetch_fasta(accession, io_cfg, ncbi_cfg, force=False)
+        source = f"accession {accession}"
+    elif fasta_path:
+        source = f"fasta {fasta_path}"
+    else:
+        raise ValueError("Provide a genome accession or FASTA path.")
+
+    resolved_fasta = (REPO_ROOT / fasta_path).resolve() if not os.path.isabs(fasta_path) else Path(fasta_path).resolve()
+    if not resolved_fasta.exists():
+        raise ValueError(f"FASTA path does not exist: {fasta_path}")
+
+    seq = _read_fasta_sequence(str(resolved_fasta))
+    final_output = output_path or _default_pdf_output_for_mode(render_mode)
+    output_file = (REPO_ROOT / final_output).resolve() if not os.path.isabs(final_output) else Path(final_output).resolve()
+    title = title or _default_title_for_mode(render_mode, source)
+
+    if render_mode == "linear":
+        await asyncio.to_thread(_write_linear_pdf, seq, str(output_file), title)
+    else:
+        await asyncio.to_thread(_write_circular_pdf, seq, str(output_file), title)
+
+    return {
+        "ok": True,
+        "status": f"Saved {render_mode} PDF -> {output_file}",
+        "output_path": str(output_file.relative_to(REPO_ROOT)) if output_file.is_relative_to(REPO_ROOT) else str(output_file),
+        "file_url": f"/generated-file?path={output_file}",
+    }
 
 
 def ensure_static_dir(static_dir: Path) -> Path:
@@ -159,6 +294,15 @@ def _build_dataset_catalog(payload: dict[str, Any]) -> dict[str, Any]:
 def create_app(static_dir: Path) -> FastAPI:
     app = FastAPI(title="Perceptrome Web")
 
+    @app.get("/generated-file")
+    async def generated_file(path: str = Query(..., description="Absolute or repo-relative file path")) -> FileResponse:
+        resolved = (REPO_ROOT / path).resolve() if not os.path.isabs(path) else Path(path).resolve()
+        if not resolved.exists() or not resolved.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
+        if not str(resolved).lower().endswith(".pdf"):
+            raise HTTPException(status_code=400, detail="Only PDF files are supported")
+        return FileResponse(path=resolved, media_type="application/pdf", filename=resolved.name)
+
     @app.websocket("/ws")
     async def perceptrome_ws(ws: WebSocket) -> None:
         await ws.accept()
@@ -252,6 +396,26 @@ def create_app(static_dir: Path) -> FastAPI:
                         continue
 
                     await ws.send_json({"type": "create_dataset_result", "payload": result})
+
+                elif msg_type == "view_generate_pdf":
+                    payload = data.get("payload")
+                    if not isinstance(payload, dict):
+                        await ws.send_json({"type": "view_result", "payload": {"ok": False, "error": "payload must be an object"}})
+                        continue
+
+                    await ws.send_json({"type": "view_status", "status": "running"})
+                    await ws.send_json({"type": "view_log", "message": "[view] Resolving genome source..."})
+                    try:
+                        result = await _build_view_pdf(payload)
+                    except Exception as exc:  # pylint: disable=broad-except
+                        await ws.send_json({"type": "view_log", "message": f"[view] ERROR: {exc}"})
+                        await ws.send_json({"type": "view_status", "status": "error"})
+                        await ws.send_json({"type": "view_result", "payload": {"ok": False, "error": str(exc)}})
+                        continue
+
+                    await ws.send_json({"type": "view_log", "message": result.get("status", "PDF generation complete.")})
+                    await ws.send_json({"type": "view_status", "status": "done"})
+                    await ws.send_json({"type": "view_result", "payload": result})
 
                 else:
                     await _send_log(ws, f"Error: unsupported message type {msg_type!r}")
