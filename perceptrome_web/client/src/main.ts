@@ -229,12 +229,12 @@ app.innerHTML = `
               <div class="form-grid">
                 <label class="field">
                   <span class="field-label">Genome accession:</span>
-                  <input class="field-input" type="text" placeholder="Example: NC_000913.3" />
+                  <input class="field-input" type="text" data-action="view-accession" placeholder="Example: NC_000913.3" />
                 </label>
 
                 <label class="field">
                   <span class="field-label">FASTA path:</span>
-                  <input class="field-input" type="text" value="generated/novel_plasmid.fasta" />
+                  <input class="field-input" type="text" data-action="view-fasta-path" value="generated/novel_plasmid.fasta" />
                 </label>
               </div>
             </section>
@@ -245,31 +245,31 @@ app.innerHTML = `
               <div class="form-grid form-grid--two">
                 <label class="field">
                   <span class="field-label">Render mode:</span>
-                  <select class="field-input">
-                    <option>Circular</option>
-                    <option>Linear</option>
+                  <select class="field-input" data-action="view-render-mode">
+                    <option value="circular">Circular</option>
+                    <option value="linear">Linear</option>
                   </select>
                 </label>
 
                 <label class="field">
                   <span class="field-label">Output PDF:</span>
-                  <input class="field-input" type="text" value="generated/circular_genome.pdf" />
+                  <input class="field-input" type="text" data-action="view-output-path" value="generated/circular_genome.pdf" />
                 </label>
 
                 <label class="field field--full">
                   <span class="field-label">Title:</span>
-                  <input class="field-input" type="text" placeholder="Optional title override" />
+                  <input class="field-input" type="text" data-action="view-title" placeholder="Optional title override" />
                 </label>
               </div>
 
               <div class="button-row">
-                <button class="btn" type="button">Generate PDF</button>
-                <button class="btn btn-secondary" type="button">Open PDF Window</button>
+                <button class="btn" type="button" data-action="view-generate-pdf">Generate PDF</button>
+                <button class="btn btn-secondary" type="button" data-action="view-open-pdf" disabled>Open / Download PDF</button>
               </div>
 
               <div class="log-area">
                 <div class="log-area__label">PDF generation status will appear here...</div>
-                <pre class="log-area__body"></pre>
+                <pre class="log-area__body" data-action="view-log"></pre>
               </div>
             </section>
           </div>
@@ -347,7 +347,10 @@ type WsMessage =
   | { type: "status"; status: "pending" | "running" | "done" | "error"; progress?: number | null }
   | { type: "log"; message: string }
   | { type: "result"; payload: { exit_code?: number; ok?: boolean; command?: string } }
-  | { type: "create_dataset_result"; payload: { ok: boolean; output_catalog?: string; selected_count?: number; logs?: string[]; error?: string } };
+  | { type: "create_dataset_result"; payload: { ok: boolean; output_catalog?: string; selected_count?: number; logs?: string[]; error?: string } }
+  | { type: "view_log"; message: string }
+  | { type: "view_status"; status: "pending" | "running" | "done" | "error" }
+  | { type: "view_result"; payload: { ok: boolean; output_path?: string; file_url?: string; status?: string; error?: string } };
 
 const trainCommandEl = document.querySelector<HTMLInputElement>('[data-action="train-command"]');
 const generateCommandEl = document.querySelector<HTMLInputElement>('[data-action="generate-command"]');
@@ -368,9 +371,18 @@ const quotaTableBodyEl = document.querySelector<HTMLTableSectionElement>('[data-
 const outputCatalogEl = document.querySelector<HTMLInputElement>('[data-action="output-catalog"]');
 const createDatasetListBtn = document.querySelector<HTMLButtonElement>('[data-action="create-dataset-list"]');
 const configStatusEl = document.querySelector<HTMLParagraphElement>('[data-action="config-status"]');
+const viewAccessionEl = document.querySelector<HTMLInputElement>('[data-action="view-accession"]');
+const viewFastaPathEl = document.querySelector<HTMLInputElement>('[data-action="view-fasta-path"]');
+const viewRenderModeEl = document.querySelector<HTMLSelectElement>('[data-action="view-render-mode"]');
+const viewOutputPathEl = document.querySelector<HTMLInputElement>('[data-action="view-output-path"]');
+const viewTitleEl = document.querySelector<HTMLInputElement>('[data-action="view-title"]');
+const viewGenerateBtn = document.querySelector<HTMLButtonElement>('[data-action="view-generate-pdf"]');
+const viewOpenBtn = document.querySelector<HTMLButtonElement>('[data-action="view-open-pdf"]');
+const viewLogEl = document.querySelector<HTMLPreElement>('[data-action="view-log"]');
 
 let ws: WebSocket | null = null;
 let activeScope: RunScope | null = null;
+let generatedPdfUrl: string | null = null;
 
 function setConfigStatus(message: string) {
   if (configStatusEl) configStatusEl.textContent = message;
@@ -418,6 +430,16 @@ function appendLog(scope: RunScope, line: string) {
   target.scrollTop = target.scrollHeight;
 }
 
+function appendViewLog(line: string) {
+  if (!viewLogEl) return;
+  viewLogEl.textContent += `${line}\n`;
+  viewLogEl.scrollTop = viewLogEl.scrollHeight;
+}
+
+function setViewOpenState(enabled: boolean) {
+  if (viewOpenBtn) viewOpenBtn.disabled = !enabled;
+}
+
 function setRunState(scope: RunScope, running: boolean) {
   if (scope === "train") {
     if (trainStartBtn) trainStartBtn.disabled = running;
@@ -439,11 +461,13 @@ function ensureWs(): WebSocket {
   ws.addEventListener("open", () => {
     appendLog("train", "[web] Connected to backend.");
     appendLog("generate", "[web] Connected to backend.");
+    appendViewLog("[web] Connected to backend.");
   });
 
   ws.addEventListener("close", () => {
     appendLog("train", "[web] Backend connection closed.");
     appendLog("generate", "[web] Backend connection closed.");
+    appendViewLog("[web] Backend connection closed.");
     if (activeScope) {
       setRunState(activeScope, false);
       activeScope = null;
@@ -471,6 +495,37 @@ function ensureWs(): WebSocket {
         setConfigStatus(`Created dataset list with ${selectedCount} accessions at ${msg.payload.output_catalog}.`);
       } else {
         setConfigStatus(`Failed to create dataset list: ${msg.payload.error ?? "unknown error"}`);
+      }
+      return;
+    }
+
+    if (msg.type === "view_log") {
+      appendViewLog(msg.message);
+      return;
+    }
+
+    if (msg.type === "view_status") {
+      if (msg.status === "pending" || msg.status === "done" || msg.status === "error") {
+        if (viewGenerateBtn) viewGenerateBtn.disabled = false;
+      } else if (viewGenerateBtn) {
+        viewGenerateBtn.disabled = true;
+      }
+      return;
+    }
+
+    if (msg.type === "view_result") {
+      if (viewGenerateBtn) viewGenerateBtn.disabled = false;
+      if (msg.payload.ok) {
+        generatedPdfUrl = msg.payload.file_url ?? null;
+        setViewOpenState(Boolean(generatedPdfUrl));
+        if (msg.payload.output_path && viewOutputPathEl) {
+          viewOutputPathEl.value = msg.payload.output_path;
+        }
+        appendViewLog(`[web] ${msg.payload.status ?? "PDF generated."}`);
+      } else {
+        generatedPdfUrl = null;
+        setViewOpenState(false);
+        appendViewLog(`[web] ERROR: ${msg.payload.error ?? "Failed to generate PDF."}`);
       }
       return;
     }
@@ -561,6 +616,55 @@ addQuotaRowBtn?.addEventListener("click", () => {
   addQuotaRow({ category, source, count: Math.trunc(count) });
   setConfigStatus(`Added quota row for ${category}.`);
 });
+
+function generateViewPdf() {
+  const socket = ensureWs();
+  const payload = {
+    accession: viewAccessionEl?.value?.trim() ?? "",
+    fasta_path: viewFastaPathEl?.value?.trim() ?? "",
+    render_mode: viewRenderModeEl?.value ?? "circular",
+    title: viewTitleEl?.value?.trim() ?? "",
+    output_path: viewOutputPathEl?.value?.trim() ?? "",
+  };
+
+  if (!payload.accession && !payload.fasta_path) {
+    appendViewLog("[web] ERROR: Provide either accession or FASTA path.");
+    return;
+  }
+
+  if (viewLogEl) viewLogEl.textContent = "";
+  generatedPdfUrl = null;
+  setViewOpenState(false);
+  if (viewGenerateBtn) viewGenerateBtn.disabled = true;
+
+  const send = () => {
+    socket.send(JSON.stringify({ type: "view_generate_pdf", payload }));
+    appendViewLog("[web] View PDF generation requested.");
+  };
+
+  if (socket.readyState === WebSocket.OPEN) send();
+  else socket.addEventListener("open", send, { once: true });
+}
+
+function openGeneratedPdf() {
+  if (!generatedPdfUrl) {
+    appendViewLog("[web] No generated PDF available yet.");
+    return;
+  }
+  window.open(generatedPdfUrl, "_blank", "noopener");
+}
+
+viewRenderModeEl?.addEventListener("change", () => {
+  const mode = viewRenderModeEl.value;
+  const output = viewOutputPathEl?.value?.trim() ?? "";
+  const defaults = new Set(["generated/circular_genome.pdf", "generated/linear_genome.pdf", ""]);
+  if (viewOutputPathEl && defaults.has(output)) {
+    viewOutputPathEl.value = mode === "linear" ? "generated/linear_genome.pdf" : "generated/circular_genome.pdf";
+  }
+});
+
+viewGenerateBtn?.addEventListener("click", generateViewPdf);
+viewOpenBtn?.addEventListener("click", openGeneratedPdf);
 
 removeQuotaRowBtn?.addEventListener("click", () => {
   const selected = getSelectedQuotaRow();
