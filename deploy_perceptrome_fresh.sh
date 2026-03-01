@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 ########################################
 # Perceptrome fresh-server deploy script
-# Ubuntu + Nginx + Vite static frontend
+# Ubuntu + systemd backend + Nginx proxy
 ########################################
 
 # ====== CONFIG (edit if needed) ======
@@ -19,11 +19,16 @@ APP_HOME="$(eval echo "~${APP_USER}")"
 REPO_DIR="${REPO_DIR:-${APP_HOME}/Perceptrome}"
 CLIENT_REL_PATH="${CLIENT_REL_PATH:-perceptrome_web/client}"
 CLIENT_DIR="${REPO_DIR}/${CLIENT_REL_PATH}"
+BACKEND_REL_PATH="${BACKEND_REL_PATH:-perceptrome_web/perceptrome_web_cli.py}"
 
-WEB_ROOT="${WEB_ROOT:-/var/www/perceptrome}"
 NGINX_SITE_NAME="${NGINX_SITE_NAME:-perceptrome}"
 NGINX_SITE_FILE="/etc/nginx/sites-available/${NGINX_SITE_NAME}"
 NGINX_SITE_LINK="/etc/nginx/sites-enabled/${NGINX_SITE_NAME}"
+SERVICE_NAME="${SERVICE_NAME:-perceptrome-web}"
+SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+APP_PORT="${APP_PORT:-8000}"
+WEB_HOST="${WEB_HOST:-127.0.0.1}"
+WEB_ARGS="${WEB_ARGS:---host ${WEB_HOST} --port ${APP_PORT}}"
 
 # ====== helpers ======
 log()  { echo -e "\n\033[1;36m==>\033[0m $*"; }
@@ -67,8 +72,9 @@ sudo apt-get install -y \
   curl \
   git \
   gnupg \
-  rsync \
-  nginx
+  nginx \
+  python3-venv \
+  python3-pip
 
 # ====== Node.js (Vite 7 requires newer Node) ======
 need_node_install=false
@@ -151,14 +157,46 @@ fi
 
 popd >/dev/null
 
-# ====== deploy static files ======
-log "Deploying built files to ${WEB_ROOT}"
-sudo mkdir -p "${WEB_ROOT}"
-sudo rsync -a --delete "${CLIENT_DIR}/dist/" "${WEB_ROOT}/"
+# ====== python backend ======
+if [[ ! -f "${REPO_DIR}/${BACKEND_REL_PATH}" ]]; then
+  err "Backend entrypoint not found: ${REPO_DIR}/${BACKEND_REL_PATH}"
+  exit 1
+fi
 
-# Ensure readable by nginx
-sudo find "${WEB_ROOT}" -type d -exec chmod 755 {} \;
-sudo find "${WEB_ROOT}" -type f -exec chmod 644 {} \;
+log "Creating/updating Python virtual environment"
+sudo -u "${APP_USER}" python3 -m venv "${REPO_DIR}/.venv"
+sudo -u "${APP_USER}" "${REPO_DIR}/.venv/bin/pip" install --upgrade pip
+sudo -u "${APP_USER}" "${REPO_DIR}/.venv/bin/pip" install -r "${REPO_DIR}/requirements.txt"
+sudo -u "${APP_USER}" "${REPO_DIR}/.venv/bin/pip" install -e "${REPO_DIR}"
+
+log "Writing systemd service: ${SERVICE_FILE}"
+sudo tee "${SERVICE_FILE}" >/dev/null <<EOF
+[Unit]
+Description=Perceptrome Web Service
+After=network.target
+
+[Service]
+Type=simple
+User=${APP_USER}
+Group=${APP_USER}
+WorkingDirectory=${REPO_DIR}
+Environment=PATH=${REPO_DIR}/.venv/bin
+ExecStart=${REPO_DIR}/.venv/bin/python ${REPO_DIR}/${BACKEND_REL_PATH} ${WEB_ARGS}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now "${SERVICE_NAME}"
+sudo systemctl restart "${SERVICE_NAME}"
+sudo systemctl is-active --quiet "${SERVICE_NAME}" || {
+  err "Systemd service ${SERVICE_NAME} is not active"
+  sudo systemctl status "${SERVICE_NAME}" --no-pager || true
+  exit 1
+}
 
 # ====== nginx site config ======
 log "Writing Nginx site config: ${NGINX_SITE_FILE}"
@@ -170,19 +208,26 @@ server {
 
     server_name ${DOMAIN} ${WWW_DOMAIN};
 
-    root ${WEB_ROOT};
-    index index.html;
-
-    # SPA routing (Vite/React)
-    location / {
-        try_files \$uri \$uri/ /index.html;
+    location /ws {
+        proxy_pass http://127.0.0.1:${APP_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
-    # Static hashed assets
-    location /assets/ {
-        try_files \$uri =404;
-        expires 1y;
-        add_header Cache-Control "public, immutable";
+    location / {
+        proxy_pass http://127.0.0.1:${APP_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
 EOF
@@ -204,8 +249,17 @@ sudo systemctl restart nginx
 
 # ====== local smoke test ======
 log "Running local smoke test"
+BACKEND_STATUS="$(curl -s -o /tmp/perceptrome_backend_smoke.html -w "%{http_code}" "http://127.0.0.1:${APP_PORT}/")" || true
+echo "Backend HTTP status: ${BACKEND_STATUS}"
+
+if [[ "${BACKEND_STATUS}" != "200" ]]; then
+  warn "Expected backend 200 but got ${BACKEND_STATUS}. Showing first lines of response:"
+  head -40 /tmp/perceptrome_backend_smoke.html || true
+  exit 1
+fi
+
 HTTP_STATUS="$(curl -s -o /tmp/perceptrome_smoke.html -w "%{http_code}" http://127.0.0.1 -H "Host: ${DOMAIN}")" || true
-echo "HTTP status: ${HTTP_STATUS}"
+echo "Nginx HTTP status: ${HTTP_STATUS}"
 
 if [[ "${HTTP_STATUS}" != "200" ]]; then
   warn "Expected 200 but got ${HTTP_STATUS}. Showing first lines of response:"
@@ -216,8 +270,8 @@ fi
 echo
 echo "✅ Deploy complete"
 echo "Domain: http://${DOMAIN}"
-echo "Web root: ${WEB_ROOT}"
 echo "Repo: ${REPO_DIR}"
+echo "Backend: ${SERVICE_NAME} (127.0.0.1:${APP_PORT})"
 echo
 echo "Next recommended step (HTTPS):"
 echo "  sudo apt-get install -y certbot python3-certbot-nginx"
