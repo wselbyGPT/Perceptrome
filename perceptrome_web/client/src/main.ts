@@ -27,12 +27,12 @@ app.innerHTML = `
               <div class="form-grid">
                 <label class="field">
                   <span class="field-label">Project dir:</span>
-                  <input class="field-input" type="text" value="." />
+                  <input class="field-input" type="text" data-action="project-dir" value="." />
                 </label>
 
                 <label class="field">
                   <span class="field-label">stream_config.yaml:</span>
-                  <input class="field-input" type="text" value="stream_config.yaml" />
+                  <input class="field-input" type="text" data-action="stream-config" value="stream_config.yaml" />
                 </label>
 
                 <label class="field">
@@ -42,17 +42,17 @@ app.innerHTML = `
 
                 <label class="field">
                   <span class="field-label">Epochs:</span>
-                  <input class="field-input" type="number" value="10" />
+                  <input class="field-input" type="number" data-action="epochs" value="10" />
                 </label>
 
                 <label class="field">
                   <span class="field-label">Batch size:</span>
-                  <input class="field-input" type="number" value="256" />
+                  <input class="field-input" type="number" data-action="batch-size" value="256" />
                 </label>
 
                 <label class="field">
                   <span class="field-label">Learning rate:</span>
-                  <input class="field-input" type="number" step="0.000001" value="0.001" />
+                  <input class="field-input" type="number" step="0.000001" data-action="learning-rate" value="0.001" />
                 </label>
               </div>
             </section>
@@ -135,7 +135,7 @@ app.innerHTML = `
             <div class="form-grid">
               <label class="field">
                 <span class="field-label">Neural network:</span>
-                <select class="field-input">
+                <select class="field-input" data-action="train-model-type">
                   <option>mlp</option>
                   <option>cnn</option>
                   <option>transformer</option>
@@ -154,13 +154,13 @@ app.innerHTML = `
             </div>
 
             <div class="button-row">
-              <button class="btn btn-secondary" type="button">Help</button>
-              <button class="btn btn-secondary" type="button">Build command</button>
+              <button class="btn btn-secondary" type="button" data-action="train-help">Help</button>
+              <button class="btn btn-secondary" type="button" data-action="train-build-command">Build command</button>
               <button class="btn" type="button" data-action="train-start">Start</button>
               <button class="btn btn-danger" type="button" data-action="train-stop" disabled>Stop</button>
             </div>
 
-            <div class="progress-bar">
+            <div class="progress-bar" data-action="train-progress">
               <div class="progress-bar__track">
                 <div class="progress-bar__value" style="width: 0%;"></div>
               </div>
@@ -182,9 +182,19 @@ app.innerHTML = `
             <div class="form-grid">
               <label class="field">
                 <span class="field-label">Trained model:</span>
-                <select class="field-input">
+                <select class="field-input" data-action="generate-model">
                   <option>model/checkpoints/latest.pt</option>
                 </select>
+              </label>
+
+              <label class="field">
+                <span class="field-label">Length (bp):</span>
+                <input class="field-input" type="number" data-action="generate-length" value="10000" />
+              </label>
+
+              <label class="field">
+                <span class="field-label">Output FASTA:</span>
+                <input class="field-input" type="text" data-action="generate-output" value="generated/novel_plasmid.fasta" />
               </label>
 
               <label class="field field--full">
@@ -199,14 +209,14 @@ app.innerHTML = `
             </div>
 
             <div class="button-row">
-              <button class="btn btn-secondary" type="button">Help</button>
-              <button class="btn btn-secondary" type="button">Refresh models</button>
-              <button class="btn btn-secondary" type="button">Build command</button>
+              <button class="btn btn-secondary" type="button" data-action="generate-help">Help</button>
+              <button class="btn btn-secondary" type="button" data-action="generate-refresh-models">Refresh models</button>
+              <button class="btn btn-secondary" type="button" data-action="generate-build-command">Build command</button>
               <button class="btn" type="button" data-action="generate-start">Start</button>
               <button class="btn btn-danger" type="button" data-action="generate-stop" disabled>Stop</button>
             </div>
 
-            <div class="progress-bar">
+            <div class="progress-bar" data-action="generate-progress">
               <div class="progress-bar__track">
                 <div class="progress-bar__value" style="width: 0%;"></div>
               </div>
@@ -353,7 +363,8 @@ type PersistedState = {
 type WsMessage =
   | { type: "status"; status: "pending" | "running" | "done" | "error"; progress?: number | null }
   | { type: "log"; message: string }
-  | { type: "result"; payload: { exit_code?: number; ok?: boolean; command?: string } }
+  | { type: "result"; payload: { exit_code?: number; ok?: boolean; command?: string; output_paths?: string[] } }
+  | { type: "model_list"; payload: { ok: boolean; checkpoints: string[]; error?: string } }
   | { type: "create_dataset_result"; payload: { ok: boolean; output_catalog?: string; selected_count?: number; logs?: string[]; error?: string } }
   | { type: "view_log"; message: string }
   | { type: "view_status"; status: "pending" | "running" | "done" | "error" }
@@ -361,12 +372,30 @@ type WsMessage =
 
 const trainCommandEl = document.querySelector<HTMLInputElement>('[data-action="train-command"]');
 const generateCommandEl = document.querySelector<HTMLInputElement>('[data-action="generate-command"]');
+const projectDirEl = document.querySelector<HTMLInputElement>('[data-action="project-dir"]');
+const streamConfigEl = document.querySelector<HTMLInputElement>('[data-action="stream-config"]');
+const epochsEl = document.querySelector<HTMLInputElement>('[data-action="epochs"]');
+const batchSizeEl = document.querySelector<HTMLInputElement>('[data-action="batch-size"]');
+const learningRateEl = document.querySelector<HTMLInputElement>('[data-action="learning-rate"]');
+const trainModelTypeEl = document.querySelector<HTMLSelectElement>('[data-action="train-model-type"]');
+const trainHelpBtn = document.querySelector<HTMLButtonElement>('[data-action="train-help"]');
+const trainBuildCommandBtn = document.querySelector<HTMLButtonElement>('[data-action="train-build-command"]');
 const trainStartBtn = document.querySelector<HTMLButtonElement>('[data-action="train-start"]');
 const trainStopBtn = document.querySelector<HTMLButtonElement>('[data-action="train-stop"]');
+const generateHelpBtn = document.querySelector<HTMLButtonElement>('[data-action="generate-help"]');
+const generateRefreshModelsBtn = document.querySelector<HTMLButtonElement>('[data-action="generate-refresh-models"]');
+const generateBuildCommandBtn = document.querySelector<HTMLButtonElement>('[data-action="generate-build-command"]');
+const generateModelEl = document.querySelector<HTMLSelectElement>('[data-action="generate-model"]');
+const generateLengthEl = document.querySelector<HTMLInputElement>('[data-action="generate-length"]');
+const generateOutputEl = document.querySelector<HTMLInputElement>('[data-action="generate-output"]');
 const generateStartBtn = document.querySelector<HTMLButtonElement>('[data-action="generate-start"]');
 const generateStopBtn = document.querySelector<HTMLButtonElement>('[data-action="generate-stop"]');
 const trainLogEl = document.querySelector<HTMLPreElement>('[data-action="train-log"]');
 const generateLogEl = document.querySelector<HTMLPreElement>('[data-action="generate-log"]');
+const trainProgressBarEl = document.querySelector<HTMLElement>('[data-action="train-progress"] .progress-bar__value');
+const trainProgressLabelEl = document.querySelector<HTMLElement>('[data-action="train-progress"] .progress-bar__label');
+const generateProgressBarEl = document.querySelector<HTMLElement>('[data-action="generate-progress"] .progress-bar__value');
+const generateProgressLabelEl = document.querySelector<HTMLElement>('[data-action="generate-progress"] .progress-bar__label');
 const datasetListFileEl = document.querySelector<HTMLInputElement>('[data-action="dataset-list-file"]');
 const quotaCategoryEl = document.querySelector<HTMLSelectElement>('[data-action="quota-category"]');
 const quotaSourceEl = document.querySelector<HTMLInputElement>('[data-action="quota-source"]');
@@ -397,6 +426,15 @@ const PERSISTED_FIELDS: Record<string, HTMLInputElement | HTMLSelectElement | nu
   quotaCount: quotaCountEl,
   shuffleCategories: shuffleCategoriesEl,
   outputCatalog: outputCatalogEl,
+  projectDir: projectDirEl,
+  streamConfig: streamConfigEl,
+  epochs: epochsEl,
+  batchSize: batchSizeEl,
+  learningRate: learningRateEl,
+  trainModelType: trainModelTypeEl,
+  generateModel: generateModelEl,
+  generateLength: generateLengthEl,
+  generateOutput: generateOutputEl,
   trainCommand: trainCommandEl,
   generateCommand: generateCommandEl,
   viewAccession: viewAccessionEl,
@@ -410,6 +448,93 @@ const historyEntries: HistoryEntry[] = [];
 let ws: WebSocket | null = null;
 let activeScope: RunScope | null = null;
 let generatedPdfUrl: string | null = null;
+
+
+function clampProgress(value: number | null | undefined): number {
+  if (typeof value !== "number" || Number.isNaN(value)) return 0;
+  return Math.max(0, Math.min(1, value));
+}
+
+function setProgress(scope: RunScope, progress: number | null | undefined) {
+  const ratio = clampProgress(progress);
+  const pct = `${Math.round(ratio * 100)}%`;
+  const bar = scope === "train" ? trainProgressBarEl : generateProgressBarEl;
+  const label = scope === "train" ? trainProgressLabelEl : generateProgressLabelEl;
+  if (bar) bar.style.width = pct;
+  if (label) label.textContent = pct;
+}
+
+function shellEscape(value: string): string {
+  if (!value) return "''";
+  if (/^[a-zA-Z0-9_./:-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'\''`)}'`;
+}
+
+function buildTrainCommand(): string {
+  const config = streamConfigEl?.value?.trim() || "stream_config.yaml";
+  const catalog = datasetListFileEl?.value?.trim() || "config/plasmids_10.txt";
+  const model = trainModelTypeEl?.value || "mlp";
+  const epochs = epochsEl?.value?.trim() || "10";
+  const batch = batchSizeEl?.value?.trim() || "256";
+  const learningRate = learningRateEl?.value?.trim() || "0.001";
+
+  return [
+    "perceptrome",
+    "--config",
+    shellEscape(config),
+    "stream",
+    "--catalog",
+    shellEscape(catalog),
+    "--model-type",
+    shellEscape(model),
+    "--steps-per-plasmid",
+    shellEscape(epochs),
+    "--batch-size",
+    shellEscape(batch),
+    "--learning-rate",
+    shellEscape(learningRate),
+  ].join(" ");
+}
+
+function buildGenerateCommand(): string {
+  const config = streamConfigEl?.value?.trim() || "stream_config.yaml";
+  const checkpoint = generateModelEl?.value?.trim() || "model/checkpoints/latest.pt";
+  const lengthBp = generateLengthEl?.value?.trim() || "10000";
+  const output = generateOutputEl?.value?.trim() || "generated/novel_plasmid.fasta";
+
+  return [
+    "perceptrome",
+    "--config",
+    shellEscape(config),
+    "generate-plasmid",
+    "--checkpoint",
+    shellEscape(checkpoint),
+    "--length-bp",
+    shellEscape(lengthBp),
+    "--output",
+    shellEscape(output),
+  ].join(" ");
+}
+
+function requestModelList() {
+  const socket = ensureWs();
+  const cwd = projectDirEl?.value?.trim() || ".";
+  const send = () => socket.send(JSON.stringify({ type: "list_models", cwd }));
+  if (socket.readyState === WebSocket.OPEN) send();
+  else socket.addEventListener("open", send, { once: true });
+}
+
+function applyModelList(checkpoints: string[]) {
+  if (!generateModelEl) return;
+  generateModelEl.innerHTML = "";
+  checkpoints.forEach((checkpoint) => {
+    const option = document.createElement("option");
+    option.value = checkpoint;
+    option.textContent = checkpoint;
+    generateModelEl.appendChild(option);
+  });
+  if (checkpoints.length > 0) generateModelEl.value = checkpoints[0];
+}
 
 function setConfigStatus(message: string) {
   if (configStatusEl) configStatusEl.textContent = message;
@@ -575,6 +700,7 @@ function ensureWs(): WebSocket {
     appendViewLog("[web] Backend connection closed.");
     if (activeScope) {
       setRunState(activeScope, false);
+      setProgress(activeScope, 0);
       activeScope = null;
     }
   });
@@ -641,6 +767,19 @@ function ensureWs(): WebSocket {
       return;
     }
 
+    if (msg.type === "model_list") {
+      if (!msg.payload.ok) {
+        appendLog("generate", `[web] Failed to list models: ${msg.payload.error ?? "unknown error"}`);
+        return;
+      }
+      applyModelList(msg.payload.checkpoints);
+      appendLog("generate", `[web] Loaded ${msg.payload.checkpoints.length} checkpoint(s).`);
+      if (msg.payload.checkpoints.length === 0) {
+        appendLog("generate", "[web] No checkpoints found. Train first or check project directory.");
+      }
+      return;
+    }
+
     if (!activeScope) return;
 
     if (msg.type === "log") {
@@ -649,10 +788,12 @@ function ensureWs(): WebSocket {
     }
 
     if (msg.type === "status") {
+      setProgress(activeScope, msg.progress);
       if (msg.status === "done" || msg.status === "error" || msg.status === "pending") {
         if (msg.status === "done") addHistoryEvent("success", `${activeScope}: run completed`);
         if (msg.status === "error") addHistoryEvent("failure", `${activeScope}: run failed`);
         setRunState(activeScope, false);
+        if (msg.status === "pending") setProgress(activeScope, 0);
         activeScope = null;
       }
       return;
@@ -660,7 +801,10 @@ function ensureWs(): WebSocket {
 
     if (msg.type === "result") {
       const code = msg.payload.exit_code;
+      const outputPaths = msg.payload.output_paths ?? [];
+      appendLog(activeScope, `[web] RESULT ${JSON.stringify({ exit_code: code ?? null, output_paths: outputPaths }, null, 2)}`);
       appendLog(activeScope, `[web] Run finished (exit code: ${code ?? "unknown"}).`);
+      return;
     }
   });
 
@@ -680,6 +824,7 @@ function startRun(scope: RunScope, command: string) {
 
   activeScope = scope;
   setRunState(scope, true);
+  setProgress(scope, 0);
   appendLog(scope, `[web] Starting: ${command}`);
   addHistoryEvent("start", `${scope}: ${command}`);
 
@@ -688,7 +833,7 @@ function startRun(scope: RunScope, command: string) {
       JSON.stringify({
         type: "start_run",
         command,
-        cwd: ".",
+        cwd: projectDirEl?.value?.trim() || ".",
       }),
     );
   };
@@ -714,6 +859,40 @@ function stopRun(scope: RunScope) {
   appendLog(scope, "[web] Stop requested.");
   addHistoryEvent("stop", `${scope}: stop requested`);
 }
+
+
+trainHelpBtn?.addEventListener("click", () => {
+  if (!trainCommandEl) return;
+  trainCommandEl.value = "perceptrome --help && perceptrome stream --help";
+  appendLog("train", "[web] Filled train help command.");
+  persistState();
+});
+
+trainBuildCommandBtn?.addEventListener("click", () => {
+  if (!trainCommandEl) return;
+  trainCommandEl.value = buildTrainCommand();
+  appendLog("train", "[web] Built train command from config fields.");
+  persistState();
+});
+
+generateHelpBtn?.addEventListener("click", () => {
+  if (!generateCommandEl) return;
+  generateCommandEl.value = "perceptrome --help && perceptrome generate-plasmid --help";
+  appendLog("generate", "[web] Filled generate help command.");
+  persistState();
+});
+
+generateBuildCommandBtn?.addEventListener("click", () => {
+  if (!generateCommandEl) return;
+  generateCommandEl.value = buildGenerateCommand();
+  appendLog("generate", "[web] Built generate command from config fields.");
+  persistState();
+});
+
+generateRefreshModelsBtn?.addEventListener("click", () => {
+  appendLog("generate", "[web] Refreshing checkpoints from backend...");
+  requestModelList();
+});
 
 trainStartBtn?.addEventListener("click", () => startRun("train", trainCommandEl?.value ?? ""));
 trainStopBtn?.addEventListener("click", () => stopRun("train"));
@@ -844,4 +1023,7 @@ Object.values(PERSISTED_FIELDS).forEach((el) => {
   el.addEventListener(eventName, () => persistState());
 });
 
+setProgress("train", 0);
+setProgress("generate", 0);
 hydrateState();
+requestModelList();
