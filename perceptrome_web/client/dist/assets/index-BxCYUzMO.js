@@ -1,7 +1,7 @@
 (function(){const a=document.createElement("link").relList;if(a&&a.supports&&a.supports("modulepreload"))return;for(const o of document.querySelectorAll('link[rel="modulepreload"]'))n(o);new MutationObserver(o=>{for(const l of o)if(l.type==="childList")for(const O of l.addedNodes)O.tagName==="LINK"&&O.rel==="modulepreload"&&n(O)}).observe(document,{childList:!0,subtree:!0});function t(o){const l={};return o.integrity&&(l.integrity=o.integrity),o.referrerPolicy&&(l.referrerPolicy=o.referrerPolicy),o.crossOrigin==="use-credentials"?l.credentials="include":o.crossOrigin==="anonymous"?l.credentials="omit":l.credentials="same-origin",l}function n(o){if(o.ep)return;o.ep=!0;const l=t(o);fetch(o.href,l)}})();const de=document.querySelector("#app");de.innerHTML=`
   <div class="app-root">
     <header class="app-header">
-      <div class="app-title">perceptrome</div>
+      <div class="app-title">Perceptrome</div>
     </header>
 
     <div class="app-body">
