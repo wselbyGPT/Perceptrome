@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -173,6 +174,64 @@ def ensure_static_dir(static_dir: Path) -> Path:
     return static_dir
 
 
+
+
+def _collect_output_paths(command: str, cwd: Path) -> list[str]:
+    tokens = shlex.split(command)
+    output_flags = {
+        "--output",
+        "--output-path",
+        "--out",
+        "--save-path",
+        "--save-dir",
+        "--checkpoint",
+        "--checkpoint-path",
+        "--model",
+    }
+    discovered: list[str] = []
+
+    for idx, token in enumerate(tokens):
+        if token in output_flags and idx + 1 < len(tokens):
+            discovered.append(tokens[idx + 1])
+        elif token.startswith("--output=") or token.startswith("--output-path="):
+            discovered.append(token.split("=", 1)[1])
+
+    resolved: list[str] = []
+    for item in discovered:
+        candidate = Path(item)
+        absolute = candidate if candidate.is_absolute() else (cwd / candidate)
+        try:
+            as_repo_rel = absolute.resolve().relative_to(REPO_ROOT)
+            resolved.append(str(as_repo_rel))
+        except ValueError:
+            resolved.append(str(absolute.resolve()))
+
+    return sorted(set(resolved))
+
+
+def _discover_model_checkpoints(cwd: str | None = None) -> list[str]:
+    root = Path(cwd).resolve() if cwd else REPO_ROOT
+    candidate_dirs = [
+        root / "model" / "checkpoints",
+        root / "checkpoints",
+        REPO_ROOT / "model" / "checkpoints",
+        REPO_ROOT / "checkpoints",
+    ]
+    extensions = {".pt", ".pth", ".ckpt", ".bin", ".safetensors"}
+    discovered: set[str] = set()
+
+    for base in candidate_dirs:
+        if not base.exists() or not base.is_dir():
+            continue
+        for path in base.rglob("*"):
+            if path.is_file() and path.suffix.lower() in extensions:
+                try:
+                    discovered.add(str(path.resolve().relative_to(REPO_ROOT)))
+                except ValueError:
+                    discovered.add(str(path.resolve()))
+
+    return sorted(discovered)
+
 async def _send_status(ws: WebSocket, status: str, progress: float | None = None) -> None:
     await ws.send_json({"type": "status", "status": status, "progress": progress})
 
@@ -228,6 +287,7 @@ async def _run_command(ws: WebSocket, command: str, cwd: str | None = None) -> d
         "cwd": str(resolved_cwd),
         "exit_code": exit_code,
         "ok": exit_code == 0,
+        "output_paths": _collect_output_paths(command, resolved_cwd),
     }
     await ws.send_json({"type": "result", "payload": result})
     return result
@@ -372,6 +432,24 @@ def create_app(static_dir: Path) -> FastAPI:
 
                 elif msg_type == "stop_run":
                     await stop_active()
+
+                elif msg_type == "list_models":
+                    cwd = data.get("cwd")
+                    try:
+                        checkpoints = _discover_model_checkpoints(cwd)
+                        await ws.send_json(
+                            {
+                                "type": "model_list",
+                                "payload": {"ok": True, "checkpoints": checkpoints},
+                            }
+                        )
+                    except Exception as exc:  # pylint: disable=broad-except
+                        await ws.send_json(
+                            {
+                                "type": "model_list",
+                                "payload": {"ok": False, "checkpoints": [], "error": str(exc)},
+                            }
+                        )
 
                 elif msg_type == "create_dataset":
                     payload = data.get("payload")
