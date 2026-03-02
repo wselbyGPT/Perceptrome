@@ -6,7 +6,7 @@ const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `
   <div class="app-root">
     <header class="app-header">
-      <div class="app-title">perceptrome</div>
+      <div class="app-title">Perceptrome</div>
     </header>
 
     <div class="app-body">
