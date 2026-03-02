@@ -381,10 +381,15 @@ def _build_dataset_catalog(payload: dict[str, Any]) -> dict[str, Any]:
 
 def create_app(static_dir: Path) -> FastAPI:
     app = FastAPI(title="Perceptrome Web")
+    generated_dir = (REPO_ROOT / "generated").resolve()
 
     @app.get("/generated-file")
     async def generated_file(path: str = Query(..., description="Absolute or repo-relative file path")) -> FileResponse:
         resolved = (REPO_ROOT / path).resolve() if not os.path.isabs(path) else Path(path).resolve()
+        try:
+            resolved.relative_to(generated_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Only files inside generated/ are supported") from exc
         if not resolved.exists() or not resolved.is_file():
             raise HTTPException(status_code=404, detail="File not found")
         if not str(resolved).lower().endswith(".pdf"):

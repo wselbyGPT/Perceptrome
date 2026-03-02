@@ -287,6 +287,15 @@ app.innerHTML = `
                 <button class="btn btn-secondary" type="button" data-action="view-open-pdf" disabled>Open / Download PDF</button>
               </div>
 
+              <div class="view-pdf-viewer" data-action="view-pdf-viewer">
+                <div class="view-pdf-viewer__status" data-action="view-pdf-status">Generate a PDF to preview it here.</div>
+                <iframe
+                  class="view-pdf-viewer__frame"
+                  data-action="view-pdf-frame"
+                  title="Generated PDF preview"
+                ></iframe>
+              </div>
+
               <div class="log-area">
                 <div class="log-area__label">PDF generation status will appear here...</div>
                 <pre class="log-area__body" data-action="view-log"></pre>
@@ -432,6 +441,8 @@ const viewTitleEl = document.querySelector<HTMLInputElement>('[data-action="view
 const viewGenerateBtn = document.querySelector<HTMLButtonElement>('[data-action="view-generate-pdf"]');
 const viewOpenBtn = document.querySelector<HTMLButtonElement>('[data-action="view-open-pdf"]');
 const viewLogEl = document.querySelector<HTMLPreElement>('[data-action="view-log"]');
+const viewPdfStatusEl = document.querySelector<HTMLDivElement>('[data-action="view-pdf-status"]');
+const viewPdfFrameEl = document.querySelector<HTMLIFrameElement>('[data-action="view-pdf-frame"]');
 const historyTableBodyEl = document.querySelector<HTMLTableSectionElement>('[data-action="history-table-body"]');
 const clearHistoryBtn = document.querySelector<HTMLButtonElement>('[data-action="clear-history"]');
 
@@ -465,6 +476,55 @@ const historyEntries: HistoryEntry[] = [];
 let ws: WebSocket | null = null;
 let activeScope: RunScope | null = null;
 let generatedPdfUrl: string | null = null;
+
+
+function appendCacheBustingToken(url: string): string {
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}t=${Date.now()}`;
+}
+
+function resetViewPdfViewer(message: string) {
+  if (viewPdfFrameEl) {
+    viewPdfFrameEl.removeAttribute("src");
+  }
+  if (viewPdfStatusEl) {
+    viewPdfStatusEl.textContent = message;
+    viewPdfStatusEl.classList.remove("is-hidden", "is-error", "is-loading");
+  }
+}
+
+function setViewPdfViewerLoading(message = "Generating PDF preview…") {
+  if (viewPdfFrameEl) {
+    viewPdfFrameEl.removeAttribute("src");
+  }
+  if (viewPdfStatusEl) {
+    viewPdfStatusEl.textContent = message;
+    viewPdfStatusEl.classList.remove("is-hidden", "is-error");
+    viewPdfStatusEl.classList.add("is-loading");
+  }
+}
+
+function setViewPdfViewerError(message: string) {
+  if (viewPdfFrameEl) {
+    viewPdfFrameEl.removeAttribute("src");
+  }
+  if (viewPdfStatusEl) {
+    viewPdfStatusEl.textContent = message;
+    viewPdfStatusEl.classList.remove("is-hidden", "is-loading");
+    viewPdfStatusEl.classList.add("is-error");
+  }
+}
+
+function setViewPdfViewerSrc(fileUrl: string) {
+  if (viewPdfFrameEl) {
+    viewPdfFrameEl.src = appendCacheBustingToken(fileUrl);
+  }
+  if (viewPdfStatusEl) {
+    viewPdfStatusEl.classList.remove("is-loading", "is-error");
+    viewPdfStatusEl.classList.add("is-hidden");
+    viewPdfStatusEl.textContent = "";
+  }
+}
 
 
 function clampProgress(value: number | null | undefined): number {
@@ -804,6 +864,9 @@ function ensureWs(): WebSocket {
       } else if (viewGenerateBtn) {
         viewGenerateBtn.disabled = true;
       }
+      if (msg.status === "running") {
+        setViewPdfViewerLoading();
+      }
       return;
     }
 
@@ -812,6 +875,11 @@ function ensureWs(): WebSocket {
       if (msg.payload.ok) {
         generatedPdfUrl = msg.payload.file_url ?? null;
         setViewOpenState(Boolean(generatedPdfUrl));
+        if (generatedPdfUrl) {
+          setViewPdfViewerSrc(generatedPdfUrl);
+        } else {
+          setViewPdfViewerError("PDF generated but no preview URL was returned.");
+        }
         if (msg.payload.output_path && viewOutputPathEl) {
           viewOutputPathEl.value = msg.payload.output_path;
         }
@@ -820,6 +888,7 @@ function ensureWs(): WebSocket {
       } else {
         generatedPdfUrl = null;
         setViewOpenState(false);
+        setViewPdfViewerError(msg.payload.error ?? "Failed to generate PDF.");
         appendViewLog(`[web] ERROR: ${msg.payload.error ?? "Failed to generate PDF."}`);
         addHistoryEvent("failure", `View generate failed: ${msg.payload.error ?? "unknown error"}`);
       }
@@ -1030,6 +1099,7 @@ function generateViewPdf() {
   if (viewLogEl) viewLogEl.textContent = "";
   generatedPdfUrl = null;
   setViewOpenState(false);
+  setViewPdfViewerLoading();
   if (viewGenerateBtn) viewGenerateBtn.disabled = true;
 
   const send = () => {
@@ -1125,6 +1195,7 @@ Object.values(PERSISTED_FIELDS).forEach((el) => {
 
 setProgress("train", 0);
 setProgress("generate", 0);
+resetViewPdfViewer("Generate a PDF to preview it here.");
 hydrateState();
 requestModelList();
 requestGeneratedFiles();
