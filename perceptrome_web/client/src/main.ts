@@ -198,6 +198,16 @@ app.innerHTML = `
               </label>
 
               <label class="field field--full">
+                <span class="field-label">Generated files:</span>
+                <div class="button-row">
+                  <select class="field-input" data-action="generate-existing-file">
+                    <option value="">Loading generated files...</option>
+                  </select>
+                  <button class="btn btn-secondary" type="button" data-action="generate-refresh-files">Refresh files</button>
+                </div>
+              </label>
+
+              <label class="field field--full">
                 <span class="field-label">Generate command:</span>
                 <input
                   class="field-input"
@@ -331,6 +341,10 @@ function setActiveTab(id: TabId) {
     const isActive = panel.dataset.tabPanel === id;
     panel.classList.toggle("tab-panel--active", isActive);
   });
+
+  if (id === "generate") {
+    requestGeneratedFiles();
+  }
 }
 
 tabs.forEach((tab) => {
@@ -365,6 +379,7 @@ type WsMessage =
   | { type: "log"; message: string }
   | { type: "result"; payload: { exit_code?: number; ok?: boolean; command?: string; output_paths?: string[] } }
   | { type: "model_list"; payload: { ok: boolean; checkpoints: string[]; error?: string } }
+  | { type: "generated_file_list"; payload: { ok: boolean; files: string[]; error?: string } }
   | { type: "create_dataset_result"; payload: { ok: boolean; output_catalog?: string; selected_count?: number; logs?: string[]; error?: string } }
   | { type: "view_log"; message: string }
   | { type: "view_status"; status: "pending" | "running" | "done" | "error" }
@@ -384,10 +399,12 @@ const trainStartBtn = document.querySelector<HTMLButtonElement>('[data-action="t
 const trainStopBtn = document.querySelector<HTMLButtonElement>('[data-action="train-stop"]');
 const generateHelpBtn = document.querySelector<HTMLButtonElement>('[data-action="generate-help"]');
 const generateRefreshModelsBtn = document.querySelector<HTMLButtonElement>('[data-action="generate-refresh-models"]');
+const generateRefreshFilesBtn = document.querySelector<HTMLButtonElement>('[data-action="generate-refresh-files"]');
 const generateBuildCommandBtn = document.querySelector<HTMLButtonElement>('[data-action="generate-build-command"]');
 const generateModelEl = document.querySelector<HTMLSelectElement>('[data-action="generate-model"]');
 const generateLengthEl = document.querySelector<HTMLInputElement>('[data-action="generate-length"]');
 const generateOutputEl = document.querySelector<HTMLInputElement>('[data-action="generate-output"]');
+const generateExistingFileEl = document.querySelector<HTMLSelectElement>('[data-action="generate-existing-file"]');
 const generateStartBtn = document.querySelector<HTMLButtonElement>('[data-action="generate-start"]');
 const generateStopBtn = document.querySelector<HTMLButtonElement>('[data-action="generate-stop"]');
 const trainLogEl = document.querySelector<HTMLPreElement>('[data-action="train-log"]');
@@ -524,6 +541,14 @@ function requestModelList() {
   else socket.addEventListener("open", send, { once: true });
 }
 
+function requestGeneratedFiles() {
+  const socket = ensureWs();
+  const cwd = projectDirEl?.value?.trim() || ".";
+  const send = () => socket.send(JSON.stringify({ type: "list_generated_files", cwd }));
+  if (socket.readyState === WebSocket.OPEN) send();
+  else socket.addEventListener("open", send, { once: true });
+}
+
 function applyModelList(checkpoints: string[]) {
   if (!generateModelEl) return;
   generateModelEl.innerHTML = "";
@@ -534,6 +559,41 @@ function applyModelList(checkpoints: string[]) {
     generateModelEl.appendChild(option);
   });
   if (checkpoints.length > 0) generateModelEl.value = checkpoints[0];
+}
+
+function applyGeneratedFileList(files: string[]) {
+  if (!generateExistingFileEl) return;
+  const previous = generateExistingFileEl.value;
+  generateExistingFileEl.innerHTML = "";
+
+  if (files.length === 0) {
+    const emptyOption = document.createElement("option");
+    emptyOption.value = "";
+    emptyOption.textContent = "No generated files found in generated/.";
+    generateExistingFileEl.appendChild(emptyOption);
+    generateExistingFileEl.value = "";
+    return;
+  }
+
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Select a generated file...";
+  generateExistingFileEl.appendChild(placeholder);
+
+  files.forEach((file) => {
+    const option = document.createElement("option");
+    option.value = file;
+    option.textContent = file;
+    generateExistingFileEl.appendChild(option);
+  });
+
+  if (previous && files.includes(previous)) {
+    generateExistingFileEl.value = previous;
+  } else if (generateOutputEl?.value && files.includes(generateOutputEl.value.trim())) {
+    generateExistingFileEl.value = generateOutputEl.value.trim();
+  } else {
+    generateExistingFileEl.value = "";
+  }
 }
 
 function setConfigStatus(message: string) {
@@ -780,6 +840,20 @@ function ensureWs(): WebSocket {
       return;
     }
 
+    if (msg.type === "generated_file_list") {
+      if (!msg.payload.ok) {
+        appendLog("generate", `[web] Failed to list generated files: ${msg.payload.error ?? "unknown error"}`);
+        applyGeneratedFileList([]);
+        return;
+      }
+      applyGeneratedFileList(msg.payload.files);
+      appendLog("generate", `[web] Loaded ${msg.payload.files.length} generated file(s).`);
+      if (msg.payload.files.length === 0) {
+        appendLog("generate", "[web] No generated files found under generated/.");
+      }
+      return;
+    }
+
     if (!activeScope) return;
 
     if (msg.type === "log") {
@@ -892,6 +966,32 @@ generateBuildCommandBtn?.addEventListener("click", () => {
 generateRefreshModelsBtn?.addEventListener("click", () => {
   appendLog("generate", "[web] Refreshing checkpoints from backend...");
   requestModelList();
+});
+
+generateRefreshFilesBtn?.addEventListener("click", () => {
+  appendLog("generate", "[web] Refreshing generated files from backend...");
+  requestGeneratedFiles();
+});
+
+generateExistingFileEl?.addEventListener("change", () => {
+  const selected = generateExistingFileEl.value.trim();
+  if (!selected) return;
+
+  if (generateOutputEl) {
+    generateOutputEl.value = selected;
+  }
+
+  const lower = selected.toLowerCase();
+  if (viewFastaPathEl && (lower.endsWith(".fasta") || lower.endsWith(".fa") || lower.endsWith(".fna") || lower.endsWith(".fas"))) {
+    viewFastaPathEl.value = selected;
+  }
+
+  if (viewOutputPathEl && lower.endsWith(".pdf")) {
+    viewOutputPathEl.value = selected;
+  }
+
+  if (generateCommandEl) generateCommandEl.value = buildGenerateCommand();
+  persistState();
 });
 
 trainStartBtn?.addEventListener("click", () => startRun("train", trainCommandEl?.value ?? ""));
@@ -1027,3 +1127,4 @@ setProgress("train", 0);
 setProgress("generate", 0);
 hydrateState();
 requestModelList();
+requestGeneratedFiles();

@@ -209,6 +209,34 @@ def _collect_output_paths(command: str, cwd: Path) -> list[str]:
     return sorted(set(resolved))
 
 
+def _resolve_generated_dir(cwd: str | None = None) -> Path:
+    base_root = Path(cwd).resolve() if cwd else REPO_ROOT
+    candidate = (base_root / "generated").resolve()
+    try:
+        candidate.relative_to(REPO_ROOT)
+    except ValueError:
+        return (REPO_ROOT / "generated").resolve()
+    return candidate
+
+
+def _discover_generated_files(cwd: str | None = None) -> list[str]:
+    generated_dir = _resolve_generated_dir(cwd)
+    if not generated_dir.exists() or not generated_dir.is_dir():
+        return []
+
+    extensions = {".fasta", ".fa", ".fna", ".fas", ".pdf"}
+    discovered: set[str] = set()
+
+    for path in generated_dir.rglob("*"):
+        if path.is_file() and path.suffix.lower() in extensions:
+            try:
+                discovered.add(str(path.resolve().relative_to(REPO_ROOT)))
+            except ValueError:
+                discovered.add(str(path.resolve()))
+
+    return sorted(discovered)
+
+
 def _discover_model_checkpoints(cwd: str | None = None) -> list[str]:
     root = Path(cwd).resolve() if cwd else REPO_ROOT
     candidate_dirs = [
@@ -448,6 +476,24 @@ def create_app(static_dir: Path) -> FastAPI:
                             {
                                 "type": "model_list",
                                 "payload": {"ok": False, "checkpoints": [], "error": str(exc)},
+                            }
+                        )
+
+                elif msg_type == "list_generated_files":
+                    cwd = data.get("cwd")
+                    try:
+                        files = _discover_generated_files(cwd)
+                        await ws.send_json(
+                            {
+                                "type": "generated_file_list",
+                                "payload": {"ok": True, "files": files},
+                            }
+                        )
+                    except Exception as exc:  # pylint: disable=broad-except
+                        await ws.send_json(
+                            {
+                                "type": "generated_file_list",
+                                "payload": {"ok": False, "files": [], "error": str(exc)},
                             }
                         )
 
