@@ -6,6 +6,7 @@ export type Me = {
   role: "admin" | "user" | string;
   is_active: boolean;
   must_change_password: boolean;
+  email_verified_at?: string | null;
 };
 
 export type AdminUser = {
@@ -15,6 +16,7 @@ export type AdminUser = {
   role: "admin" | "user" | string;
   is_active: boolean;
   must_change_password: boolean;
+  email_verified_at?: string | null;
 };
 
 export type AdminCreateUserInput = {
@@ -64,6 +66,22 @@ export async function login(email: string, password: string): Promise<Me> {
     method: "POST",
     body: JSON.stringify({ email, password }),
   });
+}
+
+export async function verifyEmail(token: string): Promise<string> {
+  const out = await apiFetch<{ message: string }>("/api/auth/verify-email", {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  });
+  return out.message;
+}
+
+export async function resendVerification(email: string): Promise<string> {
+  const out = await apiFetch<{ message: string }>("/api/auth/resend-verification", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+  return out.message;
 }
 
 export async function logout(): Promise<void> {

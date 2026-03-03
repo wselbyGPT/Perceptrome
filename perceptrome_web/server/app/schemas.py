@@ -1,4 +1,6 @@
 # server/app/schemas.py
+from datetime import datetime
+
 from pydantic import BaseModel, EmailStr, Field
 
 
@@ -11,6 +13,14 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=1, max_length=256)
+
+
+class VerifyEmailRequest(BaseModel):
+    token: str = Field(min_length=8, max_length=512)
+
+
+class ResendVerificationRequest(BaseModel):
+    email: EmailStr
 
 
 class ChangePasswordRequest(BaseModel):
@@ -34,6 +44,7 @@ class UserOut(BaseModel):
     role: str
     is_active: bool
     must_change_password: bool
+    email_verified_at: datetime | None
 
     @classmethod
     def from_model(cls, u):
@@ -44,6 +55,7 @@ class UserOut(BaseModel):
             role=u.role,
             is_active=u.is_active,
             must_change_password=u.must_change_password,
+            email_verified_at=u.email_verified_at,
         )
 
 

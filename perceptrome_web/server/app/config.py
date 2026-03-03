@@ -32,5 +32,18 @@ class Settings(BaseSettings):
     login_rate_limit_window_seconds: int = 60
     login_rate_limit_max_attempts: int = 10
 
+    email_verification_token_ttl_minutes: int = 60
+    email_verification_resend_cooldown_seconds: int = 60
+
+    mail_provider: str = "console"  # console | smtp
+    mail_from_email: str = "no-reply@perceptrome.local"
+    smtp_host: str = "localhost"
+    smtp_port: int = 1025
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_use_tls: bool = False
+
+    email_verification_base_url: str = "http://localhost:5173/verify_email.html"
+
 
 settings = Settings()
