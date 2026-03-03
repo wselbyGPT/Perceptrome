@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 from app.db import Base
 from app.deps import get_db
 from app.main import app
-from app.models import EmailVerificationToken, User
+from app.models import AuthToken, User
 from app import main as main_module
 
 
@@ -82,6 +82,6 @@ def test_already_verified_resend_behavior(monkeypatch, tmp_path):
     with db_factory() as db:
         user = db.execute(select(User).where(User.email == "verified@example.com")).scalar_one()
         assert user.email_verified_at is not None
-        tokens = db.execute(select(EmailVerificationToken).where(EmailVerificationToken.user_id == user.id)).scalars().all()
+        tokens = db.execute(select(AuthToken).where(AuthToken.user_id == user.id).where(AuthToken.purpose == "email_verification")).scalars().all()
         assert len(tokens) == 1
         assert tokens[0].used_at is not None

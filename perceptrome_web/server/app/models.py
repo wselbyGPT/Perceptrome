@@ -28,7 +28,7 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
-    email_verification_tokens: Mapped[list["EmailVerificationToken"]] = relationship(
+    auth_tokens: Mapped[list["AuthToken"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
     )
@@ -53,24 +53,20 @@ class UserSession(Base):
     user: Mapped[User] = relationship(back_populates="sessions")
 
 
-class EmailVerificationToken(Base):
-    __tablename__ = "email_verification_tokens"
+class AuthToken(Base):
+    __tablename__ = "auth_tokens"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    purpose: Mapped[str] = mapped_column(String(32), index=True)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), index=True)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
 
-    user: Mapped[User] = relationship(back_populates="email_verification_tokens")
+    user: Mapped[User] = relationship(back_populates="auth_tokens")
 
 
 Index("ix_user_sessions_valid_lookup", UserSession.token_hash, UserSession.expires_at, UserSession.revoked_at)
-Index(
-    "ix_email_verification_tokens_lookup",
-    EmailVerificationToken.token_hash,
-    EmailVerificationToken.expires_at,
-    EmailVerificationToken.used_at,
-)
+Index("ix_auth_tokens_lookup", AuthToken.purpose, AuthToken.token_hash, AuthToken.expires_at, AuthToken.used_at)
