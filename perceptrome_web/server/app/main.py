@@ -1,8 +1,9 @@
 # server/app/main.py
-from collections import defaultdict, deque
 from datetime import datetime, timedelta
 import json
+import logging
 import smtplib
+from collections import Counter
 from email.message import EmailMessage
 from urllib.parse import urlencode
 
@@ -21,6 +22,7 @@ from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import Session
 
 from .config import settings
+from .auth_rate_limit import login_attempt_store
 from .db import Base, engine, SessionLocal
 from .deps import get_db, get_current_user, get_current_user_strict, require_role
 from .models import AuthToken, User, UserSession
@@ -55,7 +57,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_login_attempts: dict[str, deque[float]] = defaultdict(deque)
+_auth_logger = logging.getLogger("perceptrome.auth")
+_auth_metrics: Counter[str] = Counter()
 
 
 def _utcnow() -> datetime:
@@ -191,19 +194,22 @@ def _revoke_session_by_cookie(db: Session, raw_cookie: str | None):
         db.commit()
 
 
-def _is_rate_limited(key: str) -> bool:
-    now_ts = _utcnow().timestamp()
-    q = _login_attempts[key]
-    window = settings.login_rate_limit_window_seconds
+def _metric_inc(name: str):
+    _auth_metrics[name] += 1
 
-    while q and (now_ts - q[0]) > window:
-        q.popleft()
 
-    if len(q) >= settings.login_rate_limit_max_attempts:
-        return True
+def _structured_auth_log(event: str, **fields):
+    payload = {"event": event, **fields}
+    _auth_logger.warning(json.dumps(payload, sort_keys=True))
 
-    q.append(now_ts)
-    return False
+
+def _raise_auth_429(retry_after_seconds: int, reason: str):
+    detail = {
+        "message": "Too many authentication attempts. Please retry later.",
+        "retry_after_seconds": retry_after_seconds,
+        "reason": reason,
+    }
+    raise HTTPException(status_code=429, detail=detail, headers={"Retry-After": str(retry_after_seconds)})
 
 
 def _ensure_users_columns():
@@ -216,6 +222,8 @@ def _ensure_users_columns():
         "must_change_password": "ALTER TABLE users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT 0",
         "email_verified_at": "ALTER TABLE users ADD COLUMN email_verified_at DATETIME NULL",
         "email_verification_sent_at": "ALTER TABLE users ADD COLUMN email_verification_sent_at DATETIME NULL",
+        "failed_login_count": "ALTER TABLE users ADD COLUMN failed_login_count INTEGER NOT NULL DEFAULT 0",
+        "locked_until": "ALTER TABLE users ADD COLUMN locked_until DATETIME NULL",
     }
 
     for name, stmt in statements.items():
@@ -307,16 +315,20 @@ def verify_email(payload: VerifyEmailRequest, db: Session = Depends(get_db)):
     ).scalar_one_or_none()
 
     if not token:
+        _metric_inc("verification_failures")
         raise HTTPException(status_code=400, detail="Invalid verification token")
 
     if token.used_at is not None:
+        _metric_inc("verification_failures")
         raise HTTPException(status_code=400, detail="Verification token already used")
 
     if token.expires_at <= _utcnow():
+        _metric_inc("verification_failures")
         raise HTTPException(status_code=400, detail="Verification token expired")
 
     user = db.get(User, token.user_id)
     if not user:
+        _metric_inc("verification_failures")
         raise HTTPException(status_code=400, detail="Invalid verification token")
 
     token.used_at = _utcnow()
@@ -343,7 +355,7 @@ def resend_verification(payload: ResendVerificationRequest, db: Session = Depend
     if user.email_verification_sent_at is not None:
         elapsed = (_utcnow() - user.email_verification_sent_at).total_seconds()
         if elapsed < settings.email_verification_resend_cooldown_seconds:
-            raise HTTPException(status_code=429, detail="Please wait before requesting another verification email")
+            _raise_auth_429(max(1, int(settings.email_verification_resend_cooldown_seconds - elapsed)), "verification_resend_cooldown")
 
     raw_token = _issue_email_verification_token(db, user)
     _send_verification_email(user.email, raw_token)
@@ -410,18 +422,56 @@ def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db))
 def login(payload: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     email = payload.email.lower().strip()
     ip = request.client.host if request.client else "unknown"
-    rl_key = f"{ip}:{email}"
-
-    if _is_rate_limited(rl_key):
-        raise HTTPException(status_code=429, detail="Too many login attempts. Try again soon.")
+    now = _utcnow()
+    rl_status = login_attempt_store.check_and_record(db=db, ip=ip, email=email, now=now)
+    if rl_status.limited:
+        _structured_auth_log("login_rate_limited", ip=ip, email=email, scope=rl_status.scope, retry_after_seconds=rl_status.retry_after_seconds)
+        _metric_inc("lockouts")
+        _raise_auth_429(rl_status.retry_after_seconds, f"rate_limit_{rl_status.scope}")
 
     user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
 
+    if user and user.locked_until and user.locked_until > now:
+        retry_after = max(1, int((user.locked_until - now).total_seconds()))
+        _structured_auth_log("login_user_locked", ip=ip, email=email, user_id=user.id, retry_after_seconds=retry_after)
+        _metric_inc("lockouts")
+        _raise_auth_429(retry_after, "user_locked")
+
     if not user or not user.is_active or not verify_password(payload.password, user.password_hash):
+        if user:
+            user.failed_login_count = (user.failed_login_count or 0) + 1
+            if user.failed_login_count >= settings.login_lockout_threshold:
+                user.locked_until = now + timedelta(seconds=settings.login_lockout_seconds)
+                _metric_inc("lockouts")
+            elif user.failed_login_count >= 2:
+                backoff = min(
+                    settings.login_backoff_max_seconds,
+                    settings.login_backoff_base_seconds * (2 ** (user.failed_login_count - 2)),
+                )
+                user.locked_until = now + timedelta(seconds=backoff)
+            db.commit()
+            _structured_auth_log(
+                "login_failed",
+                ip=ip,
+                email=email,
+                user_id=user.id,
+                failed_login_count=user.failed_login_count,
+                locked_until=user.locked_until.isoformat() if user.locked_until else None,
+            )
+        else:
+            _structured_auth_log("login_failed", ip=ip, email=email, user_id=None)
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     if user.email_verified_at is None:
+        _structured_auth_log("login_email_unverified", ip=ip, email=email, user_id=user.id)
         raise HTTPException(status_code=403, detail="Email verification required")
+
+    if user.failed_login_count or user.locked_until is not None:
+        user.failed_login_count = 0
+        user.locked_until = None
+        db.commit()
+        _metric_inc("resets")
+        _structured_auth_log("login_failure_state_reset", ip=ip, email=email, user_id=user.id)
 
     _revoke_session_by_cookie(db, request.cookies.get(settings.session_cookie_name))
 
