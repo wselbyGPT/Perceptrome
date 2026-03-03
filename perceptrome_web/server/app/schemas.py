@@ -34,7 +34,7 @@ class ResetPasswordRequest(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     current_password: str
-    new_password: str = Field(min_length=8, max_length=256)
+    new_password: str = Field(min_length=12, max_length=256)
 
 
 class AdminCreateUserRequest(BaseModel):

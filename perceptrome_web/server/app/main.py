@@ -36,7 +36,13 @@ from .schemas import (
     UserOut,
     MessageOut,
 )
-from .security import hash_password, verify_password, make_session_token, hash_session_token
+from .security import (
+    hash_password,
+    verify_password,
+    make_session_token,
+    hash_session_token,
+    password_complexity_error,
+)
 
 app = FastAPI(title=settings.app_name)
 
@@ -379,6 +385,10 @@ def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db))
     if not user:
         raise HTTPException(status_code=400, detail="Invalid password reset token")
 
+    complexity_error = password_complexity_error(payload.new_password)
+    if complexity_error:
+        raise HTTPException(status_code=400, detail=complexity_error)
+
     user.password_hash = hash_password(payload.new_password)
     user.must_change_password = False
     token.used_at = now
@@ -435,6 +445,7 @@ def me(user: User = Depends(get_current_user)):
 @app.post("/api/auth/change-password", response_model=MessageOut)
 def change_password(
     payload: ChangePasswordRequest,
+    request: Request,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -444,8 +455,26 @@ def change_password(
     if payload.current_password == payload.new_password:
         raise HTTPException(status_code=400, detail="New password must be different")
 
+    complexity_error = password_complexity_error(payload.new_password)
+    if complexity_error:
+        raise HTTPException(status_code=400, detail=complexity_error)
+
+    now = _utcnow()
     user.password_hash = hash_password(payload.new_password)
     user.must_change_password = False
+
+    current_cookie = request.cookies.get(settings.session_cookie_name)
+    current_session_hash = hash_session_token(current_cookie) if current_cookie else None
+    active_sessions = db.execute(
+        select(UserSession)
+        .where(UserSession.user_id == user.id)
+        .where(UserSession.revoked_at.is_(None))
+        .where(UserSession.expires_at > now)
+    ).scalars().all()
+    for sess in active_sessions:
+        if sess.token_hash != current_session_hash:
+            sess.revoked_at = now
+
     db.commit()
     return MessageOut(message="Password changed")
 

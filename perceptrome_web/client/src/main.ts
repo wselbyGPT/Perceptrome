@@ -22,12 +22,21 @@ function setUserUi(me: Me): void {
     whoamiEl.textContent = `${me.email} (${me.role})`;
   }
 
+  const changePasswordBtn = document.getElementById("change-password-btn");
+  if (changePasswordBtn) {
+    const changePasswordClone = changePasswordBtn.cloneNode(true) as HTMLElement;
+    changePasswordBtn.parentNode?.replaceChild(changePasswordClone, changePasswordBtn);
+    changePasswordClone.addEventListener("click", () => {
+      window.location.href = `/change_password.html?next=${buildNextUrl()}`;
+    });
+  }
+
   const logoutBtn = document.getElementById("logout-btn");
   if (logoutBtn) {
-    const cloned = logoutBtn.cloneNode(true) as HTMLElement;
-    logoutBtn.parentNode?.replaceChild(cloned, logoutBtn);
+    const logoutClone = logoutBtn.cloneNode(true) as HTMLElement;
+    logoutBtn.parentNode?.replaceChild(logoutClone, logoutBtn);
 
-    cloned.addEventListener("click", async () => {
+    logoutClone.addEventListener("click", async () => {
       try {
         await logout();
       } catch (err) {
