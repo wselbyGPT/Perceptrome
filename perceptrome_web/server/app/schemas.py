@@ -33,6 +33,7 @@ class UserOut(BaseModel):
     username: str | None
     role: str
     is_active: bool
+    must_change_password: bool
 
     @classmethod
     def from_model(cls, u):
@@ -42,6 +43,7 @@ class UserOut(BaseModel):
             username=u.username,
             role=u.role,
             is_active=u.is_active,
+            must_change_password=u.must_change_password,
         )
 
 
