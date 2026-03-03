@@ -12,6 +12,10 @@ function redirectToLogin(): void {
   window.location.href = `/login.html?next=${buildNextUrl()}`;
 }
 
+function redirectToChangePassword(): void {
+  window.location.href = `/change_password.html?next=${buildNextUrl()}`;
+}
+
 function setUserUi(me: Me): void {
   const whoamiEl = document.getElementById("whoami");
   if (whoamiEl) {
@@ -57,6 +61,11 @@ function connectAuthenticatedWebSocket(): WebSocket {
       redirectToLogin();
       return;
     }
+
+    if (ev.code === 4403) {
+      redirectToChangePassword();
+      return;
+    }
   });
 
   return ws;
@@ -78,6 +87,11 @@ async function boot(): Promise<void> {
   }
 
   const me = await requireAuthenticatedUser();
+  if (me.must_change_password) {
+    redirectToChangePassword();
+    return;
+  }
+
   setUserUi(me);
 
   const ws = connectAuthenticatedWebSocket();
