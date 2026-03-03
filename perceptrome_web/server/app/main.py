@@ -23,12 +23,14 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .db import Base, engine, SessionLocal
 from .deps import get_db, get_current_user, get_current_user_strict, require_role
-from .models import EmailVerificationToken, User, UserSession
+from .models import AuthToken, User, UserSession
 from .schemas import (
     RegisterRequest,
     LoginRequest,
     VerifyEmailRequest,
     ResendVerificationRequest,
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
     ChangePasswordRequest,
     AdminCreateUserRequest,
     UserOut,
@@ -97,20 +99,17 @@ def _build_verification_link(raw_token: str) -> str:
     return f"{settings.email_verification_base_url}?{urlencode({'token': raw_token})}"
 
 
-def _send_verification_email(recipient: str, raw_token: str):
-    link = _build_verification_link(raw_token)
+def _build_password_reset_link(raw_token: str) -> str:
+    return f"{settings.password_reset_base_url}?{urlencode({'token': raw_token})}"
 
+
+def _send_email(recipient: str, subject: str, body: str):
     if settings.mail_provider.lower() == "smtp":
         msg = EmailMessage()
-        msg["Subject"] = "Verify your Perceptrome account"
+        msg["Subject"] = subject
         msg["From"] = settings.mail_from_email
         msg["To"] = recipient
-        msg.set_content(
-            "Welcome to Perceptrome!\n\n"
-            "Use the following link to verify your email:\n"
-            f"{link}\n\n"
-            "If you did not sign up, you can ignore this email."
-        )
+        msg.set_content(body)
 
         with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as smtp:
             if settings.smtp_use_tls:
@@ -120,20 +119,55 @@ def _send_verification_email(recipient: str, raw_token: str):
             smtp.send_message(msg)
         return
 
-    print(f"[auth] verification email to {recipient}: {link}")
+    print(f"[auth] {subject} to {recipient}: {body}")
 
 
-def _issue_email_verification_token(db: Session, user: User) -> str:
-    raw = make_session_token()
-    token = EmailVerificationToken(
-        user_id=user.id,
-        token_hash=hash_session_token(raw),
-        expires_at=_utcnow() + timedelta(minutes=settings.email_verification_token_ttl_minutes),
+def _send_verification_email(recipient: str, raw_token: str):
+    link = _build_verification_link(raw_token)
+    _send_email(
+        recipient,
+        "Verify your Perceptrome account",
+        "Welcome to Perceptrome!\n\n"
+        "Use the following link to verify your email:\n"
+        f"{link}\n\n"
+        "If you did not sign up, you can ignore this email.",
     )
-    user.email_verification_sent_at = _utcnow()
+
+
+def _send_password_reset_email(recipient: str, raw_token: str):
+    link = _build_password_reset_link(raw_token)
+    _send_email(
+        recipient,
+        "Reset your Perceptrome password",
+        "We received a request to reset your Perceptrome password.\n\n"
+        "Use the following link to reset your password:\n"
+        f"{link}\n\n"
+        "If you did not request this, you can ignore this email.",
+    )
+
+
+def _issue_auth_token(db: Session, user: User, purpose: str, ttl_minutes: int) -> str:
+    raw = make_session_token()
+    token = AuthToken(
+        user_id=user.id,
+        purpose=purpose,
+        token_hash=hash_session_token(raw),
+        expires_at=_utcnow() + timedelta(minutes=ttl_minutes),
+    )
     db.add(token)
     db.commit()
     return raw
+
+
+def _issue_email_verification_token(db: Session, user: User) -> str:
+    raw = _issue_auth_token(db, user, purpose="email_verification", ttl_minutes=settings.email_verification_token_ttl_minutes)
+    user.email_verification_sent_at = _utcnow()
+    db.commit()
+    return raw
+
+
+def _issue_password_reset_token(db: Session, user: User) -> str:
+    return _issue_auth_token(db, user, purpose="password_reset", ttl_minutes=settings.password_reset_token_ttl_minutes)
 
 
 def _revoke_session_by_cookie(db: Session, raw_cookie: str | None):
@@ -260,7 +294,11 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
 @app.post("/api/auth/verify-email", response_model=MessageOut)
 def verify_email(payload: VerifyEmailRequest, db: Session = Depends(get_db)):
     token_hash = hash_session_token(payload.token)
-    token = db.execute(select(EmailVerificationToken).where(EmailVerificationToken.token_hash == token_hash)).scalar_one_or_none()
+    token = db.execute(
+        select(AuthToken)
+        .where(AuthToken.purpose == "email_verification")
+        .where(AuthToken.token_hash == token_hash)
+    ).scalar_one_or_none()
 
     if not token:
         raise HTTPException(status_code=400, detail="Invalid verification token")
@@ -304,6 +342,58 @@ def resend_verification(payload: ResendVerificationRequest, db: Session = Depend
     raw_token = _issue_email_verification_token(db, user)
     _send_verification_email(user.email, raw_token)
     return MessageOut(message="Verification email sent")
+
+
+@app.post("/api/auth/forgot-password", response_model=MessageOut)
+def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    email = payload.email.lower().strip()
+    user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+
+    if user:
+        raw_token = _issue_password_reset_token(db, user)
+        _send_password_reset_email(user.email, raw_token)
+
+    return MessageOut(message="If this email is registered, a password reset email has been sent")
+
+
+@app.post("/api/auth/reset-password", response_model=MessageOut)
+def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db)):
+    token_hash = hash_session_token(payload.token)
+    token = db.execute(
+        select(AuthToken)
+        .where(AuthToken.purpose == "password_reset")
+        .where(AuthToken.token_hash == token_hash)
+    ).scalar_one_or_none()
+
+    if not token:
+        raise HTTPException(status_code=400, detail="Invalid password reset token")
+
+    if token.used_at is not None:
+        raise HTTPException(status_code=400, detail="Password reset token already used")
+
+    now = _utcnow()
+    if token.expires_at <= now:
+        raise HTTPException(status_code=400, detail="Password reset token expired")
+
+    user = db.get(User, token.user_id)
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid password reset token")
+
+    user.password_hash = hash_password(payload.new_password)
+    user.must_change_password = False
+    token.used_at = now
+
+    active_sessions = db.execute(
+        select(UserSession)
+        .where(UserSession.user_id == user.id)
+        .where(UserSession.revoked_at.is_(None))
+        .where(UserSession.expires_at > now)
+    ).scalars().all()
+    for sess in active_sessions:
+        sess.revoked_at = now
+
+    db.commit()
+    return MessageOut(message="Password reset successful")
 
 
 @app.post("/api/auth/login", response_model=UserOut)

@@ -34,6 +34,7 @@ class Settings(BaseSettings):
 
     email_verification_token_ttl_minutes: int = 60
     email_verification_resend_cooldown_seconds: int = 60
+    password_reset_token_ttl_minutes: int = 30
 
     mail_provider: str = "console"  # console | smtp
     mail_from_email: str = "no-reply@perceptrome.local"
@@ -44,6 +45,7 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = False
 
     email_verification_base_url: str = "http://localhost:5173/verify_email.html"
+    password_reset_base_url: str = "http://localhost:5173/reset_password.html"
 
 
 settings = Settings()
