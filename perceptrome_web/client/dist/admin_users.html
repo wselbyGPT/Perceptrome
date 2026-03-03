@@ -1,0 +1,163 @@
+<!-- client/admin_users.html -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Perceptrome Admin — Users</title>
+    <style>
+      :root {
+        --bg: #0b0f14;
+        --panel: #121922;
+        --border: #273445;
+        --text: #e6edf3;
+        --muted: #9fb0c3;
+        --accent: #2563eb;
+        --accent2: #1d4ed8;
+        --danger: #ef4444;
+        --ok: #22c55e;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: radial-gradient(circle at 20% 20%, #111826 0%, #0b0f14 45%, #070a0e 100%);
+        color: var(--text);
+        font-family: Inter, system-ui, sans-serif;
+        padding: 18px;
+      }
+      .wrap { width: min(1100px, 100%); margin: 0 auto; display: grid; gap: 14px; }
+      .panel { background: rgba(18,25,34,0.95); border: 1px solid var(--border); border-radius: 14px; padding: 16px; }
+      .top { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+      h1, h2 { margin: 0 0 8px; }
+      .muted { color: var(--muted); }
+      .row { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:10px; }
+      .row3 { display:grid; grid-template-columns: 1fr 1fr auto; gap:10px; }
+      @media (max-width: 800px) { .row, .row3 { grid-template-columns: 1fr; } }
+      label { display:block; font-size:0.85rem; color: var(--muted); margin-bottom:4px; }
+      input, select {
+        width:100%; background:#0f141a; color:var(--text);
+        border:1px solid #334155; border-radius:10px; padding:10px 12px;
+      }
+      .actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+      button {
+        border:0; border-radius:10px; padding:10px 12px;
+        font-weight:700; cursor:pointer; background:var(--accent); color:white;
+      }
+      button:hover { background:var(--accent2); }
+      button.secondary {
+        background:#1b2430; color:var(--text); border:1px solid #334155;
+      }
+      .msg { min-height:1.2rem; font-size:0.9rem; margin-top:8px; }
+      .msg.error { color: var(--danger); }
+      .msg.ok { color: var(--ok); }
+      table { width:100%; border-collapse:collapse; margin-top:10px; font-size:0.92rem; }
+      th, td { text-align:left; padding:10px 8px; border-bottom:1px solid #1f2a37; vertical-align:top; }
+      th { color: var(--muted); font-weight:600; }
+      .pill { display:inline-block; padding:3px 8px; border-radius:999px; border:1px solid #334155; font-size:0.8rem; }
+      .pill.admin { border-color:#7c3aed; color:#c4b5fd; }
+      .pill.user { border-color:#2563eb; color:#93c5fd; }
+      .pill.active { border-color:#16a34a; color:#86efac; }
+      .pill.inactive { border-color:#ef4444; color:#fca5a5; }
+      .pill.force { border-color:#f59e0b; color:#fcd34d; }
+      .pill.noforce { border-color:#475569; color:#cbd5e1; }
+      a { color:#93c5fd; text-decoration:none; }
+      a:hover { text-decoration:underline; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    </style>
+    <script type="module" crossorigin src="/assets/admin_users-B4GAE0cT.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/auth_api-DhigGiIq.js">
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="panel top">
+        <div>
+          <h1>Admin — Users</h1>
+          <div class="muted">Create and manage Perceptrome users (MVP)</div>
+        </div>
+        <div class="actions">
+          <span id="whoami" class="muted"></span>
+          <a href="/" class="secondary" style="padding:10px 12px; border-radius:10px; border:1px solid #334155; background:#1b2430; color:#e6edf3;">Back to App</a>
+          <button id="logout-btn" type="button" class="secondary">Logout</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Create User</h2>
+
+        <form id="create-user-form">
+          <div class="row">
+            <div>
+              <label for="email">Email</label>
+              <input id="email" type="email" required />
+            </div>
+            <div>
+              <label for="username">Username (optional)</label>
+              <input id="username" type="text" minlength="3" />
+            </div>
+          </div>
+
+          <div class="row3" style="margin-top:10px;">
+            <div>
+              <label for="password">Temporary Password</label>
+              <input id="password" type="text" minlength="8" required />
+            </div>
+            <div>
+              <label for="role">Role</label>
+              <select id="role">
+                <option value="user" selected>user</option>
+                <option value="admin">admin</option>
+              </select>
+            </div>
+            <div style="display:flex; align-items:end;">
+              <button id="gen-pass-btn" type="button" class="secondary">Generate Password</button>
+            </div>
+          </div>
+
+          <div class="actions" style="margin-top:10px;">
+            <label style="display:flex; gap:8px; align-items:center; margin:0;">
+              <input id="is-active" type="checkbox" checked style="width:auto;" />
+              <span>Active</span>
+            </label>
+            <label style="display:flex; gap:8px; align-items:center; margin:0;">
+              <input id="must-change-password" type="checkbox" checked style="width:auto;" />
+              <span>Force password change on first login</span>
+            </label>
+          </div>
+
+          <div class="actions" style="margin-top:12px;">
+            <button id="create-btn" type="submit">Create User</button>
+            <button id="refresh-btn" type="button" class="secondary">Refresh List</button>
+          </div>
+
+          <div id="form-msg" class="msg"></div>
+        </form>
+      </div>
+
+      <div class="panel">
+        <h2>Users</h2>
+        <div class="muted">Admin-only user list from <span class="mono">GET /api/admin/users</span></div>
+
+        <div id="table-msg" class="msg"></div>
+
+        <div style="overflow:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Username</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>Password Policy</th>
+                <th>User ID</th>
+              </tr>
+            </thead>
+            <tbody id="users-tbody">
+              <tr><td colspan="6" class="muted">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </body>
+</html>
