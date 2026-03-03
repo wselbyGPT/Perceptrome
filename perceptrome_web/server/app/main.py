@@ -2,6 +2,9 @@
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 import json
+import smtplib
+from email.message import EmailMessage
+from urllib.parse import urlencode
 
 from fastapi import (
     Depends,
@@ -20,10 +23,12 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .db import Base, engine, SessionLocal
 from .deps import get_db, get_current_user, get_current_user_strict, require_role
-from .models import User, UserSession
+from .models import EmailVerificationToken, User, UserSession
 from .schemas import (
     RegisterRequest,
     LoginRequest,
+    VerifyEmailRequest,
+    ResendVerificationRequest,
     ChangePasswordRequest,
     AdminCreateUserRequest,
     UserOut,
@@ -88,6 +93,49 @@ def _issue_session(db: Session, user: User, request: Request) -> str:
     return raw
 
 
+def _build_verification_link(raw_token: str) -> str:
+    return f"{settings.email_verification_base_url}?{urlencode({'token': raw_token})}"
+
+
+def _send_verification_email(recipient: str, raw_token: str):
+    link = _build_verification_link(raw_token)
+
+    if settings.mail_provider.lower() == "smtp":
+        msg = EmailMessage()
+        msg["Subject"] = "Verify your Perceptrome account"
+        msg["From"] = settings.mail_from_email
+        msg["To"] = recipient
+        msg.set_content(
+            "Welcome to Perceptrome!\n\n"
+            "Use the following link to verify your email:\n"
+            f"{link}\n\n"
+            "If you did not sign up, you can ignore this email."
+        )
+
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as smtp:
+            if settings.smtp_use_tls:
+                smtp.starttls()
+            if settings.smtp_username:
+                smtp.login(settings.smtp_username, settings.smtp_password or "")
+            smtp.send_message(msg)
+        return
+
+    print(f"[auth] verification email to {recipient}: {link}")
+
+
+def _issue_email_verification_token(db: Session, user: User) -> str:
+    raw = make_session_token()
+    token = EmailVerificationToken(
+        user_id=user.id,
+        token_hash=hash_session_token(raw),
+        expires_at=_utcnow() + timedelta(minutes=settings.email_verification_token_ttl_minutes),
+    )
+    user.email_verification_sent_at = _utcnow()
+    db.add(token)
+    db.commit()
+    return raw
+
+
 def _revoke_session_by_cookie(db: Session, raw_cookie: str | None):
     if not raw_cookie:
         return
@@ -124,14 +172,17 @@ def _ensure_users_columns():
         return
 
     cols = {c["name"] for c in insp.get_columns("users")}
-    if "must_change_password" not in cols:
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    "ALTER TABLE users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT 0"
-                )
-            )
-        print("[auth] migrated users.must_change_password")
+    statements = {
+        "must_change_password": "ALTER TABLE users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT 0",
+        "email_verified_at": "ALTER TABLE users ADD COLUMN email_verified_at DATETIME NULL",
+        "email_verification_sent_at": "ALTER TABLE users ADD COLUMN email_verification_sent_at DATETIME NULL",
+    }
+
+    for name, stmt in statements.items():
+        if name not in cols:
+            with engine.begin() as conn:
+                conn.execute(text(stmt))
+            print(f"[auth] migrated users.{name}")
 
 
 def _bootstrap_admin():
@@ -151,6 +202,7 @@ def _bootstrap_admin():
             role="admin",
             is_active=True,
             must_change_password=True,
+            email_verified_at=_utcnow(),
         )
         db.add(admin)
         db.commit()
@@ -192,11 +244,66 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
         role="user",
         is_active=True,
         must_change_password=False,
+        email_verified_at=None,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
+
+    raw_token = _issue_email_verification_token(db, user)
+    _send_verification_email(user.email, raw_token)
+
+    db.refresh(user)
     return UserOut.from_model(user)
+
+
+@app.post("/api/auth/verify-email", response_model=MessageOut)
+def verify_email(payload: VerifyEmailRequest, db: Session = Depends(get_db)):
+    token_hash = hash_session_token(payload.token)
+    token = db.execute(select(EmailVerificationToken).where(EmailVerificationToken.token_hash == token_hash)).scalar_one_or_none()
+
+    if not token:
+        raise HTTPException(status_code=400, detail="Invalid verification token")
+
+    if token.used_at is not None:
+        raise HTTPException(status_code=400, detail="Verification token already used")
+
+    if token.expires_at <= _utcnow():
+        raise HTTPException(status_code=400, detail="Verification token expired")
+
+    user = db.get(User, token.user_id)
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid verification token")
+
+    token.used_at = _utcnow()
+    if user.email_verified_at is not None:
+        db.commit()
+        return MessageOut(message="Email already verified")
+
+    user.email_verified_at = _utcnow()
+    db.commit()
+    return MessageOut(message="Email verified")
+
+
+@app.post("/api/auth/resend-verification", response_model=MessageOut)
+def resend_verification(payload: ResendVerificationRequest, db: Session = Depends(get_db)):
+    email = payload.email.lower().strip()
+    user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+
+    if not user:
+        return MessageOut(message="If this email is registered, a verification email has been sent")
+
+    if user.email_verified_at is not None:
+        return MessageOut(message="Email already verified")
+
+    if user.email_verification_sent_at is not None:
+        elapsed = (_utcnow() - user.email_verification_sent_at).total_seconds()
+        if elapsed < settings.email_verification_resend_cooldown_seconds:
+            raise HTTPException(status_code=429, detail="Please wait before requesting another verification email")
+
+    raw_token = _issue_email_verification_token(db, user)
+    _send_verification_email(user.email, raw_token)
+    return MessageOut(message="Verification email sent")
 
 
 @app.post("/api/auth/login", response_model=UserOut)
@@ -212,6 +319,9 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
 
     if not user or not user.is_active or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if user.email_verified_at is None:
+        raise HTTPException(status_code=403, detail="Email verification required")
 
     _revoke_session_by_cookie(db, request.cookies.get(settings.session_cookie_name))
 
@@ -295,6 +405,7 @@ def create_user_admin(
         role=role,
         is_active=payload.is_active,
         must_change_password=payload.must_change_password,
+        email_verified_at=_utcnow(),
     )
     db.add(user)
     db.commit()
