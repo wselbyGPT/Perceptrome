@@ -31,6 +31,14 @@ class Settings(BaseSettings):
 
     login_rate_limit_window_seconds: int = 60
     login_rate_limit_max_attempts: int = 10
+    login_rate_limit_ip_max_attempts: int = 30
+    login_attempt_store: str = "auto"  # auto | redis | db
+    redis_url: str | None = None
+    login_lockout_threshold: int = 5
+    login_lockout_seconds: int = 300
+    login_backoff_base_seconds: int = 5
+    login_backoff_max_seconds: int = 120
+    login_attempt_cleanup_interval_seconds: int = 300
 
     email_verification_token_ttl_minutes: int = 60
     email_verification_resend_cooldown_seconds: int = 60

@@ -23,6 +23,8 @@ class User(Base):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
     email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
     email_verification_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    failed_login_count: Mapped[int] = mapped_column(default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
 
     sessions: Mapped[list["UserSession"]] = relationship(
         back_populates="user",
@@ -68,5 +70,16 @@ class AuthToken(Base):
     user: Mapped[User] = relationship(back_populates="auth_tokens")
 
 
+class LoginAttempt(Base):
+    __tablename__ = "login_attempts"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    ip_address: Mapped[str] = mapped_column(String(64), index=True)
+    email: Mapped[str] = mapped_column(String(320), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), server_default=func.now(), index=True)
+
+
 Index("ix_user_sessions_valid_lookup", UserSession.token_hash, UserSession.expires_at, UserSession.revoked_at)
 Index("ix_auth_tokens_lookup", AuthToken.purpose, AuthToken.token_hash, AuthToken.expires_at, AuthToken.used_at)
+Index("ix_login_attempts_ip_email_created", LoginAttempt.ip_address, LoginAttempt.email, LoginAttempt.created_at)
+Index("ix_login_attempts_ip_created", LoginAttempt.ip_address, LoginAttempt.created_at)
