@@ -1,3 +1,4 @@
+import "./styles/index.css";
 // client/src/admin_users.ts
 import {
   adminCreateUser,
@@ -29,7 +30,7 @@ function randomTempPassword(length = 18): string {
 }
 
 function pill(text: string, className: string): string {
-  return `<span class="pill ${className}">${text}</span>`;
+  return `<span class="badge badge-${className}">${text}</span>`;
 }
 
 function renderUsers(rows: AdminUser[]) {

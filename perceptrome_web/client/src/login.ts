@@ -1,3 +1,4 @@
+import "./styles/index.css";
 // client/src/login.ts
 import { login } from "./auth_api";
 
