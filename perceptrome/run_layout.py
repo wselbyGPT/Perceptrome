@@ -8,6 +8,15 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
 
+CANONICAL_MANIFEST_SECTIONS = (
+    "generated_sequences",
+    "validation_results",
+    "training_metrics",
+    "pretraining_metrics",
+    "checkpoints",
+)
+
+
 @dataclass(frozen=True)
 class RunLayout:
     run_id: str
@@ -65,6 +74,8 @@ def ensure_run_layout(run_id: Optional[str] = None, base_dir: str = "runs") -> R
             "metrics": {},
             "provenance": {},
         }
+        for key in CANONICAL_MANIFEST_SECTIONS:
+            payload[key] = {}
         with open(layout.manifest_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, sort_keys=True)
             f.write("\n")
@@ -93,7 +104,18 @@ def _deep_merge(dst: Dict[str, Any], src: Dict[str, Any]) -> Dict[str, Any]:
     return dst
 
 
-def update_run_manifest(layout: RunLayout, *, paths: Optional[Dict[str, Any]] = None, metrics: Optional[Dict[str, Any]] = None, provenance: Optional[Dict[str, Any]] = None) -> str:
+def update_run_manifest(
+    layout: RunLayout,
+    *,
+    paths: Optional[Dict[str, Any]] = None,
+    metrics: Optional[Dict[str, Any]] = None,
+    provenance: Optional[Dict[str, Any]] = None,
+    generated_sequences: Optional[Dict[str, Any]] = None,
+    validation_results: Optional[Dict[str, Any]] = None,
+    training_metrics: Optional[Dict[str, Any]] = None,
+    pretraining_metrics: Optional[Dict[str, Any]] = None,
+    checkpoints: Optional[Dict[str, Any]] = None,
+) -> str:
     with open(layout.manifest_path, "r", encoding="utf-8") as f:
         payload = json.load(f)
 
@@ -103,6 +125,16 @@ def update_run_manifest(layout: RunLayout, *, paths: Optional[Dict[str, Any]] = 
         _deep_merge(payload.setdefault("metrics", {}), metrics)
     if provenance:
         _deep_merge(payload.setdefault("provenance", {}), provenance)
+    if generated_sequences:
+        _deep_merge(payload.setdefault("generated_sequences", {}), generated_sequences)
+    if validation_results:
+        _deep_merge(payload.setdefault("validation_results", {}), validation_results)
+    if training_metrics:
+        _deep_merge(payload.setdefault("training_metrics", {}), training_metrics)
+    if pretraining_metrics:
+        _deep_merge(payload.setdefault("pretraining_metrics", {}), pretraining_metrics)
+    if checkpoints:
+        _deep_merge(payload.setdefault("checkpoints", {}), checkpoints)
     payload["updated_at"] = _utc_now()
 
     with open(layout.manifest_path, "w", encoding="utf-8") as f:

@@ -95,6 +95,8 @@ class ValidatePlasmidTests(unittest.TestCase):
                 report = json.load(f)
             self.assertEqual(report["results"][0]["accession"], "REF1")
             self.assertEqual(len(report["results"]), 2)
+            self.assertTrue(str(report["generated_fasta"]).endswith("gen.fasta"))
+            self.assertTrue(str(report["catalog"]).endswith("catalog.txt"))
 
 
 if __name__ == "__main__":

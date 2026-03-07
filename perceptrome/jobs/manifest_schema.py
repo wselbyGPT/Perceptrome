@@ -11,6 +11,8 @@ RUN_MANIFEST_SECTIONS = (
     "model_objective_config",
     "checkpoints",
     "metrics",
+    "training_metrics",
+    "pretraining_metrics",
     "generated_sequences",
     "validation_results",
     "provenance_metadata",
@@ -31,6 +33,8 @@ def empty_run_manifest(*, run_kind: str, config_path: str, config_hash: str | No
         "model_objective_config": None,
         "checkpoints": None,
         "metrics": None,
+        "training_metrics": None,
+        "pretraining_metrics": None,
         "generated_sequences": None,
         "validation_results": None,
         "provenance_metadata": {

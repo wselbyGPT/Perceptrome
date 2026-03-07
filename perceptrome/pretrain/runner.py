@@ -56,6 +56,7 @@ class PretrainRunner:
             params.extend(list(m.parameters()))
         self.optimizer = torch.optim.AdamW(params, lr=float(self.cfg.lr), weight_decay=float(self.cfg.weight_decay))
         self.global_step = 0
+        self.checkpoint_paths: list[str] = []
 
     def _to_device(self, batch: Dict[str, object]) -> Dict[str, object]:
         out: Dict[str, object] = {}
@@ -78,7 +79,13 @@ class PretrainRunner:
         layout = ensure_run_layout()
         self.cfg.output_dir = path_in_run(layout, "artifacts", "pretrain")
         os.makedirs(self.cfg.output_dir, exist_ok=True)
-        update_run_manifest(layout, paths={"pretrain": {"output_dir": self.cfg.output_dir}})
+        metrics_json_path = path_in_run(layout, "metrics", "pretraining_final_metrics.json")
+        checkpoint_index_path = path_in_run(layout, "artifacts", "pretraining_checkpoint_index.json")
+        update_run_manifest(
+            layout,
+            paths={"pretrain": {"output_dir": self.cfg.output_dir, "final_metrics_json": metrics_json_path, "checkpoint_index_json": checkpoint_index_path}},
+            checkpoints={"pretrain": {"output_dir": self.cfg.output_dir, "index_json": checkpoint_index_path}},
+        )
         for epoch in range(int(self.cfg.epochs)):
             self.backbone.train()
             for obj in self.objectives.values():
@@ -117,14 +124,43 @@ class PretrainRunner:
                 if self.global_step % int(self.cfg.checkpoint_every) == 0:
                     ckpt_path = os.path.join(self.cfg.output_dir, f"step_{self.global_step}.pt")
                     self.save_checkpoint(ckpt_path)
-                    update_run_manifest(layout, paths={"pretrain": {"latest_step_checkpoint": ckpt_path}})
+                    self.checkpoint_paths.append(ckpt_path)
+                    update_run_manifest(
+                        layout,
+                        paths={"pretrain": {"latest_step_checkpoint": ckpt_path}},
+                        checkpoints={"pretrain": {"latest_step_checkpoint": ckpt_path, "count": len(self.checkpoint_paths)}},
+                    )
 
             epoch_ckpt = os.path.join(self.cfg.output_dir, f"epoch_{epoch + 1}.pt")
             self.save_checkpoint(epoch_ckpt)
-            update_run_manifest(layout, paths={"pretrain": {"latest_epoch_checkpoint": epoch_ckpt}})
+            self.checkpoint_paths.append(epoch_ckpt)
+            update_run_manifest(
+                layout,
+                paths={"pretrain": {"latest_epoch_checkpoint": epoch_ckpt}},
+                checkpoints={"pretrain": {"latest_epoch_checkpoint": epoch_ckpt, "count": len(self.checkpoint_paths)}},
+            )
             if val_loader is not None:
                 self.validate(val_loader)
 
+        checkpoint_index = {
+            "count": len(self.checkpoint_paths),
+            "checkpoints": list(self.checkpoint_paths),
+            "latest": self.checkpoint_paths[-1] if self.checkpoint_paths else None,
+        }
+        with open(checkpoint_index_path, "w", encoding="utf-8") as f:
+            json.dump(checkpoint_index, f, indent=2, sort_keys=True)
+            f.write("\n")
+        with open(metrics_json_path, "w", encoding="utf-8") as f:
+            json.dump(metrics, f, indent=2, sort_keys=True)
+            f.write("\n")
+        update_run_manifest(
+            layout,
+            pretraining_metrics={"pretrain": dict(metrics)},
+            checkpoints={"pretrain": {**checkpoint_index, "index_json": checkpoint_index_path}},
+            paths={"pretrain": {"final_metrics_json": metrics_json_path, "checkpoint_index_json": checkpoint_index_path}},
+        )
+        metrics["checkpoint_index_json"] = checkpoint_index_path
+        metrics["final_metrics_json"] = metrics_json_path
         return metrics
 
     def validate(self, val_loader: DataLoader) -> Dict[str, float]:
@@ -142,7 +178,7 @@ class PretrainRunner:
         score = float(sum(vals) / max(1, len(vals)))
         print(json.dumps({"val/loss_total": score}, sort_keys=True))
         layout = ensure_run_layout()
-        update_run_manifest(layout, metrics={"pretrain": {"val/loss_total": score}})
+        update_run_manifest(layout, metrics={"pretrain": {"val/loss_total": score}}, pretraining_metrics={"pretrain": {"val/loss_total": score}})
         return {"val/loss_total": score}
 
     def save_checkpoint(self, path: str) -> None:

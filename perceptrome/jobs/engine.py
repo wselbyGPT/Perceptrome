@@ -305,7 +305,22 @@ class JobEngine:
             run_id=run_id,
             tokenizer_encoding_config={"tokenizer": tokenizer, "window_size": int(p.get("window_size") or train_cfg.window_size)},
             model_objective_config={"model_type": getattr(train_cfg, "model_type", None)},
-            generated_sequences={"output": output, "name": str(p.get("name", "perceptrome_plasmid_1")), "type": "plasmid", "length": len(seq)},
+            generated_sequences={
+                "entries": [
+                    {
+                        "type": "plasmid",
+                        "name": str(p.get("name", "perceptrome_plasmid_1")),
+                        "output": output,
+                        "summary_json": path_in_run(layout, "outputs", f"{os.path.basename(output)}.summary.json"),
+                        "top_k_output": path_in_run(layout, "outputs", os.path.basename(str(p.get("top_k_output") or f"{os.path.basename(output)}.top{int(p.get('top_k', 1))}.fasta"))),
+                        "length_bp": len(seq),
+                        "top_k": int(p.get("top_k", 1)),
+                        "num_candidates": int(p.get("num_candidates", 1)),
+                        "tokenizer": tokenizer,
+                    }
+                ]
+            },
+            training_metrics={"generate_plasmid": {"length_bp": len(seq)}},
             metrics={"length_bp": len(seq)},
         )
         update_run_manifest(layout, paths={"generated": {"plasmid_fasta": output, "manifest": manifest_path}})
@@ -328,7 +343,22 @@ class JobEngine:
             run_id=run_id,
             tokenizer_encoding_config={"tokenizer": "aa", "window_size": int(p.get("window_aa") or train_cfg.protein_window_aa)},
             model_objective_config={"model_type": getattr(train_cfg, "model_type", None)},
-            generated_sequences={"output": output, "name": str(p.get("name", "perceptrome_protein_1")), "type": "protein", "length": len(seq)},
+            generated_sequences={
+                "entries": [
+                    {
+                        "type": "protein",
+                        "name": str(p.get("name", "perceptrome_protein_1")),
+                        "output": output,
+                        "summary_json": path_in_run(layout, "outputs", f"{os.path.basename(output)}.summary.json"),
+                        "top_k_output": path_in_run(layout, "outputs", os.path.basename(str(p.get("top_k_output") or f"{os.path.basename(output)}.top{int(p.get('top_k', 1))}.fasta"))),
+                        "length_aa": len(seq),
+                        "top_k": int(p.get("top_k", 1)),
+                        "num_candidates": int(p.get("num_candidates", 1)),
+                        "tokenizer": "aa",
+                    }
+                ]
+            },
+            training_metrics={"generate_protein": {"length_aa": len(seq)}},
             metrics={"length_aa": len(seq)},
         )
         update_run_manifest(layout, paths={"generated": {"protein_faa": output, "manifest": manifest_path}})
@@ -355,8 +385,12 @@ class JobEngine:
         output_json = p.get("output_json")
         payload = {"generated_fasta": generated_fasta, "catalog": catalog_path, "top_n": top_n, "results": top_rows}
         out_path = path_in_run(layout, "outputs", os.path.basename(str(output_json or "validation.json")))
+        machine_json = path_in_run(layout, "artifacts", "validation_results.json")
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
         with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+            f.write("\n")
+        with open(machine_json, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
             f.write("\n")
         if output_json:
@@ -373,11 +407,21 @@ class JobEngine:
             spec=spec,
             run_id=run_id,
             dataset_catalog_manifest={"catalog": catalog_path, "generated_fasta": generated_fasta},
-            validation_results={"top_n": top_n, "results": top_rows, "output_json": out_path},
+            validation_results={
+                "top_n": top_n,
+                "results": top_rows,
+                "output_json": out_path,
+                "machine_artifact_json": machine_json,
+            },
+            training_metrics={"validate_plasmid": {"evaluated": len(rows), "top_score": float(top_rows[0]["score"]) if top_rows else None}},
             metrics={"evaluated": len(rows), "top_score": float(top_rows[0]["score"]) if top_rows else None},
         )
-        update_run_manifest(layout, paths={"validation": {"report_json": out_path, "manifest": manifest_path}})
-        return {"results": top_rows, "top_n": top_n, "manifest_path": manifest_path, "output_json": out_path}
+        update_run_manifest(
+            layout,
+            paths={"validation": {"report_json": out_path, "machine_report_json": machine_json, "manifest": manifest_path}},
+            validation_results={"validate_plasmid": {"top_n": top_n, "output_json": out_path, "machine_artifact_json": machine_json}},
+        )
+        return {"results": top_rows, "top_n": top_n, "manifest_path": manifest_path, "output_json": out_path, "machine_artifact_json": machine_json}
 
     def _run_pretrain(self, spec: JobSpec) -> Dict[str, Any]:
         cfg = load_full_config(spec.config_path)
@@ -414,12 +458,15 @@ class JobEngine:
             dataset_catalog_manifest={"dataset_path": dataset_path},
             tokenizer_encoding_config={"vocab_size": int(pipeline_cfg.vocab_size)},
             model_objective_config={
-                "hidden_size": int(pipeline_cfg.hidden_size),
-                "enable_mlm": bool(pipeline_cfg.enable_mlm),
-                "enable_sme": bool(pipeline_cfg.enable_sme),
-                "enable_contrastive": bool(pipeline_cfg.enable_contrastive),
+                "model": {"hidden_size": int(pipeline_cfg.hidden_size)},
+                "objective": {
+                    "enable_mlm": bool(pipeline_cfg.enable_mlm),
+                    "enable_sme": bool(pipeline_cfg.enable_sme),
+                    "enable_contrastive": bool(pipeline_cfg.enable_contrastive),
+                },
             },
-            checkpoints={"output_dir": str(pipeline_cfg.output_dir)},
+            checkpoints={"output_dir": str(pipeline_cfg.output_dir), "index_json": str(metrics.get("checkpoint_index_json", ""))},
+            pretraining_metrics=dict(metrics),
             metrics=dict(metrics),
         )
         return {"metrics": metrics, "completed_at": datetime.now(timezone.utc).isoformat(), "manifest_path": manifest_path}

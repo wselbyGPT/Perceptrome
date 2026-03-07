@@ -386,6 +386,20 @@ def generate_plasmid_sequence(
                 "plasmid_summary_csv": summary_csv,
             }
         },
+        generated_sequences={
+            "plasmid": {
+                "output": output_path,
+                "top_k_output": top_k_output,
+                "summary_json": summary_json,
+                "summary_csv": summary_csv,
+                "name": name,
+                "tokenizer": tok,
+                "length_bp": len(seq),
+                "top_k": top_k,
+                "num_candidates": nc,
+                "seed": int(seed_info["value"]),
+            }
+        },
         metrics={"generate_plasmid": {"length_bp": len(seq), "top_k": top_k, "seed": int(seed_info["value"])}},
         provenance={"rng": {"seed": int(seed_info["value"]), "source": str(seed_info["source"])}}
     )
@@ -576,6 +590,20 @@ def generate_protein_sequence(
                 "protein_top_k_fasta": top_k_output,
                 "protein_summary_json": summary_json,
                 "protein_summary_csv": summary_csv,
+            }
+        },
+        generated_sequences={
+            "protein": {
+                "output": output_path,
+                "top_k_output": top_k_output,
+                "summary_json": summary_json,
+                "summary_csv": summary_csv,
+                "name": name,
+                "tokenizer": tok,
+                "length_aa": len(seq),
+                "top_k": top_k,
+                "num_candidates": nc,
+                "seed": int(seed_info["value"]),
             }
         },
         metrics={"generate_protein": {"length_aa": len(seq), "top_k": top_k, "seed": int(seed_info["value"])}},
