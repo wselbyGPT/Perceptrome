@@ -12,12 +12,12 @@ body {
 }
 
 body {
-  color: var(--color-text-primary);
+  color: var(--text-primary);
   font-family: var(--font-sans);
   background:
-    radial-gradient(circle at 15% 0%, #142133 0%, transparent 45%),
-    radial-gradient(circle at 90% 10%, #111a28 0%, transparent 40%),
-    linear-gradient(180deg, #090c11 0%, var(--color-bg-canvas) 100%);
+    radial-gradient(circle at 15% 0%, color-mix(in srgb, var(--brand-9) 50%, transparent) 0%, transparent 45%),
+    radial-gradient(circle at 90% 10%, color-mix(in srgb, var(--brand-8) 35%, transparent) 0%, transparent 40%),
+    linear-gradient(180deg, var(--surface-0) 0%, var(--color-bg-canvas) 100%);
 }
 
 h1,
@@ -27,24 +27,45 @@ p {
   margin: 0;
 }
 
+h1,
+h2,
+h3 {
+  color: var(--text-primary);
+}
+
+p {
+  color: var(--text-secondary);
+}
+
 a {
   color: var(--color-text-link);
   text-decoration: none;
+  transition: color var(--transition-fast);
 }
 
 a:hover {
+  color: var(--link-hover);
   text-decoration: underline;
+}
+
+a:active {
+  color: var(--link-active);
+}
+
+a:focus-visible {
+  outline: 2px solid var(--link-focus-ring);
+  outline-offset: 2px;
 }
 
 label {
   display: block;
   margin-bottom: var(--space-1);
-  color: var(--color-text-muted);
+  color: var(--text-secondary);
   font-size: var(--text-sm);
 }
 
 .muted {
-  color: var(--color-text-muted);
+  color: var(--text-secondary);
 }
 
 .mono {

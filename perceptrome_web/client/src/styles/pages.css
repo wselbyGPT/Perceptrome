@@ -17,13 +17,13 @@
 .auth-sub {
   margin-top: var(--space-2);
   margin-bottom: var(--space-4);
-  color: var(--color-text-muted);
+  color: var(--text-secondary);
   font-size: var(--text-sm);
 }
 
 .auth-hint {
   margin-top: var(--space-2);
-  color: var(--color-text-muted);
+  color: var(--text-tertiary);
   font-size: var(--text-xs);
 }
 
@@ -43,13 +43,14 @@ body.page-home { padding: 18px; }
   align-items: center;
   gap: 12px;
   padding: 14px 16px;
+  box-shadow: var(--shadow-md);
 }
 
 .brand { display: flex; flex-direction: column; gap: 4px; }
-.brand h1 { font-size: 1.1rem; letter-spacing: 0.02em; }
-.brand .subtitle { color: var(--color-text-muted); font-size: 0.85rem; }
+.brand h1 { font-size: 1.1rem; letter-spacing: 0.02em; color: var(--text-primary); }
+.brand .subtitle { color: var(--text-secondary); font-size: 0.85rem; }
 .auth-controls { display: flex; align-items: center; gap: 10px; }
-#whoami { color: var(--color-text-muted); font-size: var(--text-sm); white-space: nowrap; }
+#whoami { color: var(--text-secondary); font-size: var(--text-sm); white-space: nowrap; }
 
 .layout { display: grid; grid-template-columns: 1.15fr 1fr; gap: 14px; }
 .column { display: grid; gap: 14px; align-content: start; }
@@ -61,12 +62,12 @@ body.page-home { padding: 18px; }
   gap: 10px;
   margin: -20px -20px 14px;
   padding: 12px 14px;
-  border-bottom: 1px solid #1d2733;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0));
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--text-inverse) 2%, transparent), transparent);
 }
 
-.panel-title { font-size: 0.95rem; font-weight: 700; }
-.panel-subtitle { margin-top: 2px; color: var(--color-text-muted); font-size: 0.8rem; }
+.panel-title { font-size: 0.95rem; font-weight: 700; color: var(--text-primary); }
+.panel-subtitle { margin-top: 2px; color: var(--text-secondary); font-size: 0.8rem; }
 
 .status-card { display: grid; gap: 8px; }
 .status-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -75,18 +76,19 @@ body.page-home { padding: 18px; }
   height: 10px;
   border-radius: var(--radius-pill);
   background: var(--color-warning);
-  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.12);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--warning-5) 20%, transparent);
 }
-.status-label { color: var(--color-text-muted); font-size: 0.85rem; }
+.status-label { color: var(--text-secondary); font-size: 0.85rem; }
 
 #status,
 .terminal,
 .results-wrap {
   font-family: var(--font-mono);
   background: var(--color-bg-ink);
-  border: 1px solid #1d2733;
+  border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-md);
-  color: #dbe7f3;
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
 }
 
 #status { padding: 10px 12px; min-height: 44px; display: flex; align-items: center; }
@@ -102,9 +104,9 @@ body.page-home { padding: 18px; }
   font-size: 0.86rem;
   line-height: 1.45;
 }
-#logs:empty::before { content: "Logs will stream here…"; color: #7f93a8; }
-#results:empty::before { content: "Results and artifacts will appear here…"; color: #7f93a8; }
-.footer-note { color: var(--color-text-muted); font-size: var(--text-xs); padding: 0 2px; }
+#logs:empty::before { content: "Logs will stream here…"; color: var(--text-tertiary); }
+#results:empty::before { content: "Results and artifacts will appear here…"; color: var(--text-tertiary); }
+.footer-note { color: var(--text-secondary); font-size: var(--text-xs); padding: 0 2px; }
 
 /* Admin users */
 body.page-admin { padding: 18px; }
@@ -113,11 +115,11 @@ body.page-admin { padding: 18px; }
 .row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .row3 { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; }
 .table-wrap { overflow: auto; }
-.checkbox-label { display: flex; gap: 8px; align-items: center; margin: 0; color: var(--color-text-primary); }
+.checkbox-label { display: flex; gap: 8px; align-items: center; margin: 0; color: var(--text-primary); }
 .checkbox-label .input[type="checkbox"] { width: auto; }
 
 /* Change password */
-.who { margin-bottom: 8px; color: var(--color-text-muted); font-size: 0.85rem; }
+.who { margin-bottom: 8px; color: var(--text-secondary); font-size: 0.85rem; }
 .field-error { min-height: 1.15rem; color: var(--color-danger); margin-top: 4px; font-size: 0.8rem; }
 .password-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
 .strength { margin-top: 8px; }
