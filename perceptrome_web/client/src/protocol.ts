@@ -137,6 +137,7 @@ export type ClientToServerMessage =
 export interface StatusMessage {
   type: "status";
   status: string;
+  state?: "queued" | "running" | "completed" | "failed" | "canceled";
 
   /**
    * Progress in [0,1] if present.
@@ -186,11 +187,14 @@ export interface LogsMessage {
 
 export interface ResultMessage {
   type: "result";
+  state?: "queued" | "running" | "completed" | "failed" | "canceled";
   result?: JsonValue;
   data?: JsonValue;
   payload?: JsonValue;
 
   run_id?: string;
+  manifest_path?: string;
+  manifest_uri?: string;
   request_id?: string;
 
   [key: string]: JsonValue | undefined;
@@ -205,6 +209,38 @@ export interface ResultsMessage {
   run_id?: string;
   request_id?: string;
 
+  [key: string]: JsonValue | undefined;
+}
+
+
+export interface ProgressMessage {
+  type: "progress";
+  run_id: string;
+  state?: "queued" | "running" | "completed" | "failed" | "canceled";
+  phase?: string;
+  progress: number;
+  [key: string]: JsonValue | undefined;
+}
+
+export interface PhaseMessage {
+  type: "phase";
+  run_id: string;
+  state?: "queued" | "running" | "completed" | "failed" | "canceled";
+  phase: string;
+  status?: string;
+  data?: JsonValue;
+  [key: string]: JsonValue | undefined;
+}
+
+export interface ArtifactAvailableMessage {
+  type: "artifact-available";
+  run_id: string;
+  state?: "queued" | "running" | "completed" | "failed" | "canceled";
+  phase?: string;
+  artifact: JsonObject & {
+    path?: string;
+    uri?: string;
+  };
   [key: string]: JsonValue | undefined;
 }
 
@@ -282,6 +318,9 @@ export interface ServerCustomMessage {
  */
 export type ServerToClientMessage =
   | StatusMessage
+  | ProgressMessage
+  | PhaseMessage
+  | ArtifactAvailableMessage
   | LogMessage
   | LogsMessage
   | ResultMessage

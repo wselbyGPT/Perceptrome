@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Literal, Optional
@@ -60,12 +61,23 @@ class JobResult:
     events: list[JobEvent] = field(default_factory=list)
 
 
+class JobCancelledError(Exception):
+    pass
+
+
 class JobEngine:
-    def __init__(self, event_sink: Optional[Callable[[JobEvent], None]] = None):
+    def __init__(self, event_sink: Optional[Callable[[JobEvent], None]] = None, cancel_event: Optional[threading.Event] = None):
         self._event_sink = event_sink
         self._events: list[JobEvent] = []
+        self._cancel_event = cancel_event
+
+    def _check_cancel(self) -> None:
+        if self._cancel_event and self._cancel_event.is_set():
+            raise JobCancelledError("Run canceled")
 
     def _emit(self, stage: str, message: str, **data: Any) -> None:
+        if stage != "canceled":
+            self._check_cancel()
         event = JobEvent(stage=stage, message=message, data=data)
         self._events.append(event)
         if self._event_sink:
@@ -87,6 +99,7 @@ class JobEngine:
         self._events = []
         self._emit("start", f"Starting job kind={spec.kind}")
         try:
+            self._check_cancel()
             handlers = {
                 "train_one": self._run_train_one,
                 "stream": self._run_stream,
@@ -98,6 +111,9 @@ class JobEngine:
             data = handlers[spec.kind](spec)
             self._emit("done", "Job finished successfully")
             return JobResult(ok=True, exit_code=0, message="ok", data=data, events=list(self._events))
+        except JobCancelledError:
+            self._emit("canceled", "Job canceled")
+            return JobResult(ok=False, exit_code=130, message="canceled", data={"canceled": True}, events=list(self._events))
         except Exception as exc:  # noqa: BLE001
             self._emit("error", f"Job failed: {exc}", error=repr(exc))
             return JobResult(ok=False, exit_code=1, message=str(exc), events=list(self._events))
@@ -244,10 +260,12 @@ class JobEngine:
         last_total = 0.0
         for_epoch_losses: list[float] = []
         while epoch < max_epochs:
+            self._check_cancel()
             indices = list(range(len(accessions)))
             if train_cfg.shuffle_catalog:
                 random.shuffle(indices)
             for idx in indices:
+                self._check_cancel()
                 acc = accessions[idx]
                 pol = self._resolve_proteome_params(params, train_cfg, tok, src)
                 _ensure_record(acc, src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=False)
