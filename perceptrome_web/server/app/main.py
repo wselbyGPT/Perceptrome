@@ -10,7 +10,7 @@ from collections import Counter
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from uuid import uuid4
 
 from fastapi import (
@@ -23,6 +23,7 @@ from fastapi import (
     WebSocketDisconnect,
     status,
 )
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import Session
@@ -31,7 +32,7 @@ from .config import settings
 from .auth_rate_limit import login_attempt_store
 from .db import Base, engine, SessionLocal
 from .deps import get_db, get_current_user, get_current_user_strict, require_role
-from .models import AuthToken, User, UserSession
+from .models import AuthToken, Run, RunArtifact, User, UserSession
 from .schemas import (
     RegisterRequest,
     LoginRequest,
@@ -43,6 +44,9 @@ from .schemas import (
     AdminCreateUserRequest,
     UserOut,
     MessageOut,
+    RunArtifactOut,
+    RunOut,
+    RunStartRequest,
 )
 from perceptrome.jobs import JobEngine, JobEvent, JobSpec
 
@@ -83,11 +87,120 @@ class RunRecord:
 _run_lock = threading.Lock()
 _runs: dict[str, RunRecord] = {}
 
+VALID_JOB_KINDS = {"train_one", "stream", "generate_plasmid", "generate_protein", "validate_plasmid", "pretrain"}
 
-def _extract_manifest_uri(data: dict[str, Any]) -> str | None:
+
+def _json_dumps(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def _json_loads(value: str | None) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _artifact_download_url(run_id: str, artifact_id: int) -> str:
+    return f"/api/runs/{run_id}/artifacts/{artifact_id}/download"
+
+
+def _run_to_out(run: Run) -> RunOut:
+    artifacts = [
+        RunArtifactOut(
+            id=a.id,
+            phase=a.phase,
+            path=a.path,
+            label=a.label,
+            download_url=_artifact_download_url(run.run_id, a.id),
+            created_at=a.created_at,
+        )
+        for a in sorted(run.artifacts, key=lambda item: item.created_at)
+    ]
+    result_obj = _json_loads(run.result_json)
+    return RunOut(
+        run_id=run.run_id,
+        user_id=run.user_id,
+        kind=run.kind,
+        state=run.state,
+        message=run.message,
+        config=_json_loads(run.config_json),
+        result=result_obj or None,
+        submitted_at=run.submitted_at,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        artifacts=artifacts,
+    )
+
+
+def _find_run(db: Session, run_id: str) -> Run | None:
+    return db.execute(select(Run).where(Run.run_id == run_id)).scalar_one_or_none()
+
+
+def _save_run_submission(db: Session, user: User, run_id: str, spec: JobSpec, cfg: dict[str, Any]) -> Run:
+    run = _find_run(db, run_id)
+    if run and run.state in {"queued", "running"}:
+        raise HTTPException(status_code=409, detail=f"Run already active: {run_id}")
+    if not run:
+        run = Run(run_id=run_id, user_id=user.id, kind=spec.kind)
+        db.add(run)
+    run.kind = spec.kind
+    run.state = "queued"
+    run.config_json = _json_dumps(cfg)
+    run.result_json = None
+    run.message = "queued"
+    run.submitted_at = _utcnow()
+    run.started_at = None
+    run.finished_at = None
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def _mark_run_started(db: Session, run_id: str):
+    run = _find_run(db, run_id)
+    if not run:
+        return
+    run.state = "running"
+    run.started_at = _utcnow()
+    run.message = "running"
+    db.commit()
+
+
+def _record_artifact(db: Session, run_id: str, path: str, phase: str | None = None, label: str | None = None) -> RunArtifact | None:
+    run = _find_run(db, run_id)
+    if not run:
+        return None
+    artifact = RunArtifact(run_id=run.id, path=path, phase=phase, label=label)
+    db.add(artifact)
+    db.commit()
+    db.refresh(artifact)
+    return artifact
+
+
+def _finalize_run(db: Session, run_id: str, state: RunState, result: dict[str, Any], message: str | None = None):
+    run = _find_run(db, run_id)
+    if not run:
+        return
+    run.state = state
+    run.message = message or state
+    run.result_json = _json_dumps(result)
+    run.finished_at = _utcnow()
+    db.commit()
+
+
+def _assert_run_access(run: Run, user: User):
+    if user.role != "admin" and run.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+
+def _extract_manifest_uri(data: dict[str, Any], run_id: str) -> str | None:
     manifest_path = data.get("manifest_path")
     if isinstance(manifest_path, str) and manifest_path:
-        return Path(manifest_path).absolute().as_uri()
+        return f"/api/runs/{run_id}/artifacts/download-by-path?path={quote(manifest_path)}"
     return None
 
 
@@ -96,6 +209,10 @@ def _parse_job_spec(config: dict[str, Any]) -> tuple[str, JobSpec]:
     run_id = str(cfg.get("run_id") or cfg.get("manifest_id") or f"web_{uuid4().hex}")
     kind = str(cfg.get("kind", "generate_plasmid"))
     config_path = str(cfg.get("config_path", "config/stream_config.yaml"))
+    if kind not in VALID_JOB_KINDS:
+        raise HTTPException(status_code=400, detail=f"Unsupported run kind: {kind}")
+    if not config_path:
+        raise HTTPException(status_code=400, detail="config_path is required")
 
     reserved = {"run_id", "manifest_id", "kind", "config_path", "params"}
     params = {k: v for k, v in cfg.items() if k not in reserved}
@@ -598,16 +715,18 @@ def change_password(
 
 
 @app.post("/api/runs/start")
-def start_run(payload: dict[str, Any] | None = None, user: User = Depends(get_current_user_strict)):
-    cfg = dict((payload or {}).get("config") or payload or {})
+def start_run(payload: RunStartRequest | None = None, user: User = Depends(get_current_user_strict), db: Session = Depends(get_db)):
+    cfg = dict((payload.config if payload else {}) or {})
     run_id, spec = _parse_job_spec(cfg)
     record = _upsert_run(run_id, spec)
+    _save_run_submission(db, user, run_id, spec, cfg)
     record.state = "running"
+    _mark_run_started(db, run_id)
     result = JobEngine(cancel_event=record.cancel_event).run(spec)
     final_state: RunState = "completed" if result.ok else ("canceled" if result.exit_code == 130 else "failed")
     result_data = dict(result.data or {})
     manifest_path = result_data.get("manifest_path") if isinstance(result_data.get("manifest_path"), str) else None
-    manifest_uri = _extract_manifest_uri(result_data)
+    manifest_uri = _extract_manifest_uri(result_data, run_id)
     final_payload = {
         "run_id": run_id,
         "ok": bool(result.ok),
@@ -620,7 +739,67 @@ def start_run(payload: dict[str, Any] | None = None, user: User = Depends(get_cu
     with _run_lock:
         record.state = final_state
         record.result = final_payload
+    if manifest_path:
+        _record_artifact(db, run_id, manifest_path, phase="manifest", label="Run manifest")
+    _finalize_run(db, run_id, final_state, final_payload, result.message)
     return {"ok": result.ok, "message": result.message, "user_id": user.id, "role": user.role, "result": final_payload}
+
+
+@app.get("/api/runs", response_model=list[RunOut])
+def list_runs(user: User = Depends(get_current_user_strict), db: Session = Depends(get_db), limit: int = 50):
+    q = select(Run).order_by(Run.submitted_at.desc()).limit(max(1, min(limit, 200)))
+    if user.role != "admin":
+        q = q.where(Run.user_id == user.id)
+    runs = db.execute(q).scalars().all()
+    return [_run_to_out(run) for run in runs]
+
+
+@app.get("/api/runs/{run_id}", response_model=RunOut)
+def get_run(run_id: str, user: User = Depends(get_current_user_strict), db: Session = Depends(get_db)):
+    run = _find_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    _assert_run_access(run, user)
+    return _run_to_out(run)
+
+
+@app.get("/api/runs/{run_id}/artifacts", response_model=list[RunArtifactOut])
+def list_run_artifacts(run_id: str, user: User = Depends(get_current_user_strict), db: Session = Depends(get_db)):
+    run = _find_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    _assert_run_access(run, user)
+    return _run_to_out(run).artifacts
+
+
+@app.get("/api/runs/{run_id}/artifacts/{artifact_id}/download")
+def download_artifact(run_id: str, artifact_id: int, user: User = Depends(get_current_user_strict), db: Session = Depends(get_db)):
+    run = _find_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    _assert_run_access(run, user)
+    artifact = db.execute(select(RunArtifact).where(RunArtifact.id == artifact_id).where(RunArtifact.run_id == run.id)).scalar_one_or_none()
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    target = Path(artifact.path).expanduser().resolve()
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Artifact file not found")
+    return FileResponse(path=target, filename=target.name)
+
+
+@app.get("/api/runs/{run_id}/artifacts/download-by-path")
+def download_artifact_by_path(run_id: str, path: str, user: User = Depends(get_current_user_strict), db: Session = Depends(get_db)):
+    run = _find_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    _assert_run_access(run, user)
+    target = Path(path).expanduser().resolve()
+    known_paths = {Path(a.path).expanduser().resolve() for a in run.artifacts}
+    if target not in known_paths:
+        raise HTTPException(status_code=403, detail="Artifact path not permitted")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Artifact file not found")
+    return FileResponse(path=target, filename=target.name)
 
 
 @app.get("/api/admin/users")
@@ -727,6 +906,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 run_id, spec = _parse_job_spec(cfg)
                 try:
                     record = _upsert_run(run_id, spec)
+                    _save_run_submission(db, user, run_id, spec, cfg)
                 except HTTPException as exc:
                     await websocket.send_text(json.dumps({"type": "error", "run_id": run_id, "state": "failed", "message": str(exc.detail)}))
                     continue
@@ -738,12 +918,22 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 def _sink(ev: JobEvent):
                     payload: dict[str, Any] = {"type": "log", "run_id": run_id, "phase": ev.stage, "line": ev.message, "data": ev.data}
+                    if ev.stage == "train" and "loss" in ev.data:
+                        payload = {"type": "metric", "run_id": run_id, "phase": ev.stage, "name": "loss", "value": float(ev.data["loss"]), "step": ev.data.get("epoch")}
+                    if ev.stage == "validate" and ev.data:
+                        payload = {"type": "validation-summary", "run_id": run_id, "phase": ev.stage, "summary": ev.data}
                     if "progress" in ev.data and isinstance(ev.data.get("progress"), (int, float)):
                         payload = {"type": "progress", "run_id": run_id, "state": "running", "phase": ev.stage, "progress": float(ev.data["progress"])}
                     elif ev.stage in {"start", "done", "stream_step", "generate", "validate", "pretrain", "encode", "train", "manifest"}:
                         payload = {"type": "phase", "run_id": run_id, "state": "running", "phase": ev.stage, "status": ev.message, "data": ev.data}
                     if "path" in ev.data and isinstance(ev.data.get("path"), str):
-                        loop.call_soon_threadsafe(queue.put_nowait, {"type": "artifact-available", "run_id": run_id, "state": "running", "artifact": {"path": ev.data["path"], "uri": Path(ev.data["path"]).absolute().as_uri()}, "phase": ev.stage})
+                        with SessionLocal() as tx:
+                            artifact = _record_artifact(tx, run_id, ev.data["path"], phase=ev.stage)
+                        artifact_payload = {"path": ev.data["path"]}
+                        if artifact:
+                            artifact_payload["download_url"] = _artifact_download_url(run_id, artifact.id)
+                            loop.call_soon_threadsafe(queue.put_nowait, {"type": "checkpoint", "run_id": run_id, "phase": ev.stage, "path": ev.data["path"], "download_url": artifact_payload["download_url"]})
+                        loop.call_soon_threadsafe(queue.put_nowait, {"type": "artifact-available", "run_id": run_id, "state": "running", "artifact": artifact_payload, "phase": ev.stage})
                     loop.call_soon_threadsafe(queue.put_nowait, payload)
 
                 async def _forward_events(task: asyncio.Task[Any]):
@@ -757,6 +947,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         await websocket.send_text(json.dumps(item))
 
                 record.state = "running"
+                _mark_run_started(db, run_id)
                 await websocket.send_text(json.dumps({"type": "status", "run_id": run_id, "state": "running", "status": "running", "phase": "start", "progress": 0.01}))
 
                 run_task = asyncio.create_task(asyncio.to_thread(lambda: JobEngine(event_sink=_sink, cancel_event=record.cancel_event).run(spec)))
@@ -767,7 +958,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 final_state: RunState = "completed" if result.ok else ("canceled" if result.exit_code == 130 else "failed")
                 result_data = dict(result.data or {})
                 manifest_path = result_data.get("manifest_path") if isinstance(result_data.get("manifest_path"), str) else None
-                manifest_uri = _extract_manifest_uri(result_data)
+                manifest_uri = _extract_manifest_uri(result_data, run_id)
                 final_result = {
                     "run_id": run_id,
                     "ok": bool(result.ok),
@@ -781,6 +972,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     record.state = final_state
                     record.result = final_result
 
+                if manifest_path:
+                    _record_artifact(db, run_id, manifest_path, phase="manifest", label="Run manifest")
+                _finalize_run(db, run_id, final_state, final_result, result.message)
+
                 await websocket.send_text(json.dumps({"type": "result", "run_id": run_id, "state": final_state, "result": final_result}))
                 await websocket.send_text(json.dumps({"type": "status", "run_id": run_id, "state": final_state, "status": final_state, "phase": "done", "progress": (1.0 if final_state == "completed" else 0.0)}))
 
@@ -793,6 +988,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 if not run_id or not _stop_run_record(run_id):
                     await websocket.send_text(json.dumps({"type": "error", "state": "failed", "message": "run_id not found"}))
                 else:
+                    _finalize_run(db, run_id, "canceled", {"run_id": run_id, "canceled": True}, "Cancellation requested")
                     await websocket.send_text(json.dumps({"type": "run_stopped", "run_id": run_id, "state": "canceled", "message": "Cancellation requested"}))
 
             elif msg.get("type") == "ping":

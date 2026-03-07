@@ -28,6 +28,8 @@ export type JsonObject = { [key: string]: JsonValue };
 export interface RunConfig {
   // Common identifiers
   run_id?: string;
+  kind?: string;
+  config_path?: string;
   name?: string;
   job_name?: string;
 
@@ -48,6 +50,8 @@ export interface RunConfig {
   epochs?: number;
   batch_size?: number;
   learning_rate?: number;
+  length_bp?: number;
+  temperature?: number;
   seed?: number;
   device?: string; // e.g., "cpu", "cuda", "mps"
   max_steps?: number;
@@ -240,7 +244,35 @@ export interface ArtifactAvailableMessage {
   artifact: JsonObject & {
     path?: string;
     uri?: string;
+    download_url?: string;
   };
+  [key: string]: JsonValue | undefined;
+}
+
+export interface MetricMessage {
+  type: "metric";
+  run_id: string;
+  phase?: string;
+  name: string;
+  value: number;
+  step?: number;
+  [key: string]: JsonValue | undefined;
+}
+
+export interface CheckpointMessage {
+  type: "checkpoint";
+  run_id: string;
+  phase?: string;
+  path: string;
+  download_url?: string;
+  [key: string]: JsonValue | undefined;
+}
+
+export interface ValidationSummaryMessage {
+  type: "validation-summary";
+  run_id: string;
+  phase?: string;
+  summary: JsonValue;
   [key: string]: JsonValue | undefined;
 }
 
@@ -321,6 +353,9 @@ export type ServerToClientMessage =
   | ProgressMessage
   | PhaseMessage
   | ArtifactAvailableMessage
+  | MetricMessage
+  | CheckpointMessage
+  | ValidationSummaryMessage
   | LogMessage
   | LogsMessage
   | ResultMessage

@@ -70,3 +70,30 @@ class UserOut(BaseModel):
 
 class MessageOut(BaseModel):
     message: str
+
+
+class RunStartRequest(BaseModel):
+    config: dict = Field(default_factory=dict)
+
+
+class RunArtifactOut(BaseModel):
+    id: int
+    phase: str | None = None
+    path: str
+    label: str | None = None
+    download_url: str
+    created_at: datetime
+
+
+class RunOut(BaseModel):
+    run_id: str
+    user_id: str
+    kind: str
+    state: str
+    message: str | None = None
+    config: dict = Field(default_factory=dict)
+    result: dict | None = None
+    submitted_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    artifacts: list[RunArtifactOut] = Field(default_factory=list)
