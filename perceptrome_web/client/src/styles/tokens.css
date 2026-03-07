@@ -1,25 +1,92 @@
 :root {
   color-scheme: dark;
 
-  /* Color tokens */
-  --color-bg-canvas: #0b0f14;
-  --color-bg-canvas-elevated: #0f141b;
+  /* Neutral surfaces */
+  --surface-0: #090c11;
+  --surface-1: #0b0f14;
+  --surface-2: #0f141b;
+  --surface-3: #121922;
+  --surface-4: #1b2430;
+  --surface-5: #243041;
+
+  /* Brand ramp */
+  --brand-1: #dbeafe;
+  --brand-2: #bfdbfe;
+  --brand-3: #93c5fd;
+  --brand-4: #60a5fa;
+  --brand-5: #3b82f6;
+  --brand-6: #2563eb;
+  --brand-7: #1d4ed8;
+  --brand-8: #1e40af;
+  --brand-9: #1e3a8a;
+
+  /* Feedback ramps */
+  --success-1: #dcfce7;
+  --success-3: #86efac;
+  --success-5: #22c55e;
+  --success-7: #15803d;
+  --warning-1: #fef3c7;
+  --warning-3: #fcd34d;
+  --warning-5: #f59e0b;
+  --warning-7: #b45309;
+  --danger-1: #fee2e2;
+  --danger-3: #fca5a5;
+  --danger-5: #ef4444;
+  --danger-7: #b91c1c;
+  --info-1: #e0f2fe;
+  --info-3: #7dd3fc;
+  --info-5: #0ea5e9;
+  --info-7: #0369a1;
+
+  /* Text hierarchy */
+  --text-primary: #e6edf3;
+  --text-secondary: #9fb0c3;
+  --text-tertiary: #7f93a8;
+  --text-inverse: #ffffff;
+
+  /* Color aliases for existing components */
+  --color-bg-canvas: var(--surface-1);
+  --color-bg-canvas-elevated: var(--surface-2);
   --color-bg-surface: rgba(18, 25, 34, 0.95);
-  --color-bg-surface-subtle: #0f151d;
+  --color-bg-surface-subtle: var(--surface-2);
   --color-bg-ink: #0a0f15;
   --color-border-strong: #273445;
   --color-border-subtle: #1f2a37;
   --color-border-input: #334155;
-  --color-text-primary: #e6edf3;
-  --color-text-muted: #9fb0c3;
-  --color-text-link: #93c5fd;
-  --color-accent: #2563eb;
-  --color-accent-hover: #1d4ed8;
-  --color-danger: #ef4444;
-  --color-danger-soft: #f87171;
-  --color-warning: #f59e0b;
-  --color-warning-soft: #fbbf24;
-  --color-success: #22c55e;
+  --color-text-primary: var(--text-primary);
+  --color-text-muted: var(--text-secondary);
+  --color-text-link: var(--brand-3);
+  --color-accent: var(--brand-6);
+  --color-accent-hover: var(--brand-7);
+  --color-danger: var(--danger-5);
+  --color-danger-soft: var(--danger-3);
+  --color-warning: var(--warning-5);
+  --color-warning-soft: var(--warning-3);
+  --color-success: var(--success-5);
+  --color-info: var(--info-5);
+
+  /* Interactive states */
+  --interactive-hover-bg: color-mix(in srgb, var(--surface-5) 72%, var(--surface-4));
+  --interactive-active-bg: color-mix(in srgb, var(--surface-5) 55%, var(--surface-3));
+  --interactive-focus-ring: rgba(79, 140, 255, 0.2);
+  --interactive-disabled-opacity: 0.65;
+  --interactive-disabled-fg: var(--text-tertiary);
+
+  --link-hover: var(--brand-2);
+  --link-active: var(--brand-1);
+  --link-focus-ring: var(--brand-4);
+
+  --button-hover-bg: var(--brand-7);
+  --button-active-bg: var(--brand-8);
+  --button-focus-ring: var(--interactive-focus-ring);
+
+  --input-hover-bg: var(--surface-3);
+  --input-focus-border: var(--brand-4);
+  --input-focus-ring: var(--interactive-focus-ring);
+
+  --tab-hover-bg: var(--interactive-hover-bg);
+  --tab-active-bg: var(--interactive-active-bg);
+  --tab-selected-border: var(--brand-5);
 
   /* Typography */
   --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -45,7 +112,10 @@
   --radius-pill: 999px;
 
   /* Elevation */
-  --shadow-md: 0 18px 50px rgba(0, 0, 0, 0.35);
+  --shadow-sm: 0 4px 12px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 12px 30px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 18px 50px rgba(0, 0, 0, 0.35);
+  --shadow-xl: 0 26px 72px rgba(0, 0, 0, 0.45);
 
   /* Motion */
   --transition-fast: 120ms ease;
