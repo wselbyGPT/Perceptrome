@@ -3,8 +3,14 @@
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--card-rest-shadow);
   padding: var(--space-5);
+}
+
+.panel:hover,
+.card:hover {
+  box-shadow: var(--card-hover-shadow);
+  transform: translateY(-1px);
 }
 
 .panel-header {
@@ -34,23 +40,19 @@
   cursor: pointer;
   color: var(--text-inverse);
   background: var(--color-accent);
-  transition:
-    background-color var(--transition-fast),
-    border-color var(--transition-fast),
-    transform var(--transition-press),
-    box-shadow var(--transition-fast),
-    opacity var(--transition-fast);
   text-decoration: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   line-height: 1.2;
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--button-default-shadow);
 }
 
 .btn:hover,
 .btn--primary:hover {
   background: var(--button-hover-bg);
+  box-shadow: var(--button-hover-shadow);
+  transform: translateY(-1px);
   text-decoration: none;
 }
 
@@ -58,15 +60,19 @@
 .btn--primary:active {
   transform: translateY(1px);
   background: var(--button-active-bg);
+  box-shadow: var(--shadow-sm);
 }
 
 .btn:focus-visible,
 .btn--primary:focus-visible,
 .btn--secondary:focus-visible,
 .btn-secondary:focus-visible,
-.btn--danger:focus-visible {
+.btn--danger:focus-visible,
+.input:focus-visible,
+select.input:focus-visible,
+textarea.input:focus-visible,
+.tab:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px var(--button-focus-ring), var(--shadow-sm);
 }
 
 .btn:disabled,
@@ -77,6 +83,10 @@
   opacity: var(--interactive-disabled-opacity);
   cursor: not-allowed;
   color: var(--interactive-disabled-fg);
+  background: var(--interactive-disabled-bg);
+  border-color: var(--interactive-disabled-border);
+  box-shadow: none;
+  transform: none;
 }
 
 .btn--primary {
@@ -154,7 +164,6 @@ textarea.input {
   background: var(--surface-2);
   color: var(--text-primary);
   outline: none;
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background-color var(--transition-fast);
 }
 
 .input:hover,
@@ -167,7 +176,6 @@ textarea.input:hover {
 select.input:focus,
 textarea.input:focus {
   border-color: var(--input-focus-border);
-  box-shadow: 0 0 0 3px var(--input-focus-ring);
 }
 
 .input:disabled,
@@ -175,6 +183,8 @@ select.input:disabled,
 textarea.input:disabled {
   opacity: var(--interactive-disabled-opacity);
   color: var(--interactive-disabled-fg);
+  background: var(--interactive-disabled-bg);
+  border-color: var(--interactive-disabled-border);
   cursor: not-allowed;
 }
 
@@ -285,12 +295,11 @@ textarea.input:disabled {
 .msg.ok { color: var(--color-success); }
 
 .tab {
-  border: 1px solid transparent;
+  border: 1px solid var(--color-border-input);
   border-radius: var(--radius-md);
   padding: var(--space-2) var(--space-3);
   background: var(--input-hover-bg);
   color: var(--text-secondary);
-  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .tab:hover {
@@ -300,11 +309,7 @@ textarea.input:disabled {
 
 .tab:active {
   background: var(--tab-active-bg);
-}
-
-.tab:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--input-focus-ring);
+  transform: translateY(1px);
 }
 
 .tab[aria-selected="true"],
@@ -317,5 +322,28 @@ textarea.input:disabled {
 .tab:disabled {
   opacity: var(--interactive-disabled-opacity);
   color: var(--interactive-disabled-fg);
+  background: var(--interactive-disabled-bg);
+  border-color: var(--interactive-disabled-border);
   cursor: not-allowed;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .panel,
+  .card {
+    transition: box-shadow var(--transition-fast), transform var(--transition-fast);
+  }
+
+  .btn,
+  .tab,
+  .input,
+  select.input,
+  textarea.input {
+    transition:
+      background-color var(--transition-fast),
+      border-color var(--transition-fast),
+      transform var(--transition-press),
+      box-shadow var(--transition-fast),
+      color var(--transition-fast);
+  }
 }
