@@ -4,9 +4,14 @@ from datetime import datetime, timedelta
 import json
 import logging
 import smtplib
+import threading
+from dataclasses import dataclass, field
 from collections import Counter
 from email.message import EmailMessage
+from pathlib import Path
+from typing import Any, Literal
 from urllib.parse import urlencode
+from uuid import uuid4
 
 from fastapi import (
     Depends,
@@ -62,6 +67,66 @@ app.add_middleware(
 
 _auth_logger = logging.getLogger("perceptrome.auth")
 _auth_metrics: Counter[str] = Counter()
+
+RunState = Literal["queued", "running", "completed", "failed", "canceled"]
+
+
+@dataclass(slots=True)
+class RunRecord:
+    run_id: str
+    spec: JobSpec
+    state: RunState = "queued"
+    cancel_event: threading.Event = field(default_factory=threading.Event)
+    result: dict[str, Any] | None = None
+
+
+_run_lock = threading.Lock()
+_runs: dict[str, RunRecord] = {}
+
+
+def _extract_manifest_uri(data: dict[str, Any]) -> str | None:
+    manifest_path = data.get("manifest_path")
+    if isinstance(manifest_path, str) and manifest_path:
+        return Path(manifest_path).absolute().as_uri()
+    return None
+
+
+def _parse_job_spec(config: dict[str, Any]) -> tuple[str, JobSpec]:
+    cfg = config or {}
+    run_id = str(cfg.get("run_id") or cfg.get("manifest_id") or f"web_{uuid4().hex}")
+    kind = str(cfg.get("kind", "generate_plasmid"))
+    config_path = str(cfg.get("config_path", "config/stream_config.yaml"))
+
+    reserved = {"run_id", "manifest_id", "kind", "config_path", "params"}
+    params = {k: v for k, v in cfg.items() if k not in reserved}
+    params.update(dict(cfg.get("params") or {}))
+    params.setdefault("run_id", run_id)
+    params.setdefault("manifest_id", run_id)
+
+    spec = JobSpec(kind=kind, config_path=config_path, params=params)
+    return run_id, spec
+
+
+def _upsert_run(run_id: str, spec: JobSpec) -> RunRecord:
+    with _run_lock:
+        existing = _runs.get(run_id)
+        if existing and existing.state in {"queued", "running"}:
+            raise HTTPException(status_code=409, detail=f"Run already active: {run_id}")
+        record = RunRecord(run_id=run_id, spec=spec)
+        _runs[run_id] = record
+    return record
+
+
+def _stop_run_record(run_id: str) -> bool:
+    with _run_lock:
+        record = _runs.get(run_id)
+        if not record:
+            return False
+        record.cancel_event.set()
+        if record.state == "queued":
+            record.state = "canceled"
+            record.result = {"run_id": run_id, "canceled": True, "manifest_path": None, "manifest_uri": None}
+    return True
 
 
 def _utcnow() -> datetime:
@@ -533,10 +598,29 @@ def change_password(
 
 
 @app.post("/api/runs/start")
-def start_run(user: User = Depends(get_current_user_strict)):
-    spec = JobSpec(kind="generate_plasmid", config_path="config/stream_config.yaml", params={"length_bp": 512, "output": "generated/web_api_run.fasta"})
-    result = JobEngine().run(spec)
-    return {"ok": result.ok, "message": result.message, "user_id": user.id, "role": user.role, "data": result.data}
+def start_run(payload: dict[str, Any] | None = None, user: User = Depends(get_current_user_strict)):
+    cfg = dict((payload or {}).get("config") or payload or {})
+    run_id, spec = _parse_job_spec(cfg)
+    record = _upsert_run(run_id, spec)
+    record.state = "running"
+    result = JobEngine(cancel_event=record.cancel_event).run(spec)
+    final_state: RunState = "completed" if result.ok else ("canceled" if result.exit_code == 130 else "failed")
+    result_data = dict(result.data or {})
+    manifest_path = result_data.get("manifest_path") if isinstance(result_data.get("manifest_path"), str) else None
+    manifest_uri = _extract_manifest_uri(result_data)
+    final_payload = {
+        "run_id": run_id,
+        "ok": bool(result.ok),
+        "state": final_state,
+        "message": result.message,
+        "manifest_path": manifest_path,
+        "manifest_uri": manifest_uri,
+        **result_data,
+    }
+    with _run_lock:
+        record.state = final_state
+        record.result = final_payload
+    return {"ok": result.ok, "message": result.message, "user_id": user.id, "role": user.role, "result": final_payload}
 
 
 @app.get("/api/admin/users")
@@ -639,27 +723,77 @@ async def websocket_endpoint(websocket: WebSocket):
             msg = json.loads(raw)
 
             if msg.get("type") == "start_run":
-                cfg = msg.get("config", {}) or {}
-                spec = JobSpec(
-                    kind=str(cfg.get("kind", "generate_plasmid")),
-                    config_path=str(cfg.get("config_path", "config/stream_config.yaml")),
-                    params=dict(cfg.get("params", {"length_bp": 512, "output": "generated/web_ws_run.fasta"})),
-                )
-                await websocket.send_text(json.dumps({"type": "status", "status": f"run accepted for {user.email}", "progress": 0.0}))
+                cfg = dict(msg.get("config", {}) or {})
+                run_id, spec = _parse_job_spec(cfg)
+                try:
+                    record = _upsert_run(run_id, spec)
+                except HTTPException as exc:
+                    await websocket.send_text(json.dumps({"type": "error", "run_id": run_id, "state": "failed", "message": str(exc.detail)}))
+                    continue
 
-                queue: list[dict] = []
+                await websocket.send_text(json.dumps({"type": "status", "run_id": run_id, "state": "queued", "status": "queued", "phase": "queued", "progress": 0.0}))
+
+                queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+                loop = asyncio.get_running_loop()
 
                 def _sink(ev: JobEvent):
-                    queue.append({"type": "log", "line": f"[{ev.stage}] {ev.message}", "data": ev.data})
+                    payload: dict[str, Any] = {"type": "log", "run_id": run_id, "phase": ev.stage, "line": ev.message, "data": ev.data}
+                    if "progress" in ev.data and isinstance(ev.data.get("progress"), (int, float)):
+                        payload = {"type": "progress", "run_id": run_id, "state": "running", "phase": ev.stage, "progress": float(ev.data["progress"])}
+                    elif ev.stage in {"start", "done", "stream_step", "generate", "validate", "pretrain", "encode", "train", "manifest"}:
+                        payload = {"type": "phase", "run_id": run_id, "state": "running", "phase": ev.stage, "status": ev.message, "data": ev.data}
+                    if "path" in ev.data and isinstance(ev.data.get("path"), str):
+                        loop.call_soon_threadsafe(queue.put_nowait, {"type": "artifact-available", "run_id": run_id, "state": "running", "artifact": {"path": ev.data["path"], "uri": Path(ev.data["path"]).absolute().as_uri()}, "phase": ev.stage})
+                    loop.call_soon_threadsafe(queue.put_nowait, payload)
 
-                result = await asyncio.to_thread(lambda: JobEngine(event_sink=_sink).run(spec))
-                for entry in queue:
-                    await websocket.send_text(json.dumps(entry))
-                await websocket.send_text(json.dumps({"type": "result", "result": {"ok": result.ok, "message": result.message, "data": result.data}}))
-                await websocket.send_text(json.dumps({"type": "status", "status": ("completed" if result.ok else "error"), "progress": (1.0 if result.ok else 0.0)}))
+                async def _forward_events(task: asyncio.Task[Any]):
+                    while True:
+                        if task.done() and queue.empty():
+                            break
+                        try:
+                            item = await asyncio.wait_for(queue.get(), timeout=0.1)
+                        except asyncio.TimeoutError:
+                            continue
+                        await websocket.send_text(json.dumps(item))
+
+                record.state = "running"
+                await websocket.send_text(json.dumps({"type": "status", "run_id": run_id, "state": "running", "status": "running", "phase": "start", "progress": 0.01}))
+
+                run_task = asyncio.create_task(asyncio.to_thread(lambda: JobEngine(event_sink=_sink, cancel_event=record.cancel_event).run(spec)))
+                forward_task = asyncio.create_task(_forward_events(run_task))
+                result = await run_task
+                await forward_task
+
+                final_state: RunState = "completed" if result.ok else ("canceled" if result.exit_code == 130 else "failed")
+                result_data = dict(result.data or {})
+                manifest_path = result_data.get("manifest_path") if isinstance(result_data.get("manifest_path"), str) else None
+                manifest_uri = _extract_manifest_uri(result_data)
+                final_result = {
+                    "run_id": run_id,
+                    "ok": bool(result.ok),
+                    "state": final_state,
+                    "message": result.message,
+                    "manifest_path": manifest_path,
+                    "manifest_uri": manifest_uri,
+                    **result_data,
+                }
+                with _run_lock:
+                    record.state = final_state
+                    record.result = final_result
+
+                await websocket.send_text(json.dumps({"type": "result", "run_id": run_id, "state": final_state, "result": final_result}))
+                await websocket.send_text(json.dumps({"type": "status", "run_id": run_id, "state": final_state, "status": final_state, "phase": "done", "progress": (1.0 if final_state == "completed" else 0.0)}))
 
             elif msg.get("type") == "stop_run":
-                await websocket.send_text(json.dumps({"type": "run_stopped", "message": "Run stopped"}))
+                run_id = str(msg.get("run_id") or "")
+                if not run_id:
+                    with _run_lock:
+                        active = [rid for rid, rec in _runs.items() if rec.state in {"queued", "running"}]
+                    run_id = active[-1] if active else ""
+                if not run_id or not _stop_run_record(run_id):
+                    await websocket.send_text(json.dumps({"type": "error", "state": "failed", "message": "run_id not found"}))
+                else:
+                    await websocket.send_text(json.dumps({"type": "run_stopped", "run_id": run_id, "state": "canceled", "message": "Cancellation requested"}))
 
             elif msg.get("type") == "ping":
                 await websocket.send_text(json.dumps({"type": "pong", "ts": msg.get("ts")}))

@@ -37,6 +37,7 @@ export function setupPerceptromeViz(ws: WebSocket) {
 
   let socketOpen = false;
   let runActive = false;
+  let activeRunId: string | null = null;
 
   // -----------------------------
   // UI helpers
@@ -149,8 +150,7 @@ export function setupPerceptromeViz(ws: WebSocket) {
   }
 
   function sendStopRun() {
-    // Cast to allow stop_run even if protocol type hasn't been updated yet.
-    const msg = { type: "stop_run" } as unknown as ClientToServerMessage;
+    const msg: ClientToServerMessage = { type: "stop_run", run_id: activeRunId ?? undefined } as ClientToServerMessage;
     sendJson(msg);
     setStatus("stopping…");
     appendLog("Sent stop_run request");
@@ -166,6 +166,7 @@ export function setupPerceptromeViz(ws: WebSocket) {
     switch (type) {
       case "status": {
         const statusText = typeof m.status === "string" ? m.status : "status";
+        if (typeof m.run_id === "string") activeRunId = m.run_id;
         const progress =
           typeof m.progress === "number" ? m.progress :
           typeof m.percent === "number" ? (m.percent as number) / 100 :
@@ -173,12 +174,17 @@ export function setupPerceptromeViz(ws: WebSocket) {
 
         setStatus(statusText, progress);
 
-        // Heuristics for run state toggles
-        const lower = statusText.toLowerCase();
-        if (lower.includes("completed") || lower.includes("finished") || lower.includes("done")) {
-          setRunUiState(false);
-        } else if (lower.includes("starting") || lower.includes("running") || lower.includes("accepted")) {
-          setRunUiState(true);
+        if (typeof m.state === "string") {
+          if (m.state === "queued" || m.state === "running") setRunUiState(true);
+          if (m.state === "completed" || m.state === "failed" || m.state === "canceled") setRunUiState(false);
+        } else {
+          const lower = statusText.toLowerCase();
+          if (lower.includes("completed") || lower.includes("finished") || lower.includes("done")) {
+            setRunUiState(false);
+            activeRunId = null;
+          } else if (lower.includes("starting") || lower.includes("running") || lower.includes("accepted") || lower.includes("queued")) {
+            setRunUiState(true);
+          }
         }
 
         // Useful extras from backend auth/status bootstrap
@@ -215,6 +221,32 @@ export function setupPerceptromeViz(ws: WebSocket) {
         break;
       }
 
+
+      case "progress": {
+        const statusText = typeof m.phase === "string" ? m.phase : "running";
+        const progress = typeof m.progress === "number" ? m.progress : undefined;
+        if (typeof m.run_id === "string") activeRunId = m.run_id;
+        setStatus(statusText, progress);
+        setRunUiState(true);
+        break;
+      }
+
+      case "phase": {
+        if (typeof m.run_id === "string") activeRunId = m.run_id;
+        const phase = typeof m.phase === "string" ? m.phase : "phase";
+        const status = typeof m.status === "string" ? m.status : phase;
+        appendLog(`[${phase}] ${status}`, { kind: "info" });
+        break;
+      }
+
+      case "artifact-available": {
+        const artifact = (m.artifact ?? {}) as JsonRecord;
+        const path = typeof artifact.path === "string" ? artifact.path : undefined;
+        const uri = typeof artifact.uri === "string" ? artifact.uri : undefined;
+        appendLog(`artifact available${path ? `: ${path}` : ""}${uri ? ` (${uri})` : ""}`, { kind: "info" });
+        break;
+      }
+
       case "result":
       case "results": {
         // Common payload field variants
@@ -224,7 +256,12 @@ export function setupPerceptromeViz(ws: WebSocket) {
           m.data ??
           m.payload ??
           m;
+        const payloadRecord = (payload && typeof payload === "object") ? (payload as JsonRecord) : null;
+        if (payloadRecord && typeof payloadRecord.run_id === "string") activeRunId = String(payloadRecord.run_id);
         renderResults(payload);
+        if (payloadRecord && (typeof payloadRecord.manifest_path === "string" || typeof payloadRecord.manifest_uri === "string")) {
+          appendLog(`manifest: ${String(payloadRecord.manifest_path ?? payloadRecord.manifest_uri)}`, { kind: "info" });
+        }
         appendLog(`Received ${type} payload`);
         break;
       }
@@ -239,6 +276,7 @@ export function setupPerceptromeViz(ws: WebSocket) {
         setStatus("error");
         appendLog(detail, { kind: "error" });
         setRunUiState(false);
+        activeRunId = null;
         break;
       }
 
@@ -252,6 +290,7 @@ export function setupPerceptromeViz(ws: WebSocket) {
       case "run_stopped": {
         setStatus("run stopped");
         setRunUiState(false);
+        activeRunId = null;
         appendLog("Run stopped");
         break;
       }
@@ -261,6 +300,7 @@ export function setupPerceptromeViz(ws: WebSocket) {
       case "done": {
         setStatus("run completed");
         setRunUiState(false);
+        activeRunId = null;
         renderResults(m.result ?? m.data ?? m);
         appendLog("Run completed");
         break;
