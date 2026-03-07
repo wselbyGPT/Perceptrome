@@ -58,6 +58,8 @@ def build_run_manifest(
     model_objective_config: Optional[Dict[str, Any]] = None,
     checkpoints: Optional[Dict[str, Any]] = None,
     metrics: Optional[Dict[str, Any]] = None,
+    training_metrics: Optional[Dict[str, Any]] = None,
+    pretraining_metrics: Optional[Dict[str, Any]] = None,
     generated_sequences: Optional[Dict[str, Any]] = None,
     validation_results: Optional[Dict[str, Any]] = None,
     provenance_metadata: Optional[Dict[str, Any]] = None,
@@ -75,6 +77,8 @@ def build_run_manifest(
     manifest["model_objective_config"] = model_objective_config
     manifest["checkpoints"] = checkpoints
     manifest["metrics"] = metrics
+    manifest["training_metrics"] = training_metrics
+    manifest["pretraining_metrics"] = pretraining_metrics
     manifest["generated_sequences"] = generated_sequences
     manifest["validation_results"] = validation_results
     if provenance_metadata:
