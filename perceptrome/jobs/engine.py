@@ -30,6 +30,7 @@ from perceptrome.cli.common import (
 )
 from perceptrome.encoding.parse import parse_fasta_sequence
 from perceptrome.generate import generate_plasmid_sequence, generate_protein_sequence
+from perceptrome.jobs.manifest_writer import config_hash, write_experiment_run_manifest
 from perceptrome.pretrain import PretrainPipelineConfig, run_pretraining
 
 JobKind = Literal["train_one", "stream", "generate_plasmid", "generate_protein", "validate_plasmid", "pretrain"]
@@ -68,6 +69,18 @@ class JobEngine:
         self._events.append(event)
         if self._event_sink:
             self._event_sink(event)
+
+    def _write_run_manifest(self, *, io_cfg: Any, spec: JobSpec, run_id: str, **sections: Any) -> str:
+        path = write_experiment_run_manifest(
+            logs_dir=io_cfg.logs_dir,
+            experiment_id=run_id,
+            run_kind=spec.kind,
+            config_path=spec.config_path,
+            config_hash_value=config_hash(load_full_config(spec.config_path)),
+            **sections,
+        )
+        self._emit("manifest", "run manifest written", path=path)
+        return path
 
     def run(self, spec: JobSpec) -> JobResult:
         self._events = []
@@ -157,11 +170,13 @@ class JobEngine:
             encoded = encode_accession(accession, io_cfg, window_size, stride, tokenizer=tok, frame_offset=frame, min_orf_aa=min_orf, source=src, max_windows_per_protein=pol.get("max_windows_per_protein"), protein_len_min=pol.get("protein_len_min"), protein_len_max=pol.get("protein_len_max"), translation_only=bool(pol.get("translation_only", False)), protein_opts=pol.get("protein_opts") or {}, save_to_disk=True, out_path=enc_path)
         self._emit("encode", f"encoded {accession}", path=enc_path)
 
+        steps = int(params.get("steps") or train_cfg.steps_per_plasmid)
+        batch_size = int(params.get("batch_size") or train_cfg.batch_size)
         last_total = train_on_encoded(
             accession,
             encoded,
-            steps=int(params.get("steps") or train_cfg.steps_per_plasmid),
-            batch_size=int(params.get("batch_size") or train_cfg.batch_size),
+            steps=steps,
+            batch_size=batch_size,
             state=state,
             io_cfg=io_cfg,
             train_cfg=train_cfg,
@@ -175,7 +190,34 @@ class JobEngine:
         save_state(io_cfg.state_file, state)
         cleanup_accession_files(accession, io_cfg, enc_path)
         self._emit("train", f"trained {accession}", loss=float(last_total))
-        return {"accession": accession, "last_total_loss": float(last_total)}
+
+        run_id = str(params.get("manifest_id") or f"train_one_{accession}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
+        manifest_path = self._write_run_manifest(
+            io_cfg=io_cfg,
+            spec=spec,
+            run_id=run_id,
+            dataset_catalog_manifest={"accession": accession, "source": src, "encoded_path": enc_path},
+            tokenizer_encoding_config={
+                "tokenizer": tok,
+                "window_size": int(window_size),
+                "stride": int(stride),
+                "frame_offset": int(frame),
+                "min_orf_aa": int(min_orf),
+                "max_windows_per_protein": pol.get("max_windows_per_protein"),
+                "protein_len_min": pol.get("protein_len_min"),
+                "protein_len_max": pol.get("protein_len_max"),
+                "translation_only": bool(pol.get("translation_only", False)),
+            },
+            model_objective_config={
+                "model_type": getattr(train_cfg, "model_type", None),
+                "loss_type": params.get("loss_type"),
+                "steps": steps,
+                "batch_size": batch_size,
+            },
+            metrics={"last_total_loss": float(last_total), "encoded_shape": list(getattr(encoded, "shape", []))},
+            provenance_metadata={"state_file": io_cfg.state_file},
+        )
+        return {"accession": accession, "last_total_loss": float(last_total), "manifest_path": manifest_path}
 
     def _run_stream(self, spec: JobSpec) -> Dict[str, Any]:
         cfg = load_full_config(spec.config_path)
@@ -198,6 +240,8 @@ class JobEngine:
         max_epochs = int(params.get("max_epochs") or train_cfg.max_stream_epochs)
         epoch = int(state.get("epoch", 0))
         processed = 0
+        last_total = 0.0
+        for_epoch_losses: list[float] = []
         while epoch < max_epochs:
             indices = list(range(len(accessions)))
             if train_cfg.shuffle_catalog:
@@ -211,7 +255,8 @@ class JobEngine:
                     encoded = np.load(enc_path)
                 else:
                     encoded = encode_accession(acc, io_cfg, window_size, stride, tokenizer=tok, frame_offset=frame, min_orf_aa=min_orf, source=src, max_windows_per_protein=pol.get("max_windows_per_protein"), protein_len_min=pol.get("protein_len_min"), protein_len_max=pol.get("protein_len_max"), translation_only=bool(pol.get("translation_only", False)), protein_opts=pol.get("protein_opts") or {}, save_to_disk=True, out_path=enc_path)
-                last_total = train_on_encoded(acc, encoded, steps=steps, batch_size=batch, state=state, io_cfg=io_cfg, train_cfg=train_cfg, tokenizer=tok, window_size_bp=window_size, loss_type=params.get("loss_type"), run_id=params.get("tb_run_id"), tensorboard_log_every=params.get("tb_log_every"))
+                last_total = float(train_on_encoded(acc, encoded, steps=steps, batch_size=batch, state=state, io_cfg=io_cfg, train_cfg=train_cfg, tokenizer=tok, window_size_bp=window_size, loss_type=params.get("loss_type"), run_id=params.get("tb_run_id"), tensorboard_log_every=params.get("tb_log_every")))
+                for_epoch_losses.append(last_total)
                 state["plasmid_visit_counts"][acc] = state["plasmid_visit_counts"].get(acc, 0) + 1
                 state["current_index"] = idx
                 state["epoch"] = epoch
@@ -221,7 +266,25 @@ class JobEngine:
                 processed += 1
                 self._emit("stream_step", f"trained {acc}", epoch=epoch, loss=float(last_total))
             epoch += 1
-        return {"processed_accessions": processed}
+
+        run_id = str(params.get("manifest_id") or f"stream_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
+        manifest_path = self._write_run_manifest(
+            io_cfg=io_cfg,
+            spec=spec,
+            run_id=run_id,
+            dataset_catalog_manifest={"catalog": str(params["catalog"]), "source": src, "num_accessions": len(accessions)},
+            tokenizer_encoding_config={
+                "tokenizer": tok,
+                "window_size": int(window_size),
+                "stride": int(stride),
+                "frame_offset": int(frame),
+                "min_orf_aa": int(min_orf),
+            },
+            model_objective_config={"model_type": getattr(train_cfg, "model_type", None), "loss_type": params.get("loss_type")},
+            metrics={"processed_accessions": processed, "last_total_loss": float(last_total), "losses": for_epoch_losses},
+            provenance_metadata={"state_file": io_cfg.state_file, "max_epochs": max_epochs},
+        )
+        return {"processed_accessions": processed, "manifest_path": manifest_path}
 
     def _run_generate_plasmid(self, spec: JobSpec) -> Dict[str, Any]:
         cfg = load_full_config(spec.config_path)
@@ -230,9 +293,20 @@ class JobEngine:
         setup_logging(io_cfg.logs_dir)
         p = dict(spec.params)
         tokenizer = str(p.get("tokenizer") or getattr(train_cfg, "tokenizer", "base"))
-        seq = generate_plasmid_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_bp=int(p.get("length_bp", 10000)), num_windows=p.get("num_windows"), window_size_bp=int(p.get("window_size") or train_cfg.window_size), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), gc_bias=float(p.get("gc_bias", 1.0)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), target_gc=float(p.get("target_gc", 0.5)), max_homopolymer=p.get("max_homopolymer"), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), name=str(p.get("name", "perceptrome_plasmid_1")), output_path=str(p.get("output", "generated/novel_plasmid.fasta")), tokenizer=tokenizer)
-        self._emit("generate", "plasmid generated", output=p.get("output"), length=len(seq))
-        return {"output": str(p.get("output", "generated/novel_plasmid.fasta")), "length": len(seq)}
+        output = str(p.get("output", "generated/novel_plasmid.fasta"))
+        seq = generate_plasmid_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_bp=int(p.get("length_bp", 10000)), num_windows=p.get("num_windows"), window_size_bp=int(p.get("window_size") or train_cfg.window_size), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), gc_bias=float(p.get("gc_bias", 1.0)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), target_gc=float(p.get("target_gc", 0.5)), max_homopolymer=p.get("max_homopolymer"), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), name=str(p.get("name", "perceptrome_plasmid_1")), output_path=output, tokenizer=tokenizer)
+        self._emit("generate", "plasmid generated", output=output, length=len(seq))
+        run_id = str(p.get("manifest_id") or f"generate_plasmid_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
+        manifest_path = self._write_run_manifest(
+            io_cfg=io_cfg,
+            spec=spec,
+            run_id=run_id,
+            tokenizer_encoding_config={"tokenizer": tokenizer, "window_size": int(p.get("window_size") or train_cfg.window_size)},
+            model_objective_config={"model_type": getattr(train_cfg, "model_type", None)},
+            generated_sequences={"output": output, "name": str(p.get("name", "perceptrome_plasmid_1")), "type": "plasmid", "length": len(seq)},
+            metrics={"length_bp": len(seq)},
+        )
+        return {"output": output, "length": len(seq), "manifest_path": manifest_path}
 
     def _run_generate_protein(self, spec: JobSpec) -> Dict[str, Any]:
         cfg = load_full_config(spec.config_path)
@@ -240,18 +314,31 @@ class JobEngine:
         ensure_dirs(io_cfg)
         setup_logging(io_cfg.logs_dir)
         p = dict(spec.params)
-        seq = generate_protein_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_aa=int(p.get("length_aa", 600)), num_windows=p.get("num_windows"), window_aa=int(p.get("window_aa") or train_cfg.protein_window_aa), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), name=str(p.get("name", "perceptrome_protein_1")), output_path=str(p.get("output", "generated/novel_protein.faa")), reject=bool(p.get("reject", False)), reject_tries=int(p.get("reject_tries", 40)), reject_max_run=int(p.get("reject_max_run", 10)), reject_max_x_frac=float(p.get("reject_max_x_frac", 0.15)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), max_homopolymer=p.get("max_homopolymer"), max_x_frac=p.get("max_x_frac"), max_internal_stops=int(p.get("max_internal_stops", 0)), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)))
-        self._emit("generate", "protein generated", output=p.get("output"), length=len(seq))
-        return {"output": str(p.get("output", "generated/novel_protein.faa")), "length": len(seq)}
+        output = str(p.get("output", "generated/novel_protein.faa"))
+        seq = generate_protein_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_aa=int(p.get("length_aa", 600)), num_windows=p.get("num_windows"), window_aa=int(p.get("window_aa") or train_cfg.protein_window_aa), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), name=str(p.get("name", "perceptrome_protein_1")), output_path=output, reject=bool(p.get("reject", False)), reject_tries=int(p.get("reject_tries", 40)), reject_max_run=int(p.get("reject_max_run", 10)), reject_max_x_frac=float(p.get("reject_max_x_frac", 0.15)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), max_homopolymer=p.get("max_homopolymer"), max_x_frac=p.get("max_x_frac"), max_internal_stops=int(p.get("max_internal_stops", 0)), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)))
+        self._emit("generate", "protein generated", output=output, length=len(seq))
+        run_id = str(p.get("manifest_id") or f"generate_protein_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
+        manifest_path = self._write_run_manifest(
+            io_cfg=io_cfg,
+            spec=spec,
+            run_id=run_id,
+            tokenizer_encoding_config={"tokenizer": "aa", "window_size": int(p.get("window_aa") or train_cfg.protein_window_aa)},
+            model_objective_config={"model_type": getattr(train_cfg, "model_type", None)},
+            generated_sequences={"output": output, "name": str(p.get("name", "perceptrome_protein_1")), "type": "protein", "length": len(seq)},
+            metrics={"length_aa": len(seq)},
+        )
+        return {"output": output, "length": len(seq), "manifest_path": manifest_path}
 
     def _run_validate_plasmid(self, spec: JobSpec) -> Dict[str, Any]:
         cfg = load_full_config(spec.config_path)
         ncbi_cfg, _, io_cfg = extract_configs(cfg)
         ensure_dirs(io_cfg)
         p = dict(spec.params)
-        generated_seq = parse_fasta_sequence(str(p["generated_fasta"]))
+        generated_fasta = str(p["generated_fasta"])
+        catalog_path = str(p["catalog"])
+        generated_seq = parse_fasta_sequence(generated_fasta)
         rows = []
-        for accession in read_catalog(str(p["catalog"])):
+        for accession in read_catalog(catalog_path):
             ref_path = _ensure_record(accession, "fasta", io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=bool(p.get("force_fetch", False)))
             ref_seq = parse_fasta_sequence(ref_path)
             score = 1.0 if generated_seq == ref_seq else 0.0
@@ -259,18 +346,32 @@ class JobEngine:
         rows.sort(key=lambda r: r["score"], reverse=True)
         top_n = max(1, int(p.get("top_n", 5)))
         top_rows = rows[:top_n]
-        if p.get("output_json"):
-            out_path = str(p["output_json"])
+        output_json = p.get("output_json")
+        if output_json:
+            out_path = str(output_json)
             os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
             with open(out_path, "w", encoding="utf-8") as f:
-                json.dump({"generated_fasta": str(p["generated_fasta"]), "catalog": str(p["catalog"]), "top_n": top_n, "results": top_rows}, f, indent=2)
+                json.dump({"generated_fasta": generated_fasta, "catalog": catalog_path, "top_n": top_n, "results": top_rows}, f, indent=2)
                 f.write("\n")
         self._emit("validate", "validation complete", top_n=top_n)
-        return {"results": top_rows, "top_n": top_n}
+
+        run_id = str(p.get("manifest_id") or f"validate_plasmid_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
+        manifest_path = self._write_run_manifest(
+            io_cfg=io_cfg,
+            spec=spec,
+            run_id=run_id,
+            dataset_catalog_manifest={"catalog": catalog_path, "generated_fasta": generated_fasta},
+            validation_results={"top_n": top_n, "results": top_rows, "output_json": str(output_json) if output_json else None},
+            metrics={"evaluated": len(rows), "top_score": float(top_rows[0]["score"]) if top_rows else None},
+        )
+        return {"results": top_rows, "top_n": top_n, "manifest_path": manifest_path}
 
     def _run_pretrain(self, spec: JobSpec) -> Dict[str, Any]:
         cfg = load_full_config(spec.config_path)
         pre_cfg = dict(cfg.get("pretrain", {}) or {})
+        _, _, io_cfg = extract_configs(cfg)
+        ensure_dirs(io_cfg)
+        setup_logging(io_cfg.logs_dir)
         p = dict(spec.params)
         dataset_path = str(p.get("dataset") or pre_cfg.get("dataset_path", "")).strip()
         if not dataset_path:
@@ -289,4 +390,21 @@ class JobEngine:
         )
         metrics = run_pretraining(pipeline_cfg)
         self._emit("pretrain", "pretraining complete", metrics=metrics)
-        return {"metrics": metrics, "completed_at": datetime.now(timezone.utc).isoformat()}
+
+        run_id = str(p.get("manifest_id") or f"pretrain_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
+        manifest_path = self._write_run_manifest(
+            io_cfg=io_cfg,
+            spec=spec,
+            run_id=run_id,
+            dataset_catalog_manifest={"dataset_path": dataset_path},
+            tokenizer_encoding_config={"vocab_size": int(pipeline_cfg.vocab_size)},
+            model_objective_config={
+                "hidden_size": int(pipeline_cfg.hidden_size),
+                "enable_mlm": bool(pipeline_cfg.enable_mlm),
+                "enable_sme": bool(pipeline_cfg.enable_sme),
+                "enable_contrastive": bool(pipeline_cfg.enable_contrastive),
+            },
+            checkpoints={"output_dir": str(pipeline_cfg.output_dir)},
+            metrics=dict(metrics),
+        )
+        return {"metrics": metrics, "completed_at": datetime.now(timezone.utc).isoformat(), "manifest_path": manifest_path}

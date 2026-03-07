@@ -1,7 +1,6 @@
 import argparse
 import datetime
 import difflib
-import hashlib
 import json
 import logging
 import os
@@ -32,6 +31,13 @@ from perceptrome.io_utils import select_unique_accessions, write_catalog
 from perceptrome.encoding.parse import parse_fasta_sequence, parse_genbank_dna
 from perceptrome.pretrain import PretrainPipelineConfig, run_pretraining
 from perceptrome.jobs import JobEngine, JobSpec
+from perceptrome.jobs.manifest_schema import extract_tokenizer_encoding_config
+from perceptrome.jobs.manifest_writer import (
+    config_hash,
+    iso_now,
+    sidecar_manifest_path,
+    write_sidecar_run_manifest,
+)
 
 
 # -----------------------------
@@ -250,50 +256,10 @@ def _default_split_path(io_cfg, split_name: str) -> str:
     return os.path.join(state_dir, "splits", f"{split_name}.json")
 
 
-def _get_git_sha() -> Optional[str]:
-    try:
-        out = subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL)
-        sha = out.decode("utf-8").strip()
-        return sha or None
-    except Exception:
-        return None
-
-
-def _config_hash(cfg: Dict[str, Any]) -> str:
-    payload = json.dumps(cfg, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
 
 def _new_experiment_id(prefix: str = "exp") -> str:
     ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     return f"{prefix}_{ts}_{uuid.uuid4().hex[:8]}"
-
-
-def _write_experiment_manifest(io_cfg, experiment_id: str, payload: Dict[str, Any]) -> str:
-    exp_dir = os.path.join(io_cfg.logs_dir, "experiments")
-    os.makedirs(exp_dir, exist_ok=True)
-    out_path = os.path.join(exp_dir, f"{experiment_id}.json")
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, sort_keys=True)
-        f.write("\n")
-    return out_path
-
-
-def _iso_now() -> str:
-    return datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-
-
-def _sidecar_manifest_path(path: str) -> str:
-    return f"{path}.manifest.json"
-
-
-def _write_sidecar_manifest(target_path: str, payload: Dict[str, Any]) -> str:
-    out_path = _sidecar_manifest_path(target_path)
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, sort_keys=True)
-        f.write("\n")
-    return out_path
 
 
 def _write_fetch_manifest(
@@ -305,22 +271,25 @@ def _write_fetch_manifest(
     cfg_hash: str,
     ncbi_cfg,
 ) -> str:
-    payload = {
-        "schema_version": 1,
-        "artifact_type": "fetched_record",
-        "accession": accession,
-        "source": source,
-        "fetched_at": _iso_now(),
-        "artifact_path": path,
-        "software": {"git_sha": _get_git_sha()},
-        "config": {"path": cfg_path, "sha256": cfg_hash},
-        "fetch": {
-            "email": getattr(ncbi_cfg, "email", None),
-            "max_retries": int(getattr(ncbi_cfg, "max_retries", 0)),
-            "backoff_seconds": float(getattr(ncbi_cfg, "backoff_seconds", 0.0)),
+    return write_sidecar_run_manifest(
+        target_path=path,
+        run_kind="fetch_record",
+        config_path=cfg_path,
+        config_hash_value=cfg_hash,
+        dataset_catalog_manifest={
+            "accession": accession,
+            "source": source,
+            "artifact_path": path,
+            "fetched_at": iso_now(),
         },
-    }
-    return _write_sidecar_manifest(path, payload)
+        provenance_metadata={
+            "fetch": {
+                "email": getattr(ncbi_cfg, "email", None),
+                "max_retries": int(getattr(ncbi_cfg, "max_retries", 0)),
+                "backoff_seconds": float(getattr(ncbi_cfg, "backoff_seconds", 0.0)),
+            },
+        },
+    )
 
 
 def _build_encoded_manifest_payload(
@@ -340,16 +309,16 @@ def _build_encoded_manifest_payload(
     protein_opts: Dict[str, Any],
 ) -> Dict[str, Any]:
     return {
-        "schema_version": 1,
-        "artifact_type": "encoded_windows",
-        "accession": accession,
-        "source": source,
-        "encoded_at": _iso_now(),
-        "artifact_path": encoded_path,
-        "shape": list(encoded_shape) if encoded_shape is not None else None,
-        "software": {"git_sha": _get_git_sha()},
-        "config": {"path": cfg_path, "sha256": cfg_hash},
-        "encoding": {
+        "run_kind": "encode_windows",
+        "config_path": cfg_path,
+        "config_hash_value": cfg_hash,
+        "dataset_catalog_manifest": {
+            "accession": accession,
+            "source": source,
+            "artifact_path": encoded_path,
+            "encoded_at": iso_now(),
+        },
+        "tokenizer_encoding_config": {
             "tokenizer": tok,
             "window_size": int(window_size),
             "stride": int(stride),
@@ -360,6 +329,9 @@ def _build_encoded_manifest_payload(
             "protein_len_max": pol.get("protein_len_max"),
             "translation_only": bool(pol.get("translation_only", False)),
             "protein_opts": protein_opts,
+        },
+        "metrics": {
+            "encoded_shape": list(encoded_shape) if encoded_shape is not None else None,
         },
     }
 
@@ -414,7 +386,7 @@ def _build_and_write_bio_ast(accession: str, source: str, io_cfg) -> Optional[st
 
 
 def _warn_if_encoded_manifest_incompatible(encoded_path: str, expected: Dict[str, Any]) -> None:
-    mpath = _sidecar_manifest_path(encoded_path)
+    mpath = sidecar_manifest_path(encoded_path)
     if not os.path.exists(mpath):
         logging.warning("Encoded cache manifest missing for %s; consider re-encoding.", encoded_path)
         return
@@ -425,7 +397,7 @@ def _warn_if_encoded_manifest_incompatible(encoded_path: str, expected: Dict[str
         logging.warning("Failed reading encoded cache manifest %s: %s", mpath, e)
         return
 
-    got = data.get("encoding", {}) if isinstance(data, dict) else {}
+    got = extract_tokenizer_encoding_config(data)
     mismatches = []
     for k in (
         "tokenizer",
@@ -552,7 +524,7 @@ def cmd_fetch_one(args: argparse.Namespace) -> int:
     ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
-    cfg_hash = _config_hash(cfg)
+    cfg_hash = config_hash(cfg)
 
     src = str(getattr(args, "source", None) or "fasta").lower()
     if src == "genbank":
@@ -621,7 +593,7 @@ def cmd_encode_one(args: argparse.Namespace) -> int:
     ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
-    cfg_hash = _config_hash(cfg)
+    cfg_hash = config_hash(cfg)
 
     tok = _get_tok(args, train_cfg)
     frame = _get_frame(args, train_cfg)
@@ -675,7 +647,7 @@ def cmd_encode_one(args: argparse.Namespace) -> int:
         pol=pol,
         protein_opts=protein_opts,
     )
-    _write_sidecar_manifest(out_path, payload)
+    write_sidecar_run_manifest(target_path=out_path, **payload)
     ast_path = _build_and_write_bio_ast(args.accession, src, io_cfg)
     if ast_path:
         logging.info("%s: bio AST artifact written at %s", args.accession, ast_path)
@@ -700,7 +672,7 @@ def cmd_scope_one(args: argparse.Namespace) -> int:
     ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
-    cfg_hash = _config_hash(cfg)
+    cfg_hash = config_hash(cfg)
 
     tok = _get_tok(args, train_cfg)
     frame = _get_frame(args, train_cfg)
@@ -757,9 +729,9 @@ def cmd_scope_one(args: argparse.Namespace) -> int:
             protein_opts=protein_opts,
             save_to_disk=True, out_path=enc_path,
         )
-        _write_sidecar_manifest(
-            enc_path,
-            _build_encoded_manifest_payload(
+        write_sidecar_run_manifest(
+            target_path=enc_path,
+            **_build_encoded_manifest_payload(
                 accession=str(args.accession),
                 source=src,
                 encoded_path=enc_path,
@@ -807,7 +779,7 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
     ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
-    cfg_hash = _config_hash(cfg)
+    cfg_hash = config_hash(cfg)
 
     tok = _get_tok(args, train_cfg)
     frame = _get_frame(args, train_cfg)
@@ -866,9 +838,9 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
             protein_opts=protein_opts,
             save_to_disk=True, out_path=enc_path,
         )
-        _write_sidecar_manifest(
-            enc_path,
-            _build_encoded_manifest_payload(
+        write_sidecar_run_manifest(
+            target_path=enc_path,
+            **_build_encoded_manifest_payload(
                 accession=str(args.accession),
                 source=src,
                 encoded_path=enc_path,
