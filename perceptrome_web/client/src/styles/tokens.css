@@ -40,8 +40,8 @@
 
   /* Text hierarchy */
   --text-primary: #e6edf3;
-  --text-secondary: #b4c1d0;
-  --text-tertiary: #95a6b9;
+  --text-secondary: #c4d0de;
+  --text-tertiary: #aab7c8;
   --text-inverse: #ffffff;
 
   /* Color aliases for existing components */
@@ -51,8 +51,8 @@
   --color-bg-surface-subtle: var(--surface-2);
   --color-bg-ink: #0a0f15;
   --color-border-strong: #34465a;
-  --color-border-subtle: #2a3849;
-  --color-border-input: #4a6079;
+  --color-border-subtle: #3a4d63;
+  --color-border-input: #607893;
   --color-text-primary: var(--text-primary);
   --color-text-muted: var(--text-secondary);
   --color-text-link: var(--brand-3);
@@ -68,14 +68,14 @@
   /* Interactive states */
   --interactive-hover-bg: color-mix(in srgb, var(--surface-5) 72%, var(--surface-4));
   --interactive-active-bg: color-mix(in srgb, var(--surface-5) 55%, var(--surface-3));
-  --interactive-focus-ring-color: var(--brand-4);
+  --interactive-focus-ring-color: #8bc4ff;
   --interactive-focus-ring: color-mix(in srgb, var(--interactive-focus-ring-color) 55%, transparent);
   --interactive-focus-ring-offset: 2px;
   --interactive-focus-ring-size: 3px;
   --interactive-disabled-opacity: 1;
-  --interactive-disabled-fg: #8b99ab;
-  --interactive-disabled-bg: #202b39;
-  --interactive-disabled-border: #41546a;
+  --interactive-disabled-fg: #afbed0;
+  --interactive-disabled-bg: #2a3748;
+  --interactive-disabled-border: #607893;
 
   --link-hover: var(--brand-2);
   --link-active: var(--brand-1);

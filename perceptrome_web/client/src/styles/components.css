@@ -10,7 +10,7 @@
 .panel:hover,
 .card:hover {
   box-shadow: var(--card-hover-shadow);
-  transform: translateY(-1px);
+  transform: translateY(-2px);
 }
 
 .panel-header {
@@ -52,13 +52,13 @@
 .btn--primary:hover {
   background: var(--button-hover-bg);
   box-shadow: var(--button-hover-shadow);
-  transform: translateY(-1px);
+  transform: translateY(-2px);
   text-decoration: none;
 }
 
 .btn:active,
 .btn--primary:active {
-  transform: translateY(1px);
+  transform: translateY(1px) scale(0.99);
   background: var(--button-active-bg);
   box-shadow: var(--shadow-sm);
 }
@@ -345,5 +345,18 @@ textarea.input:disabled {
       transform var(--transition-press),
       box-shadow var(--transition-fast),
       color var(--transition-fast);
+  }
+}
+
+
+@media (prefers-reduced-motion: reduce) {
+  .panel:hover,
+  .card:hover,
+  .btn:hover,
+  .btn--primary:hover,
+  .btn:active,
+  .btn--primary:active,
+  .tab:active {
+    transform: none;
   }
 }

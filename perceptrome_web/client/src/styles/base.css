@@ -52,13 +52,12 @@ p {
 ):focus-visible {
   outline: var(--interactive-focus-ring-size) solid var(--interactive-focus-ring-color);
   outline-offset: var(--interactive-focus-ring-offset);
-  box-shadow: 0 0 0 var(--interactive-focus-ring-size) var(--interactive-focus-ring);
+  box-shadow: 0 0 0 calc(var(--interactive-focus-ring-size) + 1px) var(--interactive-focus-ring);
 }
 
 a {
   color: var(--color-text-link);
   text-decoration: none;
-  transition: color var(--transition-fast);
 }
 
 a:hover {
@@ -93,5 +92,12 @@ label {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+}
+
+
+@media (prefers-reduced-motion: no-preference) {
+  a {
+    transition: color var(--transition-fast);
   }
 }
