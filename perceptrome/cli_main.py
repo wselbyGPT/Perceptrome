@@ -223,6 +223,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_model_args(s)
     s.set_defaults(func=_lazy_cmd("cmd_generate_protein"))
 
+    s = sub.add_parser("run-job-spec")
+    s.add_argument("--spec-json", required=True, help="Serialized JobSpec JSON payload")
+    s.set_defaults(func=_lazy_cmd("cmd_run_job_spec"))
+
     s = sub.add_parser("pretrain")
     s.add_argument("--dataset", default=None, help="Path to tensorized pretraining .npz archive")
     s.add_argument("--vocab-size", type=int, default=None, help="Tokenizer vocabulary size")

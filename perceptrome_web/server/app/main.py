@@ -1,4 +1,5 @@
 # server/app/main.py
+import asyncio
 from datetime import datetime, timedelta
 import json
 import logging
@@ -38,6 +39,8 @@ from .schemas import (
     UserOut,
     MessageOut,
 )
+from perceptrome.jobs import JobEngine, JobEvent, JobSpec
+
 from .security import (
     hash_password,
     verify_password,
@@ -531,12 +534,9 @@ def change_password(
 
 @app.post("/api/runs/start")
 def start_run(user: User = Depends(get_current_user_strict)):
-    return {
-        "ok": True,
-        "message": f"Run started by {user.email}",
-        "user_id": user.id,
-        "role": user.role,
-    }
+    spec = JobSpec(kind="generate_plasmid", config_path="config/stream_config.yaml", params={"length_bp": 512, "output": "generated/web_api_run.fasta"})
+    result = JobEngine().run(spec)
+    return {"ok": result.ok, "message": result.message, "user_id": user.id, "role": user.role, "data": result.data}
 
 
 @app.get("/api/admin/users")
@@ -639,54 +639,24 @@ async def websocket_endpoint(websocket: WebSocket):
             msg = json.loads(raw)
 
             if msg.get("type") == "start_run":
-                await websocket.send_text(
-                    json.dumps(
-                        {
-                            "type": "status",
-                            "status": f"run accepted for {user.email}",
-                            "progress": 0.0,
-                        }
-                    )
+                cfg = msg.get("config", {}) or {}
+                spec = JobSpec(
+                    kind=str(cfg.get("kind", "generate_plasmid")),
+                    config_path=str(cfg.get("config_path", "config/stream_config.yaml")),
+                    params=dict(cfg.get("params", {"length_bp": 512, "output": "generated/web_ws_run.fasta"})),
                 )
-                await websocket.send_text(
-                    json.dumps(
-                        {
-                            "type": "log",
-                            "line": f"Starting run with config: {json.dumps(msg.get('config', {}))}",
-                        }
-                    )
-                )
-                await websocket.send_text(
-                    json.dumps(
-                        {
-                            "type": "status",
-                            "status": "running",
-                            "progress": 0.5,
-                        }
-                    )
-                )
-                await websocket.send_text(
-                    json.dumps(
-                        {
-                            "type": "result",
-                            "result": {
-                                "ok": True,
-                                "owner": user.email,
-                                "role": user.role,
-                                "echo_config": msg.get("config", {}),
-                            },
-                        }
-                    )
-                )
-                await websocket.send_text(
-                    json.dumps(
-                        {
-                            "type": "status",
-                            "status": "completed",
-                            "progress": 1.0,
-                        }
-                    )
-                )
+                await websocket.send_text(json.dumps({"type": "status", "status": f"run accepted for {user.email}", "progress": 0.0}))
+
+                queue: list[dict] = []
+
+                def _sink(ev: JobEvent):
+                    queue.append({"type": "log", "line": f"[{ev.stage}] {ev.message}", "data": ev.data})
+
+                result = await asyncio.to_thread(lambda: JobEngine(event_sink=_sink).run(spec))
+                for entry in queue:
+                    await websocket.send_text(json.dumps(entry))
+                await websocket.send_text(json.dumps({"type": "result", "result": {"ok": result.ok, "message": result.message, "data": result.data}}))
+                await websocket.send_text(json.dumps({"type": "status", "status": ("completed" if result.ok else "error"), "progress": (1.0 if result.ok else 0.0)}))
 
             elif msg.get("type") == "stop_run":
                 await websocket.send_text(json.dumps({"type": "run_stopped", "message": "Run stopped"}))

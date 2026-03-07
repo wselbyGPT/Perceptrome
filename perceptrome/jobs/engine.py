@@ -1,0 +1,292 @@
+from __future__ import annotations
+
+import json
+import os
+import random
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, Literal, Optional
+
+import numpy as np
+
+from perceptrome.cli.common import (
+    _ensure_record,
+    _get_frame,
+    _get_grounded,
+    _get_min_orf,
+    _get_source,
+    _get_tok,
+    cleanup_accession_files,
+    encode_accession,
+    encoded_cache_path,
+    ensure_dirs,
+    extract_configs,
+    load_full_config,
+    load_state,
+    read_catalog,
+    save_state,
+    setup_logging,
+    train_on_encoded,
+)
+from perceptrome.encoding.parse import parse_fasta_sequence
+from perceptrome.generate import generate_plasmid_sequence, generate_protein_sequence
+from perceptrome.pretrain import PretrainPipelineConfig, run_pretraining
+
+JobKind = Literal["train_one", "stream", "generate_plasmid", "generate_protein", "validate_plasmid", "pretrain"]
+
+
+@dataclass(slots=True)
+class JobSpec:
+    kind: JobKind
+    config_path: str = "config/stream_config.yaml"
+    params: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class JobEvent:
+    stage: str
+    message: str
+    data: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class JobResult:
+    ok: bool
+    exit_code: int
+    message: str
+    data: Dict[str, Any] = field(default_factory=dict)
+    events: list[JobEvent] = field(default_factory=list)
+
+
+class JobEngine:
+    def __init__(self, event_sink: Optional[Callable[[JobEvent], None]] = None):
+        self._event_sink = event_sink
+        self._events: list[JobEvent] = []
+
+    def _emit(self, stage: str, message: str, **data: Any) -> None:
+        event = JobEvent(stage=stage, message=message, data=data)
+        self._events.append(event)
+        if self._event_sink:
+            self._event_sink(event)
+
+    def run(self, spec: JobSpec) -> JobResult:
+        self._events = []
+        self._emit("start", f"Starting job kind={spec.kind}")
+        try:
+            handlers = {
+                "train_one": self._run_train_one,
+                "stream": self._run_stream,
+                "generate_plasmid": self._run_generate_plasmid,
+                "generate_protein": self._run_generate_protein,
+                "validate_plasmid": self._run_validate_plasmid,
+                "pretrain": self._run_pretrain,
+            }
+            data = handlers[spec.kind](spec)
+            self._emit("done", "Job finished successfully")
+            return JobResult(ok=True, exit_code=0, message="ok", data=data, events=list(self._events))
+        except Exception as exc:  # noqa: BLE001
+            self._emit("error", f"Job failed: {exc}", error=repr(exc))
+            return JobResult(ok=False, exit_code=1, message=str(exc), events=list(self._events))
+
+    @staticmethod
+    def _pick_window_stride(params: Dict[str, Any], train_cfg: Any, tok: str) -> tuple[int, int]:
+        ws = params.get("window_size")
+        st = params.get("stride")
+        if tok == "aa":
+            ws = ws if ws is not None else (getattr(train_cfg, "protein_window_aa", None) or getattr(train_cfg, "window_size", None))
+            st = st if st is not None else (getattr(train_cfg, "protein_stride_aa", None) or getattr(train_cfg, "stride", None))
+        else:
+            ws = ws if ws is not None else getattr(train_cfg, "window_size", None)
+            st = st if st is not None else getattr(train_cfg, "stride", None)
+        if ws is None or st is None:
+            raise ValueError("window_size/stride not set")
+        return int(ws), int(st)
+
+    @staticmethod
+    def _validate_tok_params(tok: str, window_size: int, stride: int, frame_offset: int) -> None:
+        if tok == "codon":
+            if window_size % 3 != 0 or stride % 3 != 0:
+                raise ValueError("codon tokenizer requires window/stride divisible by 3")
+            if frame_offset not in (0, 1, 2):
+                raise ValueError("frame_offset must be 0,1,2 for codon")
+
+    @staticmethod
+    def _resolve_proteome_params(params: Dict[str, Any], train_cfg: Any, tok: str, src: str) -> Dict[str, Any]:
+        args = type("A", (), params)
+        return {
+            "max_windows_per_protein": params.get("max_windows_per_protein"),
+            "protein_len_min": params.get("protein_len_min"),
+            "protein_len_max": params.get("protein_len_max"),
+            "translation_only": bool(params.get("translation_only", False)),
+            "protein_opts": _get_grounded(args, train_cfg, tok, src),
+        }
+
+    @staticmethod
+    def _cache_kwargs(tok: str, min_orf: int, pol: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "min_orf_aa": (min_orf if tok == "aa" else None),
+            "max_windows_per_protein": (pol.get("max_windows_per_protein") if tok == "aa" else None),
+            "protein_len_min": (pol.get("protein_len_min") if tok == "aa" else None),
+            "protein_len_max": (pol.get("protein_len_max") if tok == "aa" else None),
+            "translation_only": (bool(pol.get("translation_only", False)) if tok == "aa" else False),
+        }
+
+    def _run_train_one(self, spec: JobSpec) -> Dict[str, Any]:
+        cfg = load_full_config(spec.config_path)
+        ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
+        ensure_dirs(io_cfg)
+        setup_logging(io_cfg.logs_dir)
+        state = load_state(io_cfg.state_file)
+        params = dict(spec.params)
+
+        args = type("A", (), params)
+        tok = _get_tok(args, train_cfg)
+        frame = _get_frame(args, train_cfg)
+        min_orf = _get_min_orf(args, train_cfg)
+        window_size, stride = self._pick_window_stride(params, train_cfg, tok)
+        self._validate_tok_params(tok, window_size, stride, frame)
+        src = _get_source(args, tok)
+        pol = self._resolve_proteome_params(params, train_cfg, tok, src)
+
+        accession = str(params["accession"])
+        _ensure_record(accession, src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=False)
+        enc_path = encoded_cache_path(io_cfg, accession, tok, window_size, stride, frame, source=src, **self._cache_kwargs(tok, min_orf, pol))
+        if os.path.exists(enc_path) and not bool(params.get("reencode", False)):
+            encoded = np.load(enc_path)
+        else:
+            encoded = encode_accession(accession, io_cfg, window_size, stride, tokenizer=tok, frame_offset=frame, min_orf_aa=min_orf, source=src, max_windows_per_protein=pol.get("max_windows_per_protein"), protein_len_min=pol.get("protein_len_min"), protein_len_max=pol.get("protein_len_max"), translation_only=bool(pol.get("translation_only", False)), protein_opts=pol.get("protein_opts") or {}, save_to_disk=True, out_path=enc_path)
+        self._emit("encode", f"encoded {accession}", path=enc_path)
+
+        last_total = train_on_encoded(
+            accession,
+            encoded,
+            steps=int(params.get("steps") or train_cfg.steps_per_plasmid),
+            batch_size=int(params.get("batch_size") or train_cfg.batch_size),
+            state=state,
+            io_cfg=io_cfg,
+            train_cfg=train_cfg,
+            tokenizer=tok,
+            window_size_bp=window_size,
+            loss_type=params.get("loss_type"),
+            run_id=params.get("tb_run_id"),
+            tensorboard_log_every=params.get("tb_log_every"),
+        )
+        state["plasmid_visit_counts"][accession] = state["plasmid_visit_counts"].get(accession, 0) + 1
+        save_state(io_cfg.state_file, state)
+        cleanup_accession_files(accession, io_cfg, enc_path)
+        self._emit("train", f"trained {accession}", loss=float(last_total))
+        return {"accession": accession, "last_total_loss": float(last_total)}
+
+    def _run_stream(self, spec: JobSpec) -> Dict[str, Any]:
+        cfg = load_full_config(spec.config_path)
+        ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
+        ensure_dirs(io_cfg)
+        setup_logging(io_cfg.logs_dir)
+        state = load_state(io_cfg.state_file)
+        params = dict(spec.params)
+        accessions = read_catalog(str(params["catalog"]))
+
+        args = type("A", (), params)
+        tok = _get_tok(args, train_cfg)
+        frame = _get_frame(args, train_cfg)
+        min_orf = _get_min_orf(args, train_cfg)
+        window_size, stride = self._pick_window_stride(params, train_cfg, tok)
+        src = _get_source(args, tok)
+
+        steps = int(params.get("steps_per_plasmid") or train_cfg.steps_per_plasmid)
+        batch = int(params.get("batch_size") or train_cfg.batch_size)
+        max_epochs = int(params.get("max_epochs") or train_cfg.max_stream_epochs)
+        epoch = int(state.get("epoch", 0))
+        processed = 0
+        while epoch < max_epochs:
+            indices = list(range(len(accessions)))
+            if train_cfg.shuffle_catalog:
+                random.shuffle(indices)
+            for idx in indices:
+                acc = accessions[idx]
+                pol = self._resolve_proteome_params(params, train_cfg, tok, src)
+                _ensure_record(acc, src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=False)
+                enc_path = encoded_cache_path(io_cfg, acc, tok, window_size, stride, frame, source=src, **self._cache_kwargs(tok, min_orf, pol))
+                if os.path.exists(enc_path) and not bool(params.get("reencode", False)):
+                    encoded = np.load(enc_path)
+                else:
+                    encoded = encode_accession(acc, io_cfg, window_size, stride, tokenizer=tok, frame_offset=frame, min_orf_aa=min_orf, source=src, max_windows_per_protein=pol.get("max_windows_per_protein"), protein_len_min=pol.get("protein_len_min"), protein_len_max=pol.get("protein_len_max"), translation_only=bool(pol.get("translation_only", False)), protein_opts=pol.get("protein_opts") or {}, save_to_disk=True, out_path=enc_path)
+                last_total = train_on_encoded(acc, encoded, steps=steps, batch_size=batch, state=state, io_cfg=io_cfg, train_cfg=train_cfg, tokenizer=tok, window_size_bp=window_size, loss_type=params.get("loss_type"), run_id=params.get("tb_run_id"), tensorboard_log_every=params.get("tb_log_every"))
+                state["plasmid_visit_counts"][acc] = state["plasmid_visit_counts"].get(acc, 0) + 1
+                state["current_index"] = idx
+                state["epoch"] = epoch
+                save_state(io_cfg.state_file, state)
+                if bool(params.get("delete_cache", False)):
+                    cleanup_accession_files(acc, io_cfg, enc_path)
+                processed += 1
+                self._emit("stream_step", f"trained {acc}", epoch=epoch, loss=float(last_total))
+            epoch += 1
+        return {"processed_accessions": processed}
+
+    def _run_generate_plasmid(self, spec: JobSpec) -> Dict[str, Any]:
+        cfg = load_full_config(spec.config_path)
+        _, train_cfg, io_cfg = extract_configs(cfg)
+        ensure_dirs(io_cfg)
+        setup_logging(io_cfg.logs_dir)
+        p = dict(spec.params)
+        tokenizer = str(p.get("tokenizer") or getattr(train_cfg, "tokenizer", "base"))
+        seq = generate_plasmid_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_bp=int(p.get("length_bp", 10000)), num_windows=p.get("num_windows"), window_size_bp=int(p.get("window_size") or train_cfg.window_size), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), gc_bias=float(p.get("gc_bias", 1.0)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), target_gc=float(p.get("target_gc", 0.5)), max_homopolymer=p.get("max_homopolymer"), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), name=str(p.get("name", "perceptrome_plasmid_1")), output_path=str(p.get("output", "generated/novel_plasmid.fasta")), tokenizer=tokenizer)
+        self._emit("generate", "plasmid generated", output=p.get("output"), length=len(seq))
+        return {"output": str(p.get("output", "generated/novel_plasmid.fasta")), "length": len(seq)}
+
+    def _run_generate_protein(self, spec: JobSpec) -> Dict[str, Any]:
+        cfg = load_full_config(spec.config_path)
+        _, train_cfg, io_cfg = extract_configs(cfg)
+        ensure_dirs(io_cfg)
+        setup_logging(io_cfg.logs_dir)
+        p = dict(spec.params)
+        seq = generate_protein_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_aa=int(p.get("length_aa", 600)), num_windows=p.get("num_windows"), window_aa=int(p.get("window_aa") or train_cfg.protein_window_aa), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), name=str(p.get("name", "perceptrome_protein_1")), output_path=str(p.get("output", "generated/novel_protein.faa")), reject=bool(p.get("reject", False)), reject_tries=int(p.get("reject_tries", 40)), reject_max_run=int(p.get("reject_max_run", 10)), reject_max_x_frac=float(p.get("reject_max_x_frac", 0.15)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), max_homopolymer=p.get("max_homopolymer"), max_x_frac=p.get("max_x_frac"), max_internal_stops=int(p.get("max_internal_stops", 0)), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)))
+        self._emit("generate", "protein generated", output=p.get("output"), length=len(seq))
+        return {"output": str(p.get("output", "generated/novel_protein.faa")), "length": len(seq)}
+
+    def _run_validate_plasmid(self, spec: JobSpec) -> Dict[str, Any]:
+        cfg = load_full_config(spec.config_path)
+        ncbi_cfg, _, io_cfg = extract_configs(cfg)
+        ensure_dirs(io_cfg)
+        p = dict(spec.params)
+        generated_seq = parse_fasta_sequence(str(p["generated_fasta"]))
+        rows = []
+        for accession in read_catalog(str(p["catalog"])):
+            ref_path = _ensure_record(accession, "fasta", io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=bool(p.get("force_fetch", False)))
+            ref_seq = parse_fasta_sequence(ref_path)
+            score = 1.0 if generated_seq == ref_seq else 0.0
+            rows.append({"accession": accession, "ref_path": ref_path, "score": score, "ref_len": len(ref_seq)})
+        rows.sort(key=lambda r: r["score"], reverse=True)
+        top_n = max(1, int(p.get("top_n", 5)))
+        top_rows = rows[:top_n]
+        if p.get("output_json"):
+            out_path = str(p["output_json"])
+            os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump({"generated_fasta": str(p["generated_fasta"]), "catalog": str(p["catalog"]), "top_n": top_n, "results": top_rows}, f, indent=2)
+                f.write("\n")
+        self._emit("validate", "validation complete", top_n=top_n)
+        return {"results": top_rows, "top_n": top_n}
+
+    def _run_pretrain(self, spec: JobSpec) -> Dict[str, Any]:
+        cfg = load_full_config(spec.config_path)
+        pre_cfg = dict(cfg.get("pretrain", {}) or {})
+        p = dict(spec.params)
+        dataset_path = str(p.get("dataset") or pre_cfg.get("dataset_path", "")).strip()
+        if not dataset_path:
+            raise ValueError("Pretraining requires --dataset")
+        pipeline_cfg = PretrainPipelineConfig(
+            dataset_path=dataset_path,
+            vocab_size=int(p.get("vocab_size") or pre_cfg.get("vocab_size", 32)),
+            batch_size=int(p.get("batch_size") or pre_cfg.get("batch_size", 16)),
+            epochs=int(p.get("epochs") or pre_cfg.get("epochs", 1)),
+            hidden_size=int(p.get("hidden_size") or pre_cfg.get("hidden_size", 256)),
+            lr=float(p.get("learning_rate") or pre_cfg.get("learning_rate", 1e-4)),
+            output_dir=str(p.get("output_dir") or pre_cfg.get("output_dir", "model/pretrain")),
+            enable_mlm=bool(pre_cfg.get("enable_mlm", True)) if not p.get("disable_mlm", False) else False,
+            enable_sme=bool(pre_cfg.get("enable_sme", True)) if not p.get("disable_sme", False) else False,
+            enable_contrastive=bool(pre_cfg.get("enable_contrastive", True)) if not p.get("disable_contrastive", False) else False,
+        )
+        metrics = run_pretraining(pipeline_cfg)
+        self._emit("pretrain", "pretraining complete", metrics=metrics)
+        return {"metrics": metrics, "completed_at": datetime.now(timezone.utc).isoformat()}

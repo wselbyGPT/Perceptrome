@@ -49,6 +49,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
+from perceptrome.jobs import JobEngine, JobEvent, JobSpec
+
 
 # ---------------------------------------------------------------------------
 # Configuration / paths
@@ -86,67 +88,23 @@ def ensure_static_dir(static_dir: Path) -> Path:
 # Fake Perceptrome integration (to be replaced with real logic)
 # ---------------------------------------------------------------------------
 
-async def simulate_perceptrome_run(config: Dict[str, Any], ws: WebSocket) -> Dict[str, Any]:
-    """
-    Simulated Perceptrome job.
+async def run_perceptrome_job(config: Dict[str, Any], ws: WebSocket) -> Dict[str, Any]:
+    spec = JobSpec(
+        kind=str(config.get("kind", "generate_plasmid")),
+        config_path=str(config.get("config_path", "config/stream_config.yaml")),
+        params=dict(config.get("params", {"length_bp": 512, "output": "generated/web_cli_run.fasta"})),
+    )
 
-    - Sends periodic status and log messages over the WebSocket.
-    - Returns a final "result" dict that will be sent as a `result` message.
+    events: list[dict[str, Any]] = []
 
-    Replace this with your *real* Perceptrome invocation, e.g.:
+    def _sink(ev: JobEvent) -> None:
+        events.append({"type": "log", "message": f"[{ev.stage}] {ev.message}", "data": ev.data})
 
-        from perceptrome import run_experiment
-
-        def run_perceptrome(config):
-            return run_experiment(**config)
-
-    and then adapt this coroutine to call it (possibly via run_in_executor).
-    """
-    await ws.send_json({"type": "status", "status": "running", "progress": 0.0})
-    await ws.send_json({
-        "type": "log",
-        "message": f"Starting Perceptrome run with config: {json.dumps(config)}",
-    })
-
-    # fake 10 steps of work
-    steps = 10
-    for step in range(1, steps + 1):
-        # simulate some work
-        await asyncio.sleep(0.4)
-
-        progress = step / steps
-        await ws.send_json({
-            "type": "status",
-            "status": "running",
-            "progress": progress,
-        })
-        await ws.send_json({
-            "type": "log",
-            "message": f"Step {step}/{steps} completed (progress={progress:.0%})",
-        })
-
-    # fake "result"
-    result: Dict[str, Any] = {
-        "summary": "Perceptrome run completed successfully.",
-        "config_echo": config,
-        "metrics": {
-            "example_metric": 0.987,
-            "another_metric": 42,
-        },
-    }
-
-    await ws.send_json({
-        "type": "log",
-        "message": "Perceptrome run finished. Preparing result payload…",
-    })
-
-    await ws.send_json({
-        "type": "status",
-        "status": "done",
-        "progress": 1.0,
-    })
-
-    return result
+    result = await asyncio.to_thread(lambda: JobEngine(event_sink=_sink).run(spec))
+    for event in events:
+        await ws.send_json(event)
+    await ws.send_json({"type": "status", "status": ("done" if result.ok else "error"), "progress": (1.0 if result.ok else None)})
+    return {"ok": result.ok, "message": result.message, "data": result.data}
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +188,7 @@ def create_app(static_dir: Path) -> FastAPI:
 
             # At this point, we have a valid config — run Perceptrome
             try:
-                result = await simulate_perceptrome_run(config, ws)
+                result = await run_perceptrome_job(config, ws)
             except Exception as e:  # pylint: disable=broad-except
                 await ws.send_json({
                     "type": "log",
