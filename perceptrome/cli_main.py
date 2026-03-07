@@ -235,6 +235,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--hidden-size", type=int, default=None, help="Backbone hidden size")
     s.add_argument("--learning-rate", type=float, default=None, help="Optimizer learning rate")
     s.add_argument("--output-dir", default=None, help="Checkpoint/log output directory")
+    s.add_argument("--seed", type=int, default=None, help="Global RNG seed for pretraining")
     s.add_argument("--disable-mlm", action="store_true", help="Disable masked token objective")
     s.add_argument("--disable-sme", action="store_true", help="Disable masked SME objective")
     s.add_argument("--disable-contrastive", action="store_true", help="Disable contrastive objective")
