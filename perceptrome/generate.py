@@ -13,6 +13,20 @@ except ImportError:
 from .config import TrainingConfig, IOConfig
 from .model import get_device, load_or_init_model
 from .encoding_main import tokenizer_meta, IDX_TO_CODON, CODON_VOCAB_SIZE, GC_COUNT_PER_TOKEN, IDX_TO_AA, AA_VOCAB_SIZE
+from .run_layout import ensure_run_layout, path_in_run, update_run_manifest
+
+
+def _run_local_io_cfg(io_cfg: IOConfig) -> IOConfig:
+    layout = ensure_run_layout()
+    return IOConfig(
+        cache_fasta_dir=io_cfg.cache_fasta_dir,
+        cache_genbank_dir=io_cfg.cache_genbank_dir,
+        cache_encoded_dir=io_cfg.cache_encoded_dir,
+        model_dir=layout.artifacts_dir,
+        checkpoints_dir=os.path.join(layout.artifacts_dir, "checkpoints"),
+        logs_dir=io_cfg.logs_dir,
+        state_file=io_cfg.state_file,
+    )
 
 def _sample_from_logits(logits: np.ndarray, temperature: float) -> int:
     """Sample an index from a logits vector using softmax( logits / T )."""
@@ -219,6 +233,14 @@ def generate_plasmid_sequence(
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
 
+    layout = ensure_run_layout()
+    io_cfg = _run_local_io_cfg(io_cfg)
+    output_path = path_in_run(layout, "outputs", os.path.basename(output_path))
+    if summary_path:
+        summary_path = path_in_run(layout, "outputs", os.path.basename(summary_path))
+    if top_k_output_path:
+        top_k_output_path = path_in_run(layout, "outputs", os.path.basename(top_k_output_path))
+
     device = get_device()
     seq_len, vocab_size = tokenizer_meta(tok, window_size_bp)
     hidden_dim = train_cfg.hidden_dim
@@ -348,6 +370,18 @@ def generate_plasmid_sequence(
         [{k: v for k, v in c.items() if k != "sequence"} for c in ranked],
     )
     logging.info("[generate-plasmid] wrote candidate summary: %s", summary_json)
+    update_run_manifest(
+        layout,
+        paths={
+            "generated": {
+                "plasmid_fasta": output_path,
+                "plasmid_top_k_fasta": top_k_output,
+                "plasmid_summary_json": summary_json,
+                "plasmid_summary_csv": summary_csv,
+            }
+        },
+        metrics={"generate_plasmid": {"length_bp": len(seq), "top_k": top_k}},
+    )
 
     return seq
 
@@ -383,6 +417,14 @@ def generate_protein_sequence(
         np.random.seed(seed); random.seed(seed); torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
+
+    layout = ensure_run_layout()
+    io_cfg = _run_local_io_cfg(io_cfg)
+    output_path = path_in_run(layout, "outputs", os.path.basename(output_path))
+    if summary_path:
+        summary_path = path_in_run(layout, "outputs", os.path.basename(summary_path))
+    if top_k_output_path:
+        top_k_output_path = path_in_run(layout, "outputs", os.path.basename(top_k_output_path))
 
     device = get_device()
     tok = "aa"
@@ -514,5 +556,17 @@ def generate_protein_sequence(
         [{k: v for k, v in c.items() if k != "sequence"} for c in ranked],
     )
     logging.info("[generate-protein] wrote candidate summary: %s", summary_json)
+    update_run_manifest(
+        layout,
+        paths={
+            "generated": {
+                "protein_faa": output_path,
+                "protein_top_k_fasta": top_k_output,
+                "protein_summary_json": summary_json,
+                "protein_summary_csv": summary_csv,
+            }
+        },
+        metrics={"generate_protein": {"length_aa": len(seq), "top_k": top_k}},
+    )
 
     return seq

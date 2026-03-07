@@ -32,6 +32,7 @@ from perceptrome.encoding.parse import parse_fasta_sequence
 from perceptrome.generate import generate_plasmid_sequence, generate_protein_sequence
 from perceptrome.jobs.manifest_writer import config_hash, write_experiment_run_manifest
 from perceptrome.pretrain import PretrainPipelineConfig, run_pretraining
+from perceptrome.run_layout import ensure_run_layout, path_in_run, update_run_manifest
 
 JobKind = Literal["train_one", "stream", "generate_plasmid", "generate_protein", "validate_plasmid", "pretrain"]
 
@@ -293,7 +294,8 @@ class JobEngine:
         setup_logging(io_cfg.logs_dir)
         p = dict(spec.params)
         tokenizer = str(p.get("tokenizer") or getattr(train_cfg, "tokenizer", "base"))
-        output = str(p.get("output", "generated/novel_plasmid.fasta"))
+        layout = ensure_run_layout()
+        output = path_in_run(layout, "outputs", os.path.basename(str(p.get("output", "generated/novel_plasmid.fasta"))))
         seq = generate_plasmid_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_bp=int(p.get("length_bp", 10000)), num_windows=p.get("num_windows"), window_size_bp=int(p.get("window_size") or train_cfg.window_size), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), gc_bias=float(p.get("gc_bias", 1.0)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), target_gc=float(p.get("target_gc", 0.5)), max_homopolymer=p.get("max_homopolymer"), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), name=str(p.get("name", "perceptrome_plasmid_1")), output_path=output, tokenizer=tokenizer)
         self._emit("generate", "plasmid generated", output=output, length=len(seq))
         run_id = str(p.get("manifest_id") or f"generate_plasmid_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
@@ -306,6 +308,7 @@ class JobEngine:
             generated_sequences={"output": output, "name": str(p.get("name", "perceptrome_plasmid_1")), "type": "plasmid", "length": len(seq)},
             metrics={"length_bp": len(seq)},
         )
+        update_run_manifest(layout, paths={"generated": {"plasmid_fasta": output, "manifest": manifest_path}})
         return {"output": output, "length": len(seq), "manifest_path": manifest_path}
 
     def _run_generate_protein(self, spec: JobSpec) -> Dict[str, Any]:
@@ -314,7 +317,8 @@ class JobEngine:
         ensure_dirs(io_cfg)
         setup_logging(io_cfg.logs_dir)
         p = dict(spec.params)
-        output = str(p.get("output", "generated/novel_protein.faa"))
+        layout = ensure_run_layout()
+        output = path_in_run(layout, "outputs", os.path.basename(str(p.get("output", "generated/novel_protein.faa"))))
         seq = generate_protein_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_aa=int(p.get("length_aa", 600)), num_windows=p.get("num_windows"), window_aa=int(p.get("window_aa") or train_cfg.protein_window_aa), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), name=str(p.get("name", "perceptrome_protein_1")), output_path=output, reject=bool(p.get("reject", False)), reject_tries=int(p.get("reject_tries", 40)), reject_max_run=int(p.get("reject_max_run", 10)), reject_max_x_frac=float(p.get("reject_max_x_frac", 0.15)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), max_homopolymer=p.get("max_homopolymer"), max_x_frac=p.get("max_x_frac"), max_internal_stops=int(p.get("max_internal_stops", 0)), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)))
         self._emit("generate", "protein generated", output=output, length=len(seq))
         run_id = str(p.get("manifest_id") or f"generate_protein_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
@@ -327,6 +331,7 @@ class JobEngine:
             generated_sequences={"output": output, "name": str(p.get("name", "perceptrome_protein_1")), "type": "protein", "length": len(seq)},
             metrics={"length_aa": len(seq)},
         )
+        update_run_manifest(layout, paths={"generated": {"protein_faa": output, "manifest": manifest_path}})
         return {"output": output, "length": len(seq), "manifest_path": manifest_path}
 
     def _run_validate_plasmid(self, spec: JobSpec) -> Dict[str, Any]:
@@ -346,12 +351,19 @@ class JobEngine:
         rows.sort(key=lambda r: r["score"], reverse=True)
         top_n = max(1, int(p.get("top_n", 5)))
         top_rows = rows[:top_n]
+        layout = ensure_run_layout()
         output_json = p.get("output_json")
+        payload = {"generated_fasta": generated_fasta, "catalog": catalog_path, "top_n": top_n, "results": top_rows}
+        out_path = path_in_run(layout, "outputs", os.path.basename(str(output_json or "validation.json")))
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+            f.write("\n")
         if output_json:
-            out_path = str(output_json)
-            os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-            with open(out_path, "w", encoding="utf-8") as f:
-                json.dump({"generated_fasta": generated_fasta, "catalog": catalog_path, "top_n": top_n, "results": top_rows}, f, indent=2)
+            user_out = str(output_json)
+            os.makedirs(os.path.dirname(user_out) or ".", exist_ok=True)
+            with open(user_out, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
                 f.write("\n")
         self._emit("validate", "validation complete", top_n=top_n)
 
@@ -361,10 +373,11 @@ class JobEngine:
             spec=spec,
             run_id=run_id,
             dataset_catalog_manifest={"catalog": catalog_path, "generated_fasta": generated_fasta},
-            validation_results={"top_n": top_n, "results": top_rows, "output_json": str(output_json) if output_json else None},
+            validation_results={"top_n": top_n, "results": top_rows, "output_json": out_path},
             metrics={"evaluated": len(rows), "top_score": float(top_rows[0]["score"]) if top_rows else None},
         )
-        return {"results": top_rows, "top_n": top_n, "manifest_path": manifest_path}
+        update_run_manifest(layout, paths={"validation": {"report_json": out_path, "manifest": manifest_path}})
+        return {"results": top_rows, "top_n": top_n, "manifest_path": manifest_path, "output_json": out_path}
 
     def _run_pretrain(self, spec: JobSpec) -> Dict[str, Any]:
         cfg = load_full_config(spec.config_path)
@@ -383,7 +396,7 @@ class JobEngine:
             epochs=int(p.get("epochs") or pre_cfg.get("epochs", 1)),
             hidden_size=int(p.get("hidden_size") or pre_cfg.get("hidden_size", 256)),
             lr=float(p.get("learning_rate") or pre_cfg.get("learning_rate", 1e-4)),
-            output_dir=str(p.get("output_dir") or pre_cfg.get("output_dir", "model/pretrain")),
+            output_dir=path_in_run(ensure_run_layout(), "artifacts", os.path.basename(str(p.get("output_dir") or pre_cfg.get("output_dir", "model/pretrain")))),
             enable_mlm=bool(pre_cfg.get("enable_mlm", True)) if not p.get("disable_mlm", False) else False,
             enable_sme=bool(pre_cfg.get("enable_sme", True)) if not p.get("disable_sme", False) else False,
             enable_contrastive=bool(pre_cfg.get("enable_contrastive", True)) if not p.get("disable_contrastive", False) else False,
