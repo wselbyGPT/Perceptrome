@@ -30,6 +30,7 @@ from perceptrome.encoding.genbank_features import parse_cds_features_from_genban
 from perceptrome.io_utils import select_unique_accessions, write_catalog
 from perceptrome.encoding.parse import parse_fasta_sequence, parse_genbank_dna
 from perceptrome.pretrain import PretrainPipelineConfig, run_pretraining
+from perceptrome.run_layout import ensure_run_layout, path_in_run, update_run_manifest
 from perceptrome.jobs import JobEngine, JobSpec
 from perceptrome.jobs.manifest_schema import extract_tokenizer_encoding_config
 from perceptrome.jobs.manifest_writer import (
@@ -262,6 +263,13 @@ def _new_experiment_id(prefix: str = "exp") -> str:
     return f"{prefix}_{ts}_{uuid.uuid4().hex[:8]}"
 
 
+def _run_local_io_cfg(io_cfg):
+    layout = ensure_run_layout()
+    io_cfg.checkpoints_dir = path_in_run(layout, "artifacts", "checkpoints")
+    io_cfg.model_dir = path_in_run(layout, "artifacts", "model")
+    return io_cfg
+
+
 def _write_fetch_manifest(
     *,
     path: str,
@@ -368,7 +376,8 @@ def _build_and_write_bio_ast(accession: str, source: str, io_cfg) -> Optional[st
         logging.warning("%s: failed to build bio AST (%s)", accession, exc)
         return None
 
-    ast_dir = os.path.join(io_cfg.cache_encoded_dir, "bio_ast")
+    layout = ensure_run_layout()
+    ast_dir = path_in_run(layout, "artifacts", "bio_ast")
     os.makedirs(ast_dir, exist_ok=True)
     out_path = os.path.join(ast_dir, f"{accession}.bio_ast.json")
     payload = {
@@ -382,6 +391,7 @@ def _build_and_write_bio_ast(accession: str, source: str, io_cfg) -> Optional[st
     with open(out_path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
         handle.write("\n")
+    update_run_manifest(layout, paths={"bio_ast": {str(accession): out_path}})
     return out_path
 
 
@@ -522,6 +532,7 @@ def cmd_fetch_one(args: argparse.Namespace) -> int:
     cfg = load_full_config(args.config)
     cfg = _apply_cli_training_overrides(cfg, args)
     ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
+    io_cfg = _run_local_io_cfg(io_cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
     cfg_hash = config_hash(cfg)
@@ -591,6 +602,7 @@ def cmd_encode_one(args: argparse.Namespace) -> int:
     cfg = load_full_config(args.config)
     cfg = _apply_cli_training_overrides(cfg, args)
     ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
+    io_cfg = _run_local_io_cfg(io_cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
     cfg_hash = config_hash(cfg)
@@ -615,11 +627,8 @@ def cmd_encode_one(args: argparse.Namespace) -> int:
         ncbi_cfg=ncbi_cfg,
     )
 
-    out_path = encoded_cache_path(
-        io_cfg, args.accession, tok, window_size, stride, frame,
-        source=src,
-        **_cache_kwargs(tok, min_orf, pol),
-    )
+    layout = ensure_run_layout()
+    out_path = path_in_run(layout, "artifacts", f"{args.accession}.{tok}.encoded.npy")
 
     encoded = encode_accession(
         args.accession, io_cfg, window_size, stride,
@@ -648,6 +657,7 @@ def cmd_encode_one(args: argparse.Namespace) -> int:
         protein_opts=protein_opts,
     )
     write_sidecar_run_manifest(target_path=out_path, **payload)
+    update_run_manifest(layout, paths={"encoded": {str(args.accession): out_path}})
     ast_path = _build_and_write_bio_ast(args.accession, src, io_cfg)
     if ast_path:
         logging.info("%s: bio AST artifact written at %s", args.accession, ast_path)
@@ -670,6 +680,7 @@ def cmd_scope_one(args: argparse.Namespace) -> int:
     cfg = load_full_config(args.config)
     cfg = _apply_cli_training_overrides(cfg, args)
     ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
+    io_cfg = _run_local_io_cfg(io_cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
     cfg_hash = config_hash(cfg)
@@ -777,6 +788,7 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
     cfg = load_full_config(args.config)
     cfg = _apply_cli_training_overrides(cfg, args)
     ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
+    io_cfg = _run_local_io_cfg(io_cfg)
     ensure_dirs(io_cfg)
     setup_logging(io_cfg.logs_dir)
     cfg_hash = config_hash(cfg)

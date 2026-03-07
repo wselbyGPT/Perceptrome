@@ -16,6 +16,7 @@ except Exception:  # pragma: no cover
 
 from .interfaces import PretrainBackbone
 from .objectives import ObjectiveWeights
+from perceptrome.run_layout import ensure_run_layout, path_in_run, update_run_manifest
 
 
 @dataclass
@@ -74,7 +75,10 @@ class PretrainRunner:
 
     def train(self, train_loader: DataLoader, val_loader: Optional[DataLoader] = None) -> Dict[str, float]:
         metrics: Dict[str, float] = {}
+        layout = ensure_run_layout()
+        self.cfg.output_dir = path_in_run(layout, "artifacts", "pretrain")
         os.makedirs(self.cfg.output_dir, exist_ok=True)
+        update_run_manifest(layout, paths={"pretrain": {"output_dir": self.cfg.output_dir}})
         for epoch in range(int(self.cfg.epochs)):
             self.backbone.train()
             for obj in self.objectives.values():
@@ -111,9 +115,13 @@ class PretrainRunner:
                 if self.global_step % int(self.cfg.log_every) == 0:
                     print(json.dumps({"step": self.global_step, **log_row}, sort_keys=True))
                 if self.global_step % int(self.cfg.checkpoint_every) == 0:
-                    self.save_checkpoint(os.path.join(self.cfg.output_dir, f"step_{self.global_step}.pt"))
+                    ckpt_path = os.path.join(self.cfg.output_dir, f"step_{self.global_step}.pt")
+                    self.save_checkpoint(ckpt_path)
+                    update_run_manifest(layout, paths={"pretrain": {"latest_step_checkpoint": ckpt_path}})
 
-            self.save_checkpoint(os.path.join(self.cfg.output_dir, f"epoch_{epoch + 1}.pt"))
+            epoch_ckpt = os.path.join(self.cfg.output_dir, f"epoch_{epoch + 1}.pt")
+            self.save_checkpoint(epoch_ckpt)
+            update_run_manifest(layout, paths={"pretrain": {"latest_epoch_checkpoint": epoch_ckpt}})
             if val_loader is not None:
                 self.validate(val_loader)
 
@@ -133,6 +141,8 @@ class PretrainRunner:
                 vals.append(total)
         score = float(sum(vals) / max(1, len(vals)))
         print(json.dumps({"val/loss_total": score}, sort_keys=True))
+        layout = ensure_run_layout()
+        update_run_manifest(layout, metrics={"pretrain": {"val/loss_total": score}})
         return {"val/loss_total": score}
 
     def save_checkpoint(self, path: str) -> None:

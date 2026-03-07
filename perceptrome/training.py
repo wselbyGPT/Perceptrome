@@ -19,6 +19,7 @@ except ImportError:
 from .config import IOConfig, TrainingConfig
 from .model import get_device, load_or_init_model, save_checkpoint, vae_loss
 from .encoding_main import tokenizer_meta
+from .run_layout import ensure_run_layout, path_in_run
 
 
 def _default_loss_type(tokenizer: str) -> str:
@@ -82,6 +83,20 @@ def _apply_aa_span_mask(batch_onehot: "torch.Tensor", span_prob: float, span_len
         x[b, s:e, X_IDX] = 1.0
     return x
 
+
+
+def _run_local_io_cfg(io_cfg: IOConfig) -> IOConfig:
+    layout = ensure_run_layout()
+    return IOConfig(
+        cache_fasta_dir=io_cfg.cache_fasta_dir,
+        cache_genbank_dir=io_cfg.cache_genbank_dir,
+        cache_encoded_dir=io_cfg.cache_encoded_dir,
+        model_dir=layout.artifacts_dir,
+        checkpoints_dir=os.path.join(layout.artifacts_dir, "checkpoints"),
+        logs_dir=io_cfg.logs_dir,
+        state_file=io_cfg.state_file,
+    )
+
 def train_on_encoded(
     accession: str,
     encoded: np.ndarray,
@@ -101,6 +116,7 @@ def train_on_encoded(
 ) -> float:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
+    io_cfg = _run_local_io_cfg(io_cfg)
     device = get_device()
 
     seq_len, vocab_size = tokenizer_meta(tokenizer, window_size_bp)
@@ -152,7 +168,8 @@ def train_on_encoded(
     tb_run_id = run_id or getattr(train_cfg, "tensorboard_run_id", None) or accession
     writer = None
     if SummaryWriter is not None and tb_log_every > 0:
-        log_root = os.path.join(io_cfg.logs_dir, "tensorboard")
+        layout = ensure_run_layout()
+        log_root = path_in_run(layout, "artifacts", "tensorboard")
         log_dir = os.path.join(log_root, str(tb_run_id)) if tb_run_id else log_root
         try:
             os.makedirs(log_dir, exist_ok=True)
@@ -268,6 +285,7 @@ def compute_window_errors(
 ) -> np.ndarray:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
+    io_cfg = _run_local_io_cfg(io_cfg)
     device = get_device()
 
     seq_len, vocab_size = tokenizer_meta(tokenizer, window_size_bp)
