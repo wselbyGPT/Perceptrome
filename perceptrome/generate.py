@@ -1,6 +1,6 @@
 import csv
 import json
-import logging, os, random
+import logging, os
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -13,6 +13,7 @@ except ImportError:
 from .config import TrainingConfig, IOConfig
 from .model import get_device, load_or_init_model
 from .encoding_main import tokenizer_meta, IDX_TO_CODON, CODON_VOCAB_SIZE, GC_COUNT_PER_TOKEN, IDX_TO_AA, AA_VOCAB_SIZE
+from .jobs.provenance import collect_and_write_provenance, resolve_seed, set_global_seeds
 from .run_layout import ensure_run_layout, path_in_run, update_run_manifest
 
 
@@ -218,6 +219,7 @@ def generate_plasmid_sequence(
     top_k_output_path: Optional[str] = None,
     roundtrip_score: bool = False,
     recon_weight: float = 0.1,
+    provenance_inputs: Optional[Dict[str, str]] = None,
 ) -> str:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -228,12 +230,16 @@ def generate_plasmid_sequence(
     if tok == "codon" and length_bp % 3 != 0:
         length_bp = (length_bp // 3) * 3
 
-    if seed is not None:
-        np.random.seed(seed); random.seed(seed); torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
+    seed_info = resolve_seed(seed)
+    set_global_seeds(int(seed_info["value"]))
 
     layout = ensure_run_layout()
+    collect_and_write_provenance(
+        layout=layout,
+        run_kind="generate_plasmid",
+        seed_info=seed_info,
+        input_paths=provenance_inputs or {},
+    )
     io_cfg = _run_local_io_cfg(io_cfg)
     output_path = path_in_run(layout, "outputs", os.path.basename(output_path))
     if summary_path:
@@ -380,7 +386,8 @@ def generate_plasmid_sequence(
                 "plasmid_summary_csv": summary_csv,
             }
         },
-        metrics={"generate_plasmid": {"length_bp": len(seq), "top_k": top_k}},
+        metrics={"generate_plasmid": {"length_bp": len(seq), "top_k": top_k, "seed": int(seed_info["value"])}},
+        provenance={"rng": {"seed": int(seed_info["value"]), "source": str(seed_info["source"])}}
     )
 
     return seq
@@ -409,16 +416,21 @@ def generate_protein_sequence(
     top_k_output_path: Optional[str] = None,
     roundtrip_score: bool = False,
     recon_weight: float = 0.1,
+    provenance_inputs: Optional[Dict[str, str]] = None,
 ) -> str:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
 
-    if seed is not None:
-        np.random.seed(seed); random.seed(seed); torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
+    seed_info = resolve_seed(seed)
+    set_global_seeds(int(seed_info["value"]))
 
     layout = ensure_run_layout()
+    collect_and_write_provenance(
+        layout=layout,
+        run_kind="generate_protein",
+        seed_info=seed_info,
+        input_paths=provenance_inputs or {},
+    )
     io_cfg = _run_local_io_cfg(io_cfg)
     output_path = path_in_run(layout, "outputs", os.path.basename(output_path))
     if summary_path:
@@ -566,7 +578,8 @@ def generate_protein_sequence(
                 "protein_summary_csv": summary_csv,
             }
         },
-        metrics={"generate_protein": {"length_aa": len(seq), "top_k": top_k}},
+        metrics={"generate_protein": {"length_aa": len(seq), "top_k": top_k, "seed": int(seed_info["value"])}},
+        provenance={"rng": {"seed": int(seed_info["value"]), "source": str(seed_info["source"])}}
     )
 
     return seq

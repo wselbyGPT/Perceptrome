@@ -9,6 +9,8 @@ except Exception:  # pragma: no cover
     DataLoader = None  # type: ignore
 
 from .datasets import DatasetSpec, NPZPretrainDataset, pretrain_collate
+from perceptrome.jobs.provenance import collect_and_write_provenance, resolve_seed, set_global_seeds
+from perceptrome.run_layout import ensure_run_layout
 from .models import BackboneConfig, SequenceBackbone
 from .objectives import ContrastiveObjective, MaskedSMEObjective, MaskedTokenObjective, ObjectiveWeights
 from .runner import PretrainRunner, RunnerConfig
@@ -27,6 +29,8 @@ class PretrainPipelineConfig:
     enable_mlm: bool = True
     enable_sme: bool = True
     enable_contrastive: bool = True
+    seed: int | None = None
+    provenance_inputs: Dict[str, str] | None = None
 
 
 def _build_row_transforms(cfg: PretrainPipelineConfig) -> List[Any]:
@@ -52,6 +56,20 @@ def _build_row_transforms(cfg: PretrainPipelineConfig) -> List[Any]:
 
 
 def run_pretraining(cfg: PretrainPipelineConfig) -> Dict[str, float]:
+    seed_info = resolve_seed(cfg.seed)
+    set_global_seeds(int(seed_info["value"]))
+    layout = ensure_run_layout()
+    paths = {"dataset": str(cfg.dataset_path)}
+    if cfg.provenance_inputs:
+        paths.update({str(k): str(v) for k, v in cfg.provenance_inputs.items()})
+    collect_and_write_provenance(
+        layout=layout,
+        run_kind="pretrain",
+        seed_info=seed_info,
+        input_paths=paths,
+        extra={"vocab_size": int(cfg.vocab_size), "batch_size": int(cfg.batch_size), "epochs": int(cfg.epochs)},
+    )
+
     dataset = NPZPretrainDataset(DatasetSpec(path=cfg.dataset_path), transforms=_build_row_transforms(cfg))
     loader = DataLoader(dataset, batch_size=int(cfg.batch_size), shuffle=True, collate_fn=pretrain_collate)
 
@@ -70,4 +88,6 @@ def run_pretraining(cfg: PretrainPipelineConfig) -> Dict[str, float]:
         objective_weights=ObjectiveWeights(),
         cfg=RunnerConfig(epochs=int(cfg.epochs), lr=float(cfg.lr), output_dir=str(cfg.output_dir)),
     )
-    return runner.train(loader)
+    metrics = runner.train(loader)
+    metrics["seed"] = float(seed_info["value"])
+    return metrics
