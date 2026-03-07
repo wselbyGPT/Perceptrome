@@ -10,14 +10,18 @@
       <h1>Perceptrome Login</h1>
       <p class="auth-sub">Sign in to access runs, logs, and WebSocket controls.</p>
 
-      <form id="login-form">
-        <label for="email">Email</label>
+      <form id="login-form" class="stack">
+        <div class="input-group">
+          <label class="label" for="email">Email</label>
         <input id="email" class="input" type="email" autocomplete="username" required />
+        </div>
 
-        <label for="password">Password</label>
+        <div class="input-group">
+          <label class="label" for="password">Password</label>
         <input id="password" class="input" type="password" autocomplete="current-password" required />
+        </div>
 
-        <button id="submit-btn" class="btn" type="submit">Sign in</button>
+        <button id="submit-btn" class="btn btn--primary" type="submit">Sign in</button>
         <div id="msg" class="msg error"></div>
         <div id="verify-help" class="auth-hint"></div>
         <div class="auth-hint"><a href="/forgot_password.html">Forgot your password?</a></div>
