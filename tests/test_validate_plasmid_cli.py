@@ -66,22 +66,26 @@ class ValidatePlasmidTests(unittest.TestCase):
             with open(ref2, "w", encoding="utf-8") as f:
                 f.write(">ref2\nTTTTTTTTTTTT\n")
 
+            catalog_path = f"{td}/catalog.txt"
+            with open(catalog_path, "w", encoding="utf-8") as f:
+                f.write("REF1\nREF2\n")
+
             args = SimpleNamespace(
                 config="config/stream_config.yaml",
                 generated_fasta=generated,
-                catalog=f"{td}/catalog.txt",
+                catalog=catalog_path,
                 top_n=2,
                 output_json=out_json,
                 force_fetch=False,
             )
 
-            with patch("perceptrome.cli.commands.load_full_config", return_value={}), patch(
-                "perceptrome.cli.commands.extract_configs",
-                return_value=(SimpleNamespace(), SimpleNamespace(), SimpleNamespace()),
-            ), patch("perceptrome.cli.commands.ensure_dirs", return_value=None), patch(
-                "perceptrome.cli.commands.read_catalog", return_value=["REF1", "REF2"]
-            ), patch(
-                "perceptrome.cli.commands._ensure_record",
+            with patch("perceptrome.jobs.engine.load_full_config", return_value={}), patch(
+                "perceptrome.jobs.engine.extract_configs",
+                return_value=(SimpleNamespace(), SimpleNamespace(), SimpleNamespace(logs_dir=td)),
+            ), patch("perceptrome.jobs.engine.ensure_dirs", return_value=None), patch(
+                "perceptrome.jobs.engine.setup_logging", return_value=None
+            ), patch("perceptrome.jobs.engine.read_catalog", return_value=["REF1", "REF2"]), patch(
+                "perceptrome.jobs.engine._ensure_record",
                 side_effect=lambda accession, src, io_cfg, ncbi_cfg, force: ref1 if accession == "REF1" else ref2,
             ):
                 rc = cmd_validate_plasmid(args)
