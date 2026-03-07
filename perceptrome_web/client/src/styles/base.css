@@ -37,6 +37,24 @@ p {
   color: var(--text-secondary);
 }
 
+:where(
+  a,
+  button,
+  [role="button"],
+  [role="tab"],
+  input,
+  select,
+  textarea,
+  summary,
+  .btn,
+  .tab,
+  .input
+):focus-visible {
+  outline: var(--interactive-focus-ring-size) solid var(--interactive-focus-ring-color);
+  outline-offset: var(--interactive-focus-ring-offset);
+  box-shadow: 0 0 0 var(--interactive-focus-ring-size) var(--interactive-focus-ring);
+}
+
 a {
   color: var(--color-text-link);
   text-decoration: none;
@@ -52,11 +70,6 @@ a:active {
   color: var(--link-active);
 }
 
-a:focus-visible {
-  outline: 2px solid var(--link-focus-ring);
-  outline-offset: 2px;
-}
-
 label {
   display: block;
   margin-bottom: var(--space-1);
@@ -70,4 +83,15 @@ label {
 
 .mono {
   font-family: var(--font-mono);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

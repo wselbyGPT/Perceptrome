@@ -40,8 +40,8 @@
 
   /* Text hierarchy */
   --text-primary: #e6edf3;
-  --text-secondary: #9fb0c3;
-  --text-tertiary: #7f93a8;
+  --text-secondary: #b4c1d0;
+  --text-tertiary: #95a6b9;
   --text-inverse: #ffffff;
 
   /* Color aliases for existing components */
@@ -50,9 +50,9 @@
   --color-bg-surface: rgba(18, 25, 34, 0.95);
   --color-bg-surface-subtle: var(--surface-2);
   --color-bg-ink: #0a0f15;
-  --color-border-strong: #273445;
-  --color-border-subtle: #1f2a37;
-  --color-border-input: #334155;
+  --color-border-strong: #34465a;
+  --color-border-subtle: #2a3849;
+  --color-border-input: #4a6079;
   --color-text-primary: var(--text-primary);
   --color-text-muted: var(--text-secondary);
   --color-text-link: var(--brand-3);
@@ -68,9 +68,14 @@
   /* Interactive states */
   --interactive-hover-bg: color-mix(in srgb, var(--surface-5) 72%, var(--surface-4));
   --interactive-active-bg: color-mix(in srgb, var(--surface-5) 55%, var(--surface-3));
-  --interactive-focus-ring: rgba(79, 140, 255, 0.2);
-  --interactive-disabled-opacity: 0.65;
-  --interactive-disabled-fg: var(--text-tertiary);
+  --interactive-focus-ring-color: var(--brand-4);
+  --interactive-focus-ring: color-mix(in srgb, var(--interactive-focus-ring-color) 55%, transparent);
+  --interactive-focus-ring-offset: 2px;
+  --interactive-focus-ring-size: 3px;
+  --interactive-disabled-opacity: 1;
+  --interactive-disabled-fg: #8b99ab;
+  --interactive-disabled-bg: #202b39;
+  --interactive-disabled-border: #41546a;
 
   --link-hover: var(--brand-2);
   --link-active: var(--brand-1);
@@ -79,6 +84,8 @@
   --button-hover-bg: var(--brand-7);
   --button-active-bg: var(--brand-8);
   --button-focus-ring: var(--interactive-focus-ring);
+  --button-hover-shadow: var(--shadow-md);
+  --button-default-shadow: var(--shadow-sm);
 
   --input-hover-bg: var(--surface-3);
   --input-focus-border: var(--brand-4);
@@ -87,6 +94,9 @@
   --tab-hover-bg: var(--interactive-hover-bg);
   --tab-active-bg: var(--interactive-active-bg);
   --tab-selected-border: var(--brand-5);
+
+  --card-hover-shadow: var(--shadow-xl);
+  --card-rest-shadow: var(--shadow-lg);
 
   /* Typography */
   --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;

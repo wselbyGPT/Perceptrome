@@ -39,21 +39,21 @@ body.page-home { padding: var(--space-5); }
 
 .topbar {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-4);
   box-shadow: var(--shadow-md);
 }
 
-.brand { display: flex; flex-direction: column; gap: var(--space-1); }
+.brand { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
 .brand h1 { font-size: 1.1rem; letter-spacing: 0.02em; color: var(--text-primary); }
 .brand .subtitle { color: var(--text-secondary); font-size: 0.85rem; }
-.auth-controls { display: flex; align-items: center; gap: var(--space-2); }
+.auth-controls { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; justify-content: flex-end; }
 #whoami { color: var(--text-secondary); font-size: var(--text-sm); white-space: nowrap; }
 
-.layout { display: grid; grid-template-columns: 1.15fr 1fr; gap: var(--space-4); }
-.column { display: grid; gap: var(--space-4); align-content: start; }
+.layout { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: var(--space-4); }
+.column { display: grid; gap: var(--space-4); align-content: start; min-width: 0; }
 
 .panel-title { font-size: 0.95rem; font-weight: 700; color: var(--text-primary); }
 .panel-subtitle { margin-top: var(--space-1); color: var(--text-secondary); font-size: 0.8rem; }
@@ -93,14 +93,14 @@ body.page-admin { padding: var(--space-5); }
 .admin-wrap { width: min(68.75rem, 100%); margin: 0 auto; display: grid; gap: var(--space-4); }
 .admin-top { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 .row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
-.row3 { display: grid; grid-template-columns: 1fr 1fr auto; gap: var(--space-3); }
+.row3 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: var(--space-3); }
 .table-wrap { overflow: auto; }
 .checkbox-label { display: flex; gap: var(--space-2); align-items: center; margin: 0; color: var(--text-primary); }
 .checkbox-label .input[type="checkbox"] { width: auto; min-height: auto; }
 
 /* Change password */
 .who { margin-bottom: var(--space-2); color: var(--text-secondary); font-size: 0.85rem; }
-.password-row { display: grid; grid-template-columns: 1fr auto; gap: var(--space-2); }
+.password-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2); }
 .strength { margin-top: var(--space-2); }
 progress { width: 100%; height: 0.625rem; }
 
@@ -113,6 +113,41 @@ progress { width: 100%; height: 0.625rem; }
 }
 
 @media (max-width: 800px) {
+  body.page-home,
+  body.page-admin,
+  .auth-page {
+    padding: var(--space-3);
+  }
+
+  .panel,
+  .card {
+    padding: var(--space-4);
+  }
+
+  .panel-header {
+    margin: calc(-1 * var(--space-4)) calc(-1 * var(--space-4)) var(--space-3);
+    padding: var(--space-3);
+  }
+
   .row,
-  .row3 { grid-template-columns: 1fr; }
+  .row3,
+  .password-row {
+    grid-template-columns: 1fr;
+  }
+
+  .run-actions,
+  .auth-controls {
+    width: 100%;
+  }
+
+  .run-actions .btn,
+  .auth-controls .btn,
+  .row3 .btn,
+  .password-row .btn {
+    width: 100%;
+  }
+
+  #whoami {
+    white-space: normal;
+  }
 }
