@@ -1,3 +1,4 @@
+import "./styles/index.css";
 import { forgotPassword } from "./auth_api";
 
 const form = document.getElementById("forgot-password-form") as HTMLFormElement | null;

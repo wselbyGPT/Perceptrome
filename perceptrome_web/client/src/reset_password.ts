@@ -1,3 +1,4 @@
+import "./styles/index.css";
 import { resetPassword } from "./auth_api";
 
 const form = document.getElementById("reset-password-form") as HTMLFormElement | null;

@@ -1,3 +1,4 @@
+import "./styles/index.css";
 import { resendVerification, verifyEmail } from "./auth_api";
 
 const tokenInput = document.getElementById("token") as HTMLInputElement | null;

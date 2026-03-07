@@ -1,0 +1,141 @@
+/* Shared auth-like pages */
+.auth-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+
+.auth-card {
+  width: min(560px, 95vw);
+}
+
+.auth-card--narrow {
+  width: min(430px, 92vw);
+}
+
+.auth-sub {
+  margin-top: var(--space-2);
+  margin-bottom: var(--space-4);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.auth-hint {
+  margin-top: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+/* Main index layout */
+body.page-home { padding: 18px; }
+
+.app-shell {
+  width: min(1400px, 100%);
+  margin: 0 auto;
+  display: grid;
+  gap: 14px;
+}
+
+.topbar {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.brand { display: flex; flex-direction: column; gap: 4px; }
+.brand h1 { font-size: 1.1rem; letter-spacing: 0.02em; }
+.brand .subtitle { color: var(--color-text-muted); font-size: 0.85rem; }
+.auth-controls { display: flex; align-items: center; gap: 10px; }
+#whoami { color: var(--color-text-muted); font-size: var(--text-sm); white-space: nowrap; }
+
+.layout { display: grid; grid-template-columns: 1.15fr 1fr; gap: 14px; }
+.column { display: grid; gap: 14px; align-content: start; }
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: -20px -20px 14px;
+  padding: 12px 14px;
+  border-bottom: 1px solid #1d2733;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0));
+}
+
+.panel-title { font-size: 0.95rem; font-weight: 700; }
+.panel-subtitle { margin-top: 2px; color: var(--color-text-muted); font-size: 0.8rem; }
+
+.status-card { display: grid; gap: 8px; }
+.status-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-pill);
+  background: var(--color-warning);
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.12);
+}
+.status-label { color: var(--color-text-muted); font-size: 0.85rem; }
+
+#status,
+.terminal,
+.results-wrap {
+  font-family: var(--font-mono);
+  background: var(--color-bg-ink);
+  border: 1px solid #1d2733;
+  border-radius: var(--radius-md);
+  color: #dbe7f3;
+}
+
+#status { padding: 10px 12px; min-height: 44px; display: flex; align-items: center; }
+.run-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.terminal,
+.results-wrap {
+  padding: 12px;
+  min-height: 280px;
+  max-height: 48vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+#logs:empty::before { content: "Logs will stream here…"; color: #7f93a8; }
+#results:empty::before { content: "Results and artifacts will appear here…"; color: #7f93a8; }
+.footer-note { color: var(--color-text-muted); font-size: var(--text-xs); padding: 0 2px; }
+
+/* Admin users */
+body.page-admin { padding: 18px; }
+.admin-wrap { width: min(1100px, 100%); margin: 0 auto; display: grid; gap: 14px; }
+.admin-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.row3 { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; }
+.table-wrap { overflow: auto; }
+.checkbox-label { display: flex; gap: 8px; align-items: center; margin: 0; color: var(--color-text-primary); }
+.checkbox-label .input[type="checkbox"] { width: auto; }
+
+/* Change password */
+.who { margin-bottom: 8px; color: var(--color-text-muted); font-size: 0.85rem; }
+.field-error { min-height: 1.15rem; color: var(--color-danger); margin-top: 4px; font-size: 0.8rem; }
+.password-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.strength { margin-top: 8px; }
+progress { width: 100%; height: 10px; }
+
+/* Utility spacing hooks for old inline styles */
+.mt-10 { margin-top: 10px; }
+.mt-12 { margin-top: 12px; }
+
+@media (max-width: 980px) {
+  .layout { grid-template-columns: 1fr; }
+  .topbar { grid-template-columns: 1fr; align-items: start; }
+  .auth-controls { justify-content: space-between; }
+  .terminal,
+  .results-wrap { max-height: 40vh; }
+}
+
+@media (max-width: 800px) {
+  .row,
+  .row3 { grid-template-columns: 1fr; }
+}

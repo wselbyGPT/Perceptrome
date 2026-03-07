@@ -1,3 +1,4 @@
+import "./styles/index.css";
 // client/src/change_password.ts
 import { changePassword, getMe, logout } from "./auth_api";
 

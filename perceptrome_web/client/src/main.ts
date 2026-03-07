@@ -1,3 +1,4 @@
+import "./styles/index.css";
 // client/src/main.ts
 import { getMe, logout, type Me } from "./auth_api";
 import { setupPerceptromeViz } from "./perceptrome_viz";
