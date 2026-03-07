@@ -1,6 +1,8 @@
+import json
 import math
 import os
 import re
+import shlex
 import sys
 import shutil
 from glob import glob
@@ -29,6 +31,8 @@ from perceptrome.io_utils import read_catalog, write_catalog, select_unique_acce
 from perceptrome.ncbi_fetch import fetch_fasta, fetch_genbank
 from perceptrome.encoding.parse import parse_genbank_dna
 from perceptrome.encoding.genbank_features import parse_cds_features_from_genbank, CDSFeature
+from perceptrome.jobs import JobSpec
+from .job_api import build_generate_plasmid_spec, build_stream_spec
 
 
 PCT_RE = re.compile(r"(\d{1,3})\s*%")
@@ -445,21 +449,10 @@ class PerceptromeQt(QMainWindow):
         return wd if wd else "."
 
     def _refresh_train_command(self):
-        cfg = self.cfg_stream_yaml.text().strip() or "config/stream_config.yaml"
-        catalog = self.cfg_dataset_list.text().strip() or "config/plasmids_10.txt"
-        model_type = self.train_model_type.currentText().strip() or "mlp"
-        cmd = (
-            f"perceptrome --config {cfg} stream "
-            f"--catalog {catalog} "
-            f"--model-type {model_type} "
-            f"--steps-per-plasmid {int(self.cfg_epochs.value())} "
-            f"--batch-size {int(self.cfg_batch.value())}"
-        )
-        self.train_cmd.setText(cmd)
+        self.train_cmd.setText(self._job_spec_command(self._build_train_job_spec()))
 
     def _refresh_generate_command(self):
-        cfg = self.cfg_stream_yaml.text().strip() or "config/stream_config.yaml"
-        self.gen_cmd.setText(f"perceptrome --config {cfg} generate-plasmid --length-bp 10000 --output generated/novel_plasmid.fasta")
+        self.gen_cmd.setText(self._job_spec_command(self._build_generate_job_spec()))
 
     def _dataset_add_quota(self):
         src = self.ds_source.currentData()
@@ -602,6 +595,20 @@ class PerceptromeQt(QMainWindow):
                     self._set_busy(bar, False)
                 bar.setValue(v)
 
+    def _build_train_job_spec(self) -> JobSpec:
+        cfg = self.cfg_stream_yaml.text().strip() or "config/stream_config.yaml"
+        catalog = self.cfg_dataset_list.text().strip() or "config/plasmids_10.txt"
+        model_type = self.train_model_type.currentText().strip() or "mlp"
+        return build_stream_spec(cfg, catalog, model_type, int(self.cfg_epochs.value()), int(self.cfg_batch.value()))
+
+    def _build_generate_job_spec(self) -> JobSpec:
+        cfg = self.cfg_stream_yaml.text().strip() or "config/stream_config.yaml"
+        return build_generate_plasmid_spec(cfg, 10000, "generated/novel_plasmid.fasta")
+
+    def _job_spec_command(self, spec: JobSpec) -> str:
+        payload = json.dumps({"kind": spec.kind, "config_path": spec.config_path, "params": spec.params})
+        return f"perceptrome --config {shlex.quote(spec.config_path)} run-job-spec --spec-json {shlex.quote(payload)}"
+
     # -------------------------
     # Train actions (real QProcess)
     # -------------------------
@@ -609,7 +616,7 @@ class PerceptromeQt(QMainWindow):
         self.train_cmd.setText("perceptrome --help")
 
     def _train_start(self):
-        cmd = self.train_cmd.text().strip()
+        cmd = self._job_spec_command(self._build_train_job_spec())
         wd = self._workdir()
 
         self.train_log.clear()
@@ -658,7 +665,7 @@ class PerceptromeQt(QMainWindow):
         self.gen_cmd.setText("perceptrome --help")
 
     def _gen_start(self):
-        cmd = self.gen_cmd.text().strip()
+        cmd = self._job_spec_command(self._build_generate_job_spec())
         wd = self._workdir()
 
         checkpoint_note = self._activate_selected_model_checkpoint()
