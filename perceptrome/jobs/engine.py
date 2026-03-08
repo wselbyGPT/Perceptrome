@@ -526,6 +526,8 @@ class JobEngine:
             length_bp=int(p.get("length_bp", 4000)),
             references=references,
             seed=p.get("seed"),
+            enable_sequence_operators=bool(p.get("enable_sequence_operators", False)),
+            sequence_operator_top_k=int(p.get("sequence_operator_top_k", 3)),
             emit=lambda stage, message: self._emit(stage, message),
         )
 
