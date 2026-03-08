@@ -7,7 +7,7 @@ import logging
 import smtplib
 import threading
 from dataclasses import dataclass, field
-from collections import Counter
+from collections import Counter, deque
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Literal
@@ -48,6 +48,9 @@ from .schemas import (
     RunArtifactOut,
     RunOut,
     RunStartRequest,
+    LineageNodeOut,
+    LineageEdgeOut,
+    RunLineageOut,
 )
 from perceptrome.jobs import JobEngine, JobEvent, JobSpec
 
@@ -410,6 +413,205 @@ def _load_run_replay_descriptor(source_run: Run) -> tuple[dict[str, Any], str]:
         descriptor_payload = _load_json_file(descriptor_file)
         return descriptor_payload, _descriptor_hash(descriptor_payload)
     raise HTTPException(status_code=400, detail="Replay descriptor is unavailable for this run")
+
+
+
+
+def _manifest_path_for_run(run: Run) -> str | None:
+    for artifact in sorted(run.artifacts, key=lambda item: item.created_at):
+        if artifact.phase == "manifest" and artifact.path:
+            return artifact.path
+    result_payload = _json_loads(run.result_json)
+    manifest_path = result_payload.get("manifest_path")
+    if isinstance(manifest_path, str) and manifest_path:
+        return manifest_path
+    return None
+
+
+def _load_manifest(path: str | None) -> dict[str, Any]:
+    if not path:
+        return {}
+    target = Path(path).expanduser().resolve()
+    if not target.exists() or not target.is_file():
+        return {}
+    return _load_json_file(target)
+
+
+def _lineage_ref_node_id(ref: dict[str, Any]) -> str:
+    artifact_id = str(ref.get("artifact_id") or "").strip()
+    path_value = str(ref.get("path") or "").strip()
+    if artifact_id:
+        return f"artifact:{artifact_id}"
+    if path_value:
+        return f"path:{Path(path_value).expanduser().resolve()}"
+    return "lineage:unknown"
+
+
+def _build_lineage_graph(*, run: Run, depth_limit: int, accessible_runs: list[Run]) -> tuple[list[LineageNodeOut], list[LineageEdgeOut]]:
+    run_by_id = {item.run_id: item for item in accessible_runs}
+    run_by_manifest_path: dict[str, Run] = {}
+    for item in accessible_runs:
+        mpath = _manifest_path_for_run(item)
+        if not mpath:
+            continue
+        run_by_manifest_path[str(Path(mpath).expanduser().resolve())] = item
+
+    nodes: dict[str, LineageNodeOut] = {}
+    edges: dict[tuple[str, str, str], LineageEdgeOut] = {}
+
+    def ensure_run_node(target_run: Run, depth: int) -> str:
+        node_id = f"run:{target_run.run_id}"
+        if node_id in nodes:
+            if depth < nodes[node_id].depth:
+                nodes[node_id].depth = depth
+            return node_id
+        result_payload = _json_loads(target_run.result_json)
+        run_manifest = _load_manifest(_manifest_path_for_run(target_run))
+        provenance = run_manifest.get("provenance_metadata") if isinstance(run_manifest.get("provenance_metadata"), dict) else {}
+        cfg = provenance.get("config") if isinstance(provenance.get("config"), dict) else {}
+        snapshot = None
+        cfg_path = cfg.get("path")
+        cfg_hash = cfg.get("sha256")
+        if isinstance(cfg_path, str) and cfg_path and isinstance(cfg_hash, str) and cfg_hash:
+            snapshot = {"path": cfg_path, "sha256": cfg_hash, "format": "json"}
+        replay_hash = result_payload.get("replay_descriptor_hash")
+        node_hash = replay_hash if isinstance(replay_hash, str) else (cfg_hash if isinstance(cfg_hash, str) else None)
+        nodes[node_id] = LineageNodeOut(
+            id=node_id,
+            kind="run",
+            label=target_run.run_id,
+            depth=depth,
+            run_id=target_run.run_id,
+            run_state=target_run.state,
+            hash=node_hash,
+            config_snapshot=snapshot,
+            payload={"kind": target_run.kind, "message": target_run.message, "result": result_payload},
+        )
+        return node_id
+
+    def ensure_artifact_node(artifact: dict[str, Any], depth: int) -> str:
+        artifact_id = str(artifact.get("id") or artifact.get("path") or "").strip()
+        node_id = f"artifact:{artifact_id}"
+        if node_id in nodes:
+            if depth < nodes[node_id].depth:
+                nodes[node_id].depth = depth
+            return node_id
+        nodes[node_id] = LineageNodeOut(
+            id=node_id,
+            kind="artifact",
+            label=str(artifact.get("id") or Path(str(artifact.get("path") or "artifact")).name),
+            depth=depth,
+            artifact_id=str(artifact.get("id") or "") or None,
+            artifact_type=str(artifact.get("type") or artifact.get("role") or "") or None,
+            path=str(artifact.get("path") or "") or None,
+            hash=str(artifact.get("sha256") or "") or None,
+            payload=dict(artifact),
+        )
+        return node_id
+
+    def ensure_ref_node(ref: dict[str, Any], depth: int) -> str:
+        node_id = _lineage_ref_node_id(ref)
+        if node_id in nodes:
+            if depth < nodes[node_id].depth:
+                nodes[node_id].depth = depth
+            return node_id
+        path_value = str(ref.get("path") or "").strip()
+        artifact_id = str(ref.get("artifact_id") or "").strip()
+        nodes[node_id] = LineageNodeOut(
+            id=node_id,
+            kind="artifact_ref",
+            label=artifact_id or Path(path_value).name or "lineage_ref",
+            depth=depth,
+            artifact_id=artifact_id or None,
+            path=path_value or None,
+            relation=str(ref.get("relation") or "") or None,
+            payload=dict(ref),
+        )
+        return node_id
+
+    queue = deque([(run.run_id, 0)])
+    visited: set[str] = set()
+    while queue:
+        current_run_id, depth = queue.popleft()
+        if current_run_id in visited or depth > depth_limit:
+            continue
+        visited.add(current_run_id)
+        current_run = run_by_id.get(current_run_id)
+        if not current_run:
+            continue
+        current_run_node = ensure_run_node(current_run, depth)
+        manifest = _load_manifest(_manifest_path_for_run(current_run))
+        run_section = manifest.get("run") if isinstance(manifest.get("run"), dict) else {}
+
+        for parent in run_section.get("parents") or []:
+            if not isinstance(parent, dict):
+                continue
+            source_node = ensure_ref_node(parent, depth + 1)
+            relation = str(parent.get("relation") or "parent")
+            edges[(source_node, current_run_node, relation)] = LineageEdgeOut(source=source_node, target=current_run_node, relation=relation)
+            parent_path = parent.get("path")
+            if isinstance(parent_path, str) and parent_path:
+                parent_run = run_by_manifest_path.get(str(Path(parent_path).expanduser().resolve()))
+                if parent_run:
+                    parent_run_node = ensure_run_node(parent_run, depth + 1)
+                    edges[(parent_run_node, current_run_node, relation)] = LineageEdgeOut(source=parent_run_node, target=current_run_node, relation=relation)
+                    if depth + 1 <= depth_limit:
+                        queue.append((parent_run.run_id, depth + 1))
+
+        for artifact in manifest.get("artifacts") or []:
+            if not isinstance(artifact, dict):
+                continue
+            artifact_node = ensure_artifact_node(artifact, depth + 1)
+            edges[(current_run_node, artifact_node, "emits.artifact")] = LineageEdgeOut(source=current_run_node, target=artifact_node, relation="emits.artifact")
+            for parent in artifact.get("parents") or []:
+                if not isinstance(parent, dict):
+                    continue
+                source_node = ensure_ref_node(parent, depth + 2)
+                relation = str(parent.get("relation") or "artifact_parent")
+                edges[(source_node, artifact_node, relation)] = LineageEdgeOut(source=source_node, target=artifact_node, relation=relation)
+                parent_path = parent.get("path")
+                if isinstance(parent_path, str) and parent_path:
+                    parent_run = run_by_manifest_path.get(str(Path(parent_path).expanduser().resolve()))
+                    if parent_run:
+                        parent_run_node = ensure_run_node(parent_run, depth + 1)
+                        edges[(parent_run_node, artifact_node, relation)] = LineageEdgeOut(source=parent_run_node, target=artifact_node, relation=relation)
+                        if depth + 1 <= depth_limit:
+                            queue.append((parent_run.run_id, depth + 1))
+
+    return list(nodes.values()), list(edges.values())
+
+
+def _filter_lineage_graph(
+    *,
+    nodes: list[LineageNodeOut],
+    edges: list[LineageEdgeOut],
+    root_run_id: str,
+    artifact_type_filter: str | None,
+    run_state_filter: set[str],
+) -> tuple[list[LineageNodeOut], list[LineageEdgeOut]]:
+    filtered: dict[str, LineageNodeOut] = {}
+    artifact_filter = (artifact_type_filter or "").strip().lower()
+    for node in nodes:
+        keep = True
+        if node.kind == "artifact" and artifact_filter:
+            keep = (node.artifact_type or "").lower() == artifact_filter
+        if node.kind == "run" and run_state_filter and node.run_id != root_run_id:
+            keep = (node.run_state or "").lower() in run_state_filter
+        if node.run_id == root_run_id:
+            keep = True
+        if keep:
+            filtered[node.id] = node
+
+    filtered_edges: list[LineageEdgeOut] = []
+    for edge in edges:
+        if edge.source in filtered and edge.target in filtered:
+            filtered_edges.append(edge)
+
+    connected = {f"run:{root_run_id}"}
+    for edge in filtered_edges:
+        connected.add(edge.source)
+        connected.add(edge.target)
+    return [node for node in filtered.values() if node.id in connected], filtered_edges
 
 
 def _upsert_run(run_id: str, spec: JobSpec) -> RunRecord:
@@ -955,6 +1157,48 @@ def get_run(run_id: str, user: User = Depends(get_current_user_strict), db: Sess
         raise HTTPException(status_code=404, detail="Run not found")
     _assert_run_access(run, user)
     return _run_to_out(run)
+
+
+
+
+@app.get("/api/runs/{run_id}/lineage", response_model=RunLineageOut)
+def get_run_lineage(
+    run_id: str,
+    depth: int = 2,
+    artifact_type: str | None = None,
+    run_state: str | None = None,
+    user: User = Depends(get_current_user_strict),
+    db: Session = Depends(get_db),
+):
+    run = _find_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    _assert_run_access(run, user)
+
+    q = select(Run).order_by(Run.submitted_at.desc()).limit(400)
+    if user.role != "admin":
+        q = q.where(Run.user_id == user.id)
+    accessible_runs = db.execute(q).scalars().all()
+
+    depth_limit = max(0, min(depth, 6))
+    nodes, edges = _build_lineage_graph(run=run, depth_limit=depth_limit, accessible_runs=accessible_runs)
+    states = {item.strip().lower() for item in (run_state or "").split(",") if item.strip()}
+    nodes, edges = _filter_lineage_graph(
+        nodes=nodes,
+        edges=edges,
+        root_run_id=run_id,
+        artifact_type_filter=artifact_type,
+        run_state_filter=states,
+    )
+
+    return RunLineageOut(
+        run_id=run_id,
+        depth_limit=depth_limit,
+        artifact_type_filter=artifact_type,
+        run_state_filter=sorted(states),
+        nodes=nodes,
+        edges=edges,
+    )
 
 
 @app.get("/api/runs/{run_id}/artifacts", response_model=list[RunArtifactOut])

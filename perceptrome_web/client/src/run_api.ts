@@ -21,6 +21,43 @@ export type RunRecord = {
   artifacts: RunArtifact[];
 };
 
+export type ConfigSnapshot = {
+  path: string;
+  sha256: string;
+  format?: string;
+};
+
+export type LineageNode = {
+  id: string;
+  kind: string;
+  label: string;
+  depth: number;
+  run_id?: string | null;
+  artifact_id?: string | null;
+  artifact_type?: string | null;
+  run_state?: string | null;
+  path?: string | null;
+  relation?: string | null;
+  hash?: string | null;
+  config_snapshot?: ConfigSnapshot | null;
+  payload: Record<string, unknown>;
+};
+
+export type LineageEdge = {
+  source: string;
+  target: string;
+  relation: string;
+};
+
+export type RunLineage = {
+  run_id: string;
+  depth_limit: number;
+  artifact_type_filter?: string | null;
+  run_state_filter: string[];
+  nodes: LineageNode[];
+  edges: LineageEdge[];
+};
+
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(url, {
     credentials: "include",
@@ -50,4 +87,16 @@ export async function listRuns(limit = 50): Promise<RunRecord[]> {
 
 export async function getRun(runId: string): Promise<RunRecord> {
   return fetchJson<RunRecord>(`/api/runs/${encodeURIComponent(runId)}`);
+}
+
+export async function getRunLineage(
+  runId: string,
+  options?: { depth?: number; artifactType?: string; runStates?: string[] },
+): Promise<RunLineage> {
+  const params = new URLSearchParams();
+  if (typeof options?.depth === "number") params.set("depth", String(options.depth));
+  if (options?.artifactType) params.set("artifact_type", options.artifactType);
+  if (options?.runStates?.length) params.set("run_state", options.runStates.join(","));
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return fetchJson<RunLineage>(`/api/runs/${encodeURIComponent(runId)}/lineage${suffix}`);
 }
