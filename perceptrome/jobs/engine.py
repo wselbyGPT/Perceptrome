@@ -125,6 +125,54 @@ class JobEngine:
 
 
     @staticmethod
+    def _resolve_generation_paths(layout: Any, params: Dict[str, Any], output_key: str, default_output: str) -> tuple[str, str, str, str]:
+        output = path_in_run(layout, "outputs", os.path.basename(str(params.get(output_key, default_output))))
+        summary_name = str(params.get("summary_path") or f"{os.path.basename(output)}.summary.json")
+        summary_json = path_in_run(layout, "outputs", os.path.basename(summary_name))
+        top_k_name = str(params.get("top_k_output") or f"{os.path.basename(output)}.top{int(params.get('top_k', 1))}.fasta")
+        top_k_output = path_in_run(layout, "outputs", os.path.basename(top_k_name))
+        scorecard_name = str(params.get("scorecard_path") or f"{os.path.basename(output)}.scorecard.json")
+        scorecard_path = path_in_run(layout, "artifacts", os.path.basename(scorecard_name))
+        return output, summary_json, top_k_output, scorecard_path
+
+    @staticmethod
+    def _scorecard_profile_overrides(sequence_kind: str, profile: str | None) -> Dict[str, Any]:
+        key = str(profile or "").strip().lower()
+        if not key or key == "balanced":
+            return {}
+        if sequence_kind == "plasmid":
+            profiles = {
+                "strict": {"min_gc_fraction": 0.35, "max_gc_fraction": 0.65, "repeat_density_warn": 0.30, "long_homopolymer_warn": 10},
+                "exploratory": {"min_gc_fraction": 0.25, "max_gc_fraction": 0.75, "repeat_density_warn": 0.45, "long_homopolymer_warn": 14},
+            }
+        else:
+            profiles = {
+                "strict": {"max_homopolymer": 5, "max_x_frac": 0.03, "max_internal_stops": 0},
+                "exploratory": {"max_homopolymer": 8, "max_x_frac": 0.10, "max_internal_stops": 1},
+            }
+        return dict(profiles.get(key, {}))
+
+    @staticmethod
+    def _write_json_artifact(path: str, payload: Dict[str, Any]) -> None:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+            f.write("\n")
+
+    @staticmethod
+    def _inject_summary_scorecard_links(summary_json: str, scorecard_path: str, similarity_path: str) -> None:
+        if not os.path.exists(summary_json):
+            return
+        try:
+            with open(summary_json, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception:
+            return
+        payload["scorecard_output"] = {"path": scorecard_path, "format": "json"}
+        payload["similarity_output"] = {"path": similarity_path, "format": "json"}
+        JobEngine._write_json_artifact(summary_json, payload)
+
+    @staticmethod
     def _safe_parse_fasta(path: str) -> str | None:
         if not path or not os.path.exists(path):
             return None
@@ -478,6 +526,9 @@ class JobEngine:
         setup_logging(io_cfg.logs_dir)
         p = dict(spec.params)
         tokenizer = str(p.get("tokenizer") or getattr(train_cfg, "tokenizer", "base"))
+        scorecard_format = str(p.get("scorecard_format") or "json").lower()
+        if scorecard_format != "json":
+            raise ValueError(f"Unsupported scorecard format: {scorecard_format}")
         ast_conditioning = parse_ast_conditioning_config(
             ast_artifact=p.get("ast_artifact"),
             ast_node_type_prompt=p.get("ast_node_type_prompt"),
@@ -488,7 +539,7 @@ class JobEngine:
         )
         layout = ensure_run_layout()
         _, config_snapshot, config_snapshot_artifact = self._write_resolved_config_snapshot(spec=spec, cfg=cfg, params=p, layout=layout)
-        output = path_in_run(layout, "outputs", os.path.basename(str(p.get("output", "generated/novel_plasmid.fasta"))))
+        output, summary_json, top_k_output, scorecard_artifact = self._resolve_generation_paths(layout, p, "output", "generated/novel_plasmid.fasta")
         checkpoint_path = os.path.join(str(getattr(io_cfg, "checkpoints_dir", "") or ""), "latest.pt")
         ast_artifact_path = str(getattr(ast_conditioning, "artifact_path", "") or "")
         run_parents = self._collect_existing_parent_refs([
@@ -498,14 +549,24 @@ class JobEngine:
         similarity_refs = self._collect_similarity_references(params=p, io_cfg=io_cfg, ncbi_cfg=None, sequence_kind="plasmid")
         seq = generate_plasmid_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_bp=int(p.get("length_bp", 10000)), num_windows=p.get("num_windows"), window_size_bp=int(p.get("window_size") or train_cfg.window_size), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), gc_bias=float(p.get("gc_bias", 1.0)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), target_gc=float(p.get("target_gc", 0.5)), max_homopolymer=p.get("max_homopolymer"), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), name=str(p.get("name", "perceptrome_plasmid_1")), output_path=output, tokenizer=tokenizer, provenance_inputs={"config": str(spec.config_path)}, ast_conditioning=ast_conditioning, scorecard_reference_neighbors=similarity_refs, scorecard_reference_top_n=int(p.get("scorecard_reference_top_n", 5)), scorecard_motifs=p.get("scorecard_motifs"))
         self._emit("generate", "plasmid generated", output=output, length=len(seq))
-        plasmid_card = build_plasmid_scorecard(seq, {
+        card_context = {
             "reference_neighbors": similarity_refs,
             "reference_top_n": int(p.get("scorecard_reference_top_n", 5)),
-        })
+            "risk_profile": p.get("scorecard_risk_profile"),
+            **self._scorecard_profile_overrides("plasmid", p.get("scorecard_risk_profile")),
+        }
+        plasmid_card = build_plasmid_scorecard(seq, card_context)
         similarity_artifact = path_in_run(layout, "artifacts", f"{os.path.basename(output)}.similarity.json")
-        with open(similarity_artifact, "w", encoding="utf-8") as f:
-            json.dump({"sequence_kind": "plasmid", "top_neighbors": plasmid_card.get("reference_neighbors", [])}, f, indent=2)
-            f.write("\n")
+        self._write_json_artifact(similarity_artifact, {"sequence_kind": "plasmid", "top_neighbors": plasmid_card.get("reference_neighbors", [])})
+        scorecard_payload = {
+            **plasmid_card,
+            "scorecard_format": scorecard_format,
+            "risk_profile": p.get("scorecard_risk_profile"),
+            "summary_json": summary_json,
+            "similarity_artifact": similarity_artifact,
+        }
+        self._write_json_artifact(scorecard_artifact, scorecard_payload)
+        self._inject_summary_scorecard_links(summary_json, scorecard_artifact, similarity_artifact)
 
         run_id = str(p.get("manifest_id") or f"generate_plasmid_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
         manifest_path = self._write_run_manifest(
@@ -520,8 +581,11 @@ class JobEngine:
                         "type": "plasmid",
                         "name": str(p.get("name", "perceptrome_plasmid_1")),
                         "output": output,
-                        "summary_json": path_in_run(layout, "outputs", f"{os.path.basename(output)}.summary.json"),
-                        "top_k_output": path_in_run(layout, "outputs", os.path.basename(str(p.get("top_k_output") or f"{os.path.basename(output)}.top{int(p.get('top_k', 1))}.fasta"))),
+                        "summary_json": summary_json,
+                        "top_k_output": top_k_output,
+                        "scorecard_json": scorecard_artifact,
+                        "scorecard_format": scorecard_format,
+                        "scorecard_risk_profile": p.get("scorecard_risk_profile"),
                         "length_bp": len(seq),
                         "top_k": int(p.get("top_k", 1)),
                         "num_candidates": int(p.get("num_candidates", 1)),
@@ -538,18 +602,33 @@ class JobEngine:
             run_children=[self._lineage_ref(artifact_id="generated_plasmid", path=output, relation="produced.generated_sequence")],
             artifacts=[
                 config_snapshot_artifact,
+                self._artifact_entry(artifact_id="plasmid_scorecard", role="generated.scorecard", path=scorecard_artifact, artifact_type="json"),
                 self._artifact_entry(artifact_id="plasmid_similarity", role="generated.similarity", path=similarity_artifact, artifact_type="json"),
-                self._artifact_entry(
-                    artifact_id="generated_plasmid",
-                    role="generated.sequence",
-                    path=output,
-                    artifact_type="fasta",
-                    parents=run_parents,
-                )
+                self._artifact_entry(artifact_id="generated_plasmid", role="generated.sequence", path=output, artifact_type="fasta", parents=run_parents),
             ],
         )
-        update_run_manifest(layout, paths={"generated": {"plasmid_fasta": output, "plasmid_similarity_json": similarity_artifact, "manifest": manifest_path}, "provenance": {"config_snapshot": config_snapshot["path"]}}, provenance={"config_snapshot": config_snapshot}, artifacts=[config_snapshot_artifact, self._artifact_entry(artifact_id="generated_plasmid", role="generated.sequence", path=output, artifact_type="fasta", parents=run_parents), self._artifact_entry(artifact_id="plasmid_similarity", role="generated.similarity", path=similarity_artifact, artifact_type="json")])
-        return {"output": output, "length": len(seq), "manifest_path": manifest_path, "config_snapshot": config_snapshot}
+        update_run_manifest(
+            layout,
+            paths={
+                "generated": {
+                    "plasmid_fasta": output,
+                    "plasmid_summary_json": summary_json,
+                    "plasmid_top_k_fasta": top_k_output,
+                    "plasmid_scorecard_json": scorecard_artifact,
+                    "plasmid_similarity_json": similarity_artifact,
+                    "manifest": manifest_path,
+                },
+                "provenance": {"config_snapshot": config_snapshot["path"]},
+            },
+            provenance={"config_snapshot": config_snapshot},
+            artifacts=[
+                config_snapshot_artifact,
+                self._artifact_entry(artifact_id="generated_plasmid", role="generated.sequence", path=output, artifact_type="fasta", parents=run_parents),
+                self._artifact_entry(artifact_id="plasmid_scorecard", role="generated.scorecard", path=scorecard_artifact, artifact_type="json"),
+                self._artifact_entry(artifact_id="plasmid_similarity", role="generated.similarity", path=similarity_artifact, artifact_type="json"),
+            ],
+        )
+        return {"output": output, "length": len(seq), "manifest_path": manifest_path, "summary_path": summary_json, "scorecard_path": scorecard_artifact, "scorecard_format": scorecard_format, "config_snapshot": config_snapshot}
 
     def _run_generate_protein(self, spec: JobSpec) -> Dict[str, Any]:
         cfg = load_full_config(spec.config_path)
@@ -557,6 +636,9 @@ class JobEngine:
         ensure_dirs(io_cfg)
         setup_logging(io_cfg.logs_dir)
         p = dict(spec.params)
+        scorecard_format = str(p.get("scorecard_format") or "json").lower()
+        if scorecard_format != "json":
+            raise ValueError(f"Unsupported scorecard format: {scorecard_format}")
         ast_conditioning = parse_ast_conditioning_config(
             ast_artifact=p.get("ast_artifact"),
             ast_node_type_prompt=p.get("ast_node_type_prompt"),
@@ -567,7 +649,7 @@ class JobEngine:
         )
         layout = ensure_run_layout()
         _, config_snapshot, config_snapshot_artifact = self._write_resolved_config_snapshot(spec=spec, cfg=cfg, params=p, layout=layout)
-        output = path_in_run(layout, "outputs", os.path.basename(str(p.get("output", "generated/novel_protein.faa"))))
+        output, summary_json, top_k_output, scorecard_artifact = self._resolve_generation_paths(layout, p, "output", "generated/novel_protein.faa")
         checkpoint_path = os.path.join(str(getattr(io_cfg, "checkpoints_dir", "") or ""), "latest.pt")
         ast_artifact_path = str(getattr(ast_conditioning, "artifact_path", "") or "")
         run_parents = self._collect_existing_parent_refs([
@@ -577,11 +659,25 @@ class JobEngine:
         similarity_refs = self._collect_similarity_references(params=p, io_cfg=io_cfg, ncbi_cfg=None, sequence_kind="protein")
         seq = generate_protein_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_aa=int(p.get("length_aa", 600)), num_windows=p.get("num_windows"), window_aa=int(p.get("window_aa") or train_cfg.protein_window_aa), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), name=str(p.get("name", "perceptrome_protein_1")), output_path=output, reject=bool(p.get("reject", False)), reject_tries=int(p.get("reject_tries", 40)), reject_max_run=int(p.get("reject_max_run", 10)), reject_max_x_frac=float(p.get("reject_max_x_frac", 0.15)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), max_homopolymer=p.get("max_homopolymer"), max_x_frac=p.get("max_x_frac"), max_internal_stops=int(p.get("max_internal_stops", 0)), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), provenance_inputs={"config": str(spec.config_path)}, ast_conditioning=ast_conditioning, scorecard_similarity_references=similarity_refs, scorecard_reference_top_n=int(p.get("scorecard_reference_top_n", 5)))
         self._emit("generate", "protein generated", output=output, length=len(seq))
-        protein_card = build_protein_scorecard(seq, {"similarity_references": similarity_refs, "reference_top_n": int(p.get("scorecard_reference_top_n", 5))})
+        card_context = {
+            "similarity_references": similarity_refs,
+            "reference_top_n": int(p.get("scorecard_reference_top_n", 5)),
+            "risk_profile": p.get("scorecard_risk_profile"),
+            **self._scorecard_profile_overrides("protein", p.get("scorecard_risk_profile")),
+        }
+        protein_card = build_protein_scorecard(seq, card_context)
         similarity_artifact = path_in_run(layout, "artifacts", f"{os.path.basename(output)}.similarity.json")
-        with open(similarity_artifact, "w", encoding="utf-8") as f:
-            json.dump({"sequence_kind": "protein", "top_neighbors": protein_card.get("reference_neighbors", [])}, f, indent=2)
-            f.write("\n")
+        self._write_json_artifact(similarity_artifact, {"sequence_kind": "protein", "top_neighbors": protein_card.get("reference_neighbors", [])})
+        scorecard_payload = {
+            **protein_card,
+            "scorecard_format": scorecard_format,
+            "risk_profile": p.get("scorecard_risk_profile"),
+            "summary_json": summary_json,
+            "similarity_artifact": similarity_artifact,
+        }
+        self._write_json_artifact(scorecard_artifact, scorecard_payload)
+        self._inject_summary_scorecard_links(summary_json, scorecard_artifact, similarity_artifact)
+
         run_id = str(p.get("manifest_id") or f"generate_protein_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
         manifest_path = self._write_run_manifest(
             io_cfg=io_cfg,
@@ -595,8 +691,11 @@ class JobEngine:
                         "type": "protein",
                         "name": str(p.get("name", "perceptrome_protein_1")),
                         "output": output,
-                        "summary_json": path_in_run(layout, "outputs", f"{os.path.basename(output)}.summary.json"),
-                        "top_k_output": path_in_run(layout, "outputs", os.path.basename(str(p.get("top_k_output") or f"{os.path.basename(output)}.top{int(p.get('top_k', 1))}.fasta"))),
+                        "summary_json": summary_json,
+                        "top_k_output": top_k_output,
+                        "scorecard_json": scorecard_artifact,
+                        "scorecard_format": scorecard_format,
+                        "scorecard_risk_profile": p.get("scorecard_risk_profile"),
                         "length_aa": len(seq),
                         "top_k": int(p.get("top_k", 1)),
                         "num_candidates": int(p.get("num_candidates", 1)),
@@ -613,18 +712,33 @@ class JobEngine:
             run_children=[self._lineage_ref(artifact_id="generated_protein", path=output, relation="produced.generated_sequence")],
             artifacts=[
                 config_snapshot_artifact,
+                self._artifact_entry(artifact_id="protein_scorecard", role="generated.scorecard", path=scorecard_artifact, artifact_type="json"),
                 self._artifact_entry(artifact_id="protein_similarity", role="generated.similarity", path=similarity_artifact, artifact_type="json"),
-                self._artifact_entry(
-                    artifact_id="generated_protein",
-                    role="generated.sequence",
-                    path=output,
-                    artifact_type="fasta",
-                    parents=run_parents,
-                )
+                self._artifact_entry(artifact_id="generated_protein", role="generated.sequence", path=output, artifact_type="fasta", parents=run_parents),
             ],
         )
-        update_run_manifest(layout, paths={"generated": {"protein_faa": output, "protein_similarity_json": similarity_artifact, "manifest": manifest_path}, "provenance": {"config_snapshot": config_snapshot["path"]}}, provenance={"config_snapshot": config_snapshot}, artifacts=[config_snapshot_artifact, self._artifact_entry(artifact_id="generated_protein", role="generated.sequence", path=output, artifact_type="fasta", parents=run_parents), self._artifact_entry(artifact_id="protein_similarity", role="generated.similarity", path=similarity_artifact, artifact_type="json")])
-        return {"output": output, "length": len(seq), "manifest_path": manifest_path, "config_snapshot": config_snapshot}
+        update_run_manifest(
+            layout,
+            paths={
+                "generated": {
+                    "protein_faa": output,
+                    "protein_summary_json": summary_json,
+                    "protein_top_k_fasta": top_k_output,
+                    "protein_scorecard_json": scorecard_artifact,
+                    "protein_similarity_json": similarity_artifact,
+                    "manifest": manifest_path,
+                },
+                "provenance": {"config_snapshot": config_snapshot["path"]},
+            },
+            provenance={"config_snapshot": config_snapshot},
+            artifacts=[
+                config_snapshot_artifact,
+                self._artifact_entry(artifact_id="generated_protein", role="generated.sequence", path=output, artifact_type="fasta", parents=run_parents),
+                self._artifact_entry(artifact_id="protein_scorecard", role="generated.scorecard", path=scorecard_artifact, artifact_type="json"),
+                self._artifact_entry(artifact_id="protein_similarity", role="generated.similarity", path=similarity_artifact, artifact_type="json"),
+            ],
+        )
+        return {"output": output, "length": len(seq), "manifest_path": manifest_path, "summary_path": summary_json, "scorecard_path": scorecard_artifact, "scorecard_format": scorecard_format, "config_snapshot": config_snapshot}
 
     def _run_validate_plasmid(self, spec: JobSpec) -> Dict[str, Any]:
         cfg = load_full_config(spec.config_path)
