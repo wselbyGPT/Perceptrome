@@ -607,6 +607,8 @@ def generate_protein_sequence(
     recon_weight: float = 0.1,
     provenance_inputs: Optional[Dict[str, str]] = None,
     ast_conditioning: Optional[AstConditioningConfig] = None,
+    scorecard_similarity_references: Optional[Sequence[Dict[str, str]]] = None,
+    scorecard_reference_top_n: int = 5,
 ) -> str:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -718,6 +720,8 @@ def generate_protein_sequence(
                 "roundtrip_recon": recon,
                 "recon_weight": float(recon_weight),
                 "allowed": allowed,
+                "similarity_references": list(scorecard_similarity_references or []),
+                "reference_top_n": int(scorecard_reference_top_n),
             },
         )
         metrics = scorecard["metrics"]
