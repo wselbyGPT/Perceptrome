@@ -62,6 +62,7 @@ def build_run_manifest(
     pretraining_metrics: Optional[Dict[str, Any]] = None,
     generated_sequences: Optional[Dict[str, Any]] = None,
     validation_results: Optional[Dict[str, Any]] = None,
+    evolution_history: Optional[Dict[str, Any]] = None,
     provenance_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     manifest = empty_run_manifest(
@@ -81,6 +82,7 @@ def build_run_manifest(
     manifest["pretraining_metrics"] = pretraining_metrics
     manifest["generated_sequences"] = generated_sequences
     manifest["validation_results"] = validation_results
+    manifest["evolution_history"] = evolution_history
     if provenance_metadata:
         merged = dict(manifest.get("provenance_metadata") or {})
         merged.update(provenance_metadata)

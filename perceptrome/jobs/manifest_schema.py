@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-RUN_MANIFEST_SCHEMA_VERSION = 2
+RUN_MANIFEST_SCHEMA_VERSION = 3
 RUN_MANIFEST_TYPE = "run_manifest"
 
 RUN_MANIFEST_SECTIONS = (
@@ -15,6 +15,7 @@ RUN_MANIFEST_SECTIONS = (
     "pretraining_metrics",
     "generated_sequences",
     "validation_results",
+    "evolution_history",
     "provenance_metadata",
 )
 
@@ -37,6 +38,7 @@ def empty_run_manifest(*, run_kind: str, config_path: str, config_hash: str | No
         "pretraining_metrics": None,
         "generated_sequences": None,
         "validation_results": None,
+        "evolution_history": None,
         "provenance_metadata": {
             "software": {"git_sha": git_sha},
             "config": {

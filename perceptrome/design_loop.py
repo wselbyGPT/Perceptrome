@@ -16,13 +16,17 @@ from perceptrome.genome_evolution import crossover_genomes, initialize_genome, m
 
 @dataclass(slots=True)
 class Candidate:
+    candidate_id: int
+    generation_index: int
     sequence: str
     source: str
     parent_ids: list[int]
+    operations: list[str]
     genome: Dict[str, Any] | None = None
     metadata: Dict[str, Any] | None = None
     score: float = 0.0
     metrics: Dict[str, float] | None = None
+    score_breakdown: Dict[str, Any] | None = None
 
 
 def _gc_fraction(seq: str) -> float:
@@ -130,6 +134,13 @@ def run_design_loop(
 
     registry, spec = default_registry_and_spec()
     base_metadata = seed_metadata_from_defaults(target_gc=target_gc, max_homopolymer=max_homopolymer)
+    next_candidate_id = 0
+
+    def _allocate_candidate_id() -> int:
+        nonlocal next_candidate_id
+        cid = next_candidate_id
+        next_candidate_id += 1
+        return cid
 
     def _normalize_genome(genome: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any]]:
         pre_validation = validate(genome, registry, spec)
@@ -144,7 +155,14 @@ def run_design_loop(
             "post_repair_validation": post_validation,
         }
 
-    def _generate_candidate(genome: Dict[str, Any], source: str, parent_ids: list[int], sequence_overrides: Sequence[str] | None = None) -> Candidate:
+    def _generate_candidate(
+        genome: Dict[str, Any],
+        source: str,
+        parent_ids: list[int],
+        generation_index: int,
+        operations: list[str],
+        sequence_overrides: Sequence[str] | None = None,
+    ) -> Candidate:
         normalized_genome, validation_info = _normalize_genome(genome)
         metadata = genome_to_candidate_metadata(normalized_genome, base_metadata=base_metadata)
         seq = generate_plasmid_sequence(
@@ -170,12 +188,17 @@ def run_design_loop(
             donor = rng.choice(list(sequence_overrides))
             if rng.random() < float(crossover_rate):
                 seq = _crossover(seq, donor, rng)
+                operations.append("sequence_crossover")
             seq = _mutate_sequence(seq, mutation_rate=float(mutation_rate), mutation_scale=float(mutation_scale), rng=rng)
+            operations.append("sequence_mutation")
 
         return Candidate(
+            candidate_id=_allocate_candidate_id(),
+            generation_index=generation_index,
             sequence=seq,
             source=source,
             parent_ids=parent_ids,
+            operations=list(operations),
             genome=normalized_genome,
             metadata={**metadata, "validation": validation_info},
         )
@@ -183,18 +206,40 @@ def run_design_loop(
     population: List[Candidate] = []
     for _ in range(population_size):
         seeded = initialize_genome(registry, rng=rng)
-        population.append(_generate_candidate(seeded, source="initial", parent_ids=[]))
+        population.append(
+            _generate_candidate(
+                seeded,
+                source="initial",
+                parent_ids=[],
+                generation_index=0,
+                operations=["initialize"],
+            )
+        )
     if emit:
         emit("design_loop", f"initialized population={len(population)}")
 
     round_summaries: List[Dict[str, Any]] = []
+    evolution_generations: List[Dict[str, Any]] = []
     best: Optional[Candidate] = None
 
     for round_idx in range(1, max(1, int(rounds)) + 1):
         scored: List[Candidate] = []
         for cand in population:
-            metrics = _score_candidate(cand.sequence, references, target_gc=target_gc, max_homopolymer=max_homopolymer)
-            cand.score = float(metrics["score"])
+            before_metrics = _score_candidate(cand.sequence, references, target_gc=target_gc, max_homopolymer=max_homopolymer)
+            validation_info = dict((cand.metadata or {}).get("validation") or {})
+            post_validation = dict(validation_info.get("post_repair_validation") or {})
+            post_valid = bool(post_validation.get("valid", True))
+            validation_multiplier = 1.0 if post_valid else 0.0
+            after_metrics = dict(before_metrics)
+            after_metrics["score"] = float(before_metrics["score"] * validation_multiplier)
+            after_metrics["validation_multiplier"] = float(validation_multiplier)
+            after_metrics["post_validation_valid"] = float(1.0 if post_valid else 0.0)
+            cand.score_breakdown = {
+                "before_validation": before_metrics,
+                "after_validation": after_metrics,
+            }
+            cand.score = float(after_metrics["score"])
+            metrics = after_metrics
             cand.metrics = metrics
             scored.append(cand)
 
@@ -219,6 +264,25 @@ def run_design_loop(
             ],
         }
         round_summaries.append(round_summary)
+        evolution_generations.append(
+            {
+                "generation_index": round_idx,
+                "candidates": [
+                    {
+                        "candidate_id": int(c.candidate_id),
+                        "generation_index": int(c.generation_index),
+                        "parent_ids": [int(pid) for pid in c.parent_ids],
+                        "operations_applied": list(c.operations),
+                        "score_breakdown": dict(c.score_breakdown or {}),
+                        "artifact_paths": {
+                            "fasta": None,
+                            "summary_row": None,
+                        },
+                    }
+                    for c in scored
+                ],
+            }
+        )
 
         if emit:
             emit("design_round", f"round={round_idx} best={survivors[0].score:.4f}")
@@ -228,7 +292,16 @@ def run_design_loop(
             break
 
         next_population: List[Candidate] = [
-            Candidate(sequence=s.sequence, source="elite", parent_ids=[], genome=dict(s.genome or {}), metadata=dict(s.metadata or {}))
+            Candidate(
+                candidate_id=_allocate_candidate_id(),
+                generation_index=round_idx,
+                sequence=s.sequence,
+                source="elite",
+                parent_ids=[int(s.candidate_id)],
+                operations=["elitism"],
+                genome=dict(s.genome or {}),
+                metadata=dict(s.metadata or {}),
+            )
             for s in survivors
         ]
 
@@ -247,11 +320,13 @@ def run_design_loop(
             p2_genome = dict(p2.genome or {})
             child_genome = dict(p1_genome)
             source = "mutate"
-            parent_ids = [p1_idx]
+            parent_ids = [int(p1.candidate_id)]
+            operations = ["mutate_genome"]
             if rng.random() < float(crossover_rate):
                 child_genome = crossover_genomes(p1_genome, p2_genome, registry, rng=rng)
                 source = "crossover"
-                parent_ids = [p1_idx, p2_idx]
+                parent_ids = [int(p1.candidate_id), int(p2.candidate_id)]
+                operations = ["crossover_genome", "mutate_genome"]
 
             child_genome = mutate_genome(
                 child_genome,
@@ -266,6 +341,8 @@ def run_design_loop(
                     child_genome,
                     source=source,
                     parent_ids=parent_ids,
+                    generation_index=round_idx,
+                    operations=operations,
                     sequence_overrides=top_k_sequences,
                 )
             )
@@ -289,6 +366,10 @@ def run_design_loop(
 
     return {
         "best_candidate": {
+            "candidate_id": int(best.candidate_id) if best else -1,
+            "generation_index": int(best.generation_index) if best else -1,
+            "parent_ids": [int(pid) for pid in (best.parent_ids if best else [])],
+            "operations_applied": list(best.operations) if best else [],
             "sequence": best.sequence if best else "",
             "score": float(best.score) if best else 0.0,
             "metrics": dict(best.metrics or {}) if best else {},
@@ -297,4 +378,7 @@ def run_design_loop(
         "best_candidates": ranked_best,
         "rounds_completed": len(round_summaries),
         "round_summaries": round_summaries,
+        "evolution_history": {
+            "generations": evolution_generations,
+        },
     }

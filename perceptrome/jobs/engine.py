@@ -544,6 +544,28 @@ class JobEngine:
             json.dump(result, f, indent=2)
             f.write("\n")
 
+        evolution_history = dict(result.get("evolution_history") or {})
+        lineage_generations = list(evolution_history.get("generations") or [])
+        lineage_path = path_in_run(layout, "artifacts", "evolution_lineage.json")
+        summary_rows = list((result.get("best_candidates") or []))
+        for generation in lineage_generations:
+            for row_idx, candidate in enumerate(generation.get("candidates") or []):
+                candidate["artifact_paths"] = {
+                    "fasta": best_fasta if int(candidate.get("candidate_id", -1)) == int(best.get("candidate_id", -1)) else None,
+                    "summary_row": f"summary_rows[generation={int(generation.get('generation_index', 0))}][row={row_idx}]",
+                }
+        lineage_payload = {
+            "run_id": layout.run_id,
+            "lineage_version": 1,
+            "summary_rows": summary_rows,
+            "evolution_history": {
+                "generations": lineage_generations,
+            },
+        }
+        with open(lineage_path, "w", encoding="utf-8") as f:
+            json.dump(lineage_payload, f, indent=2)
+            f.write("\n")
+
         self._emit("design_loop", "design loop complete", rounds=result.get("rounds_completed"), best_score=best.get("score"))
 
         run_id = str(p.get("manifest_id") or f"design_loop_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
@@ -561,24 +583,41 @@ class JobEngine:
                         "length_bp": len(str(best.get("sequence", ""))),
                         "score": float(best.get("score", 0.0)),
                     }
-                ]
+                ],
+                "lineage_artifact": lineage_path,
             },
-            validation_results={"design_loop": {"best_metrics": best.get("metrics", {}), "rounds_completed": result.get("rounds_completed")}},
+            validation_results={
+                "design_loop": {
+                    "best_metrics": best.get("metrics", {}),
+                    "rounds_completed": result.get("rounds_completed"),
+                    "evolution_lineage": lineage_path,
+                }
+            },
+            evolution_history={"generations": lineage_generations},
             training_metrics={"design_loop": {"rounds_completed": result.get("rounds_completed"), "best_score": float(best.get("score", 0.0))}},
             metrics={"rounds_completed": result.get("rounds_completed"), "best_score": float(best.get("score", 0.0))},
             provenance_metadata={"summary_json": summary_json},
         )
         update_run_manifest(
             layout,
-            paths={"design_loop": {"best_fasta": best_fasta, "summary_json": summary_json, "manifest": manifest_path}},
+            paths={
+                "design_loop": {
+                    "best_fasta": best_fasta,
+                    "summary_json": summary_json,
+                    "evolution_lineage": lineage_path,
+                    "manifest": manifest_path,
+                }
+            },
             metrics={"design_loop": {"best_score": float(best.get("score", 0.0)), "rounds_completed": result.get("rounds_completed")}},
-            generated_sequences={"design_loop": {"best_fasta": best_fasta}},
-            validation_results={"design_loop": {"summary_json": summary_json}},
+            generated_sequences={"design_loop": {"best_fasta": best_fasta, "evolution_lineage": lineage_path}},
+            validation_results={"design_loop": {"summary_json": summary_json, "evolution_lineage": lineage_path}},
+            evolution_history={"generations": lineage_generations},
         )
         return {
             "best_candidate": best,
             "best_fasta": best_fasta,
             "summary_json": summary_json,
+            "lineage_json": lineage_path,
             "manifest_path": manifest_path,
             "rounds_completed": result.get("rounds_completed"),
         }
