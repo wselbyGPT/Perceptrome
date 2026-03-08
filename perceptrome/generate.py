@@ -360,6 +360,9 @@ def generate_plasmid_sequence(
     recon_weight: float = 0.1,
     provenance_inputs: Optional[Dict[str, str]] = None,
     ast_conditioning: Optional[AstConditioningConfig] = None,
+    scorecard_reference_neighbors: Optional[Sequence[Dict[str, str]]] = None,
+    scorecard_reference_top_n: int = 5,
+    scorecard_motifs: Optional[Dict[str, str]] = None,
 ) -> str:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -474,6 +477,10 @@ def generate_plasmid_sequence(
                 "max_homopolymer": max_homopolymer,
                 "roundtrip_recon": recon,
                 "recon_weight": float(recon_weight),
+                "reference_neighbors": list(scorecard_reference_neighbors or []),
+                "reference_top_n": int(scorecard_reference_top_n),
+                "motifs": scorecard_motifs,
+                "min_orf_aa": int(getattr(train_cfg, "min_orf_aa", 90)),
             },
         )
         metrics = scorecard["metrics"]
@@ -491,6 +498,7 @@ def generate_plasmid_sequence(
             "scorecard_version": scorecard.get("scorecard_version"),
             "risk_flags": scorecard.get("risk_flags", []),
             "summary": scorecard.get("summary", {}),
+            "scorecard": scorecard,
         })
 
     ranked = sorted(candidates, key=lambda x: float(x["score"]), reverse=True)
@@ -507,6 +515,19 @@ def generate_plasmid_sequence(
     summary_json, summary_csv = _make_out_paths(output_path, summary_path)
     top_k_output = top_k_output_path if top_k_output_path else f"{output_path}.top{top_k}.fasta"
     _write_top_k_fasta(top_k_output, name, ranked, top_k)
+    scorecards = [dict(c.get("scorecard") or {}) for c in ranked]
+    aggregate = {
+        "num_candidates": len(scorecards),
+        "avg_gc_fraction": float(np.mean([float((s.get("metrics") or {}).get("gc_fraction", 0.0)) for s in scorecards])) if scorecards else 0.0,
+        "avg_repeat_density": float(np.mean([float((s.get("metrics") or {}).get("repeat_density", 0.0)) for s in scorecards])) if scorecards else 0.0,
+        "avg_orf_count": float(np.mean([float((s.get("metrics") or {}).get("orf_count", 0.0)) for s in scorecards])) if scorecards else 0.0,
+        "risk_flag_counts": {},
+    }
+    for card in scorecards:
+        for flag in card.get("risk_flags", []) or []:
+            code = str((flag or {}).get("code") or "unknown")
+            aggregate["risk_flag_counts"][code] = int(aggregate["risk_flag_counts"].get(code, 0) + 1)
+
     _write_candidate_summary(
         summary_json,
         summary_csv,
@@ -522,6 +543,8 @@ def generate_plasmid_sequence(
             "ast_conditioning": ast_conditioning_metadata(ast_conditioning, ast_details),
             "winner": {k: v for k, v in winner.items() if k != "sequence"},
             "top_candidates": [{k: v for k, v in c.items() if k != "sequence"} for c in ranked[:top_k]],
+            "scorecards": [{k: v for k, v in c.items() if k != "sequence"} for c in ranked],
+            "scorecard_aggregate": aggregate,
             "top_k_output_path": top_k_output,
             "output_path": output_path,
         },
