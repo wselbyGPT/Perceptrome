@@ -30,12 +30,13 @@ from perceptrome.cli.common import (
     train_on_encoded,
 )
 from perceptrome.encoding.parse import parse_fasta_sequence
+from perceptrome.design_loop import run_design_loop
 from perceptrome.generate import generate_plasmid_sequence, generate_protein_sequence
 from perceptrome.jobs.manifest_writer import config_hash, write_experiment_run_manifest
 from perceptrome.pretrain import PretrainPipelineConfig, run_pretraining
 from perceptrome.run_layout import ensure_run_layout, path_in_run, update_run_manifest
 
-JobKind = Literal["train_one", "stream", "generate_plasmid", "generate_protein", "validate_plasmid", "pretrain"]
+JobKind = Literal["train_one", "stream", "generate_plasmid", "generate_protein", "validate_plasmid", "pretrain", "design_loop"]
 
 
 @dataclass(slots=True)
@@ -107,6 +108,7 @@ class JobEngine:
                 "generate_protein": self._run_generate_protein,
                 "validate_plasmid": self._run_validate_plasmid,
                 "pretrain": self._run_pretrain,
+                "design_loop": self._run_design_loop,
             }
             data = handlers[spec.kind](spec)
             self._emit("done", "Job finished successfully")
@@ -488,3 +490,87 @@ class JobEngine:
             metrics=dict(metrics),
         )
         return {"metrics": metrics, "completed_at": datetime.now(timezone.utc).isoformat(), "manifest_path": manifest_path}
+
+    def _run_design_loop(self, spec: JobSpec) -> Dict[str, Any]:
+        cfg = load_full_config(spec.config_path)
+        ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
+        ensure_dirs(io_cfg)
+        setup_logging(io_cfg.logs_dir)
+        p = dict(spec.params)
+
+        layout = ensure_run_layout()
+        catalog_path = str(p["catalog"])
+        references = []
+        for accession in read_catalog(catalog_path):
+            ref_path = _ensure_record(accession, "fasta", io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=bool(p.get("force_fetch", False)))
+            references.append(parse_fasta_sequence(ref_path))
+
+        result = run_design_loop(
+            train_cfg=train_cfg,
+            io_cfg=io_cfg,
+            rounds=int(p.get("rounds", p.get("generations", 5))),
+            population_size=int(p.get("population_size", 8)),
+            survivor_count=int(p.get("survivor_count", 3)),
+            mutation_rate=float(p.get("mutation_rate", 0.05)),
+            mutation_scale=float(p.get("mutation_scale", 1.0)),
+            crossover_rate=float(p.get("crossover_rate", 0.5)),
+            early_stop_threshold=(None if p.get("early_stop_threshold") is None else float(p.get("early_stop_threshold"))),
+            target_gc=float(p.get("target_gc", 0.5)),
+            max_homopolymer=int(p.get("max_homopolymer", 8)),
+            length_bp=int(p.get("length_bp", 4000)),
+            references=references,
+            seed=p.get("seed"),
+            emit=lambda stage, message: self._emit(stage, message),
+        )
+
+        best = result.get("best_candidate", {})
+        best_fasta = path_in_run(layout, "outputs", os.path.basename(str(p.get("output") or "design_loop_best.fasta")))
+        with open(best_fasta, "w", encoding="utf-8") as f:
+            f.write(f">{str(p.get('name', 'design_loop_best'))}|score={float(best.get('score', 0.0)):.6f}\n")
+            seq = str(best.get("sequence", ""))
+            for i in range(0, len(seq), 60):
+                f.write(seq[i : i + 60] + "\n")
+
+        summary_json = path_in_run(layout, "artifacts", "design_loop_summary.json")
+        with open(summary_json, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2)
+            f.write("\n")
+
+        self._emit("design_loop", "design loop complete", rounds=result.get("rounds_completed"), best_score=best.get("score"))
+
+        run_id = str(p.get("manifest_id") or f"design_loop_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
+        manifest_path = self._write_run_manifest(
+            io_cfg=io_cfg,
+            spec=spec,
+            run_id=run_id,
+            dataset_catalog_manifest={"catalog": catalog_path, "references": len(references)},
+            generated_sequences={
+                "entries": [
+                    {
+                        "type": "plasmid",
+                        "name": str(p.get("name", "design_loop_best")),
+                        "output": best_fasta,
+                        "length_bp": len(str(best.get("sequence", ""))),
+                        "score": float(best.get("score", 0.0)),
+                    }
+                ]
+            },
+            validation_results={"design_loop": {"best_metrics": best.get("metrics", {}), "rounds_completed": result.get("rounds_completed")}},
+            training_metrics={"design_loop": {"rounds_completed": result.get("rounds_completed"), "best_score": float(best.get("score", 0.0))}},
+            metrics={"rounds_completed": result.get("rounds_completed"), "best_score": float(best.get("score", 0.0))},
+            provenance_metadata={"summary_json": summary_json},
+        )
+        update_run_manifest(
+            layout,
+            paths={"design_loop": {"best_fasta": best_fasta, "summary_json": summary_json, "manifest": manifest_path}},
+            metrics={"design_loop": {"best_score": float(best.get("score", 0.0)), "rounds_completed": result.get("rounds_completed")}},
+            generated_sequences={"design_loop": {"best_fasta": best_fasta}},
+            validation_results={"design_loop": {"summary_json": summary_json}},
+        )
+        return {
+            "best_candidate": best,
+            "best_fasta": best_fasta,
+            "summary_json": summary_json,
+            "manifest_path": manifest_path,
+            "rounds_completed": result.get("rounds_completed"),
+        }

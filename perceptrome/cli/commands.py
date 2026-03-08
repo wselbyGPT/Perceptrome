@@ -974,6 +974,18 @@ def cmd_pretrain(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def cmd_design_loop(args: argparse.Namespace) -> int:
+    spec = JobSpec(kind="design_loop", config_path=str(args.config), params=vars(args).copy())
+    result = JobEngine().run(spec)
+    if not result.ok:
+        raise RuntimeError(result.message)
+    best = result.data.get("best_candidate", {})
+    print(f"[design-loop] rounds={result.data.get('rounds_completed')} best_score={float(best.get('score', 0.0)):.6f}")
+    print(f"[design-loop] best fasta -> {result.data.get('best_fasta')}")
+    return 0
+
+
 def cmd_run_job_spec(args: argparse.Namespace) -> int:
     spec_payload = json.loads(str(args.spec_json))
     spec = JobSpec(
