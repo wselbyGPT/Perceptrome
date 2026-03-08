@@ -94,6 +94,7 @@ class ConfigSnapshotOut(BaseModel):
 class RunResultOut(BaseModel):
     config_snapshot: ConfigSnapshotOut | None = None
 
+
 class RunOut(BaseModel):
     run_id: str
     user_id: str
@@ -106,3 +107,34 @@ class RunOut(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     artifacts: list[RunArtifactOut] = Field(default_factory=list)
+
+
+class LineageNodeOut(BaseModel):
+    id: str
+    kind: str
+    label: str
+    depth: int = 0
+    run_id: str | None = None
+    artifact_id: str | None = None
+    artifact_type: str | None = None
+    run_state: str | None = None
+    path: str | None = None
+    relation: str | None = None
+    hash: str | None = None
+    config_snapshot: ConfigSnapshotOut | None = None
+    payload: dict = Field(default_factory=dict)
+
+
+class LineageEdgeOut(BaseModel):
+    source: str
+    target: str
+    relation: str
+
+
+class RunLineageOut(BaseModel):
+    run_id: str
+    depth_limit: int
+    artifact_type_filter: str | None = None
+    run_state_filter: list[str] = Field(default_factory=list)
+    nodes: list[LineageNodeOut] = Field(default_factory=list)
+    edges: list[LineageEdgeOut] = Field(default_factory=list)

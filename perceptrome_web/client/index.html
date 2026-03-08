@@ -121,6 +121,40 @@
             </div>
             <div id="run-history" class="results-wrap"></div>
           </section>
+
+          <section class="panel" aria-labelledby="lineage-panel-title">
+            <div class="panel-header">
+              <div>
+                <h2 class="panel-title" id="lineage-panel-title">Lineage Graph</h2>
+                <p class="panel-subtitle">Run/artifact provenance with reproducibility badges</p>
+              </div>
+            </div>
+            <div class="row3">
+              <label class="input-group">
+                <span class="label">Depth</span>
+                <input id="lineage-depth" class="input" type="number" min="0" max="6" value="2" />
+              </label>
+              <label class="input-group">
+                <span class="label">Artifact type</span>
+                <input id="lineage-artifact-type" class="input" placeholder="json, npy, ..." />
+              </label>
+              <button id="refresh-lineage-btn" class="btn btn--secondary" type="button">Refresh Lineage</button>
+            </div>
+            <label class="input-group mt-2">
+              <span class="label">Run states</span>
+              <select id="lineage-run-state" class="input" multiple>
+                <option value="queued">queued</option>
+                <option value="running">running</option>
+                <option value="completed">completed</option>
+                <option value="failed">failed</option>
+                <option value="canceled">canceled</option>
+              </select>
+            </label>
+            <div class="lineage-wrap mt-2">
+              <svg id="lineage-graph" class="lineage-graph" viewBox="0 0 720 280" role="img" aria-label="Lineage graph"></svg>
+            </div>
+            <pre id="lineage-details" class="results-wrap mt-2">Select a run to view lineage.</pre>
+          </section>
         </section>
 
         <section class="column">

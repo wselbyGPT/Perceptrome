@@ -183,3 +183,46 @@ progress { width: 100%; height: 0.625rem; }
     width: 100%;
   }
 }
+
+.lineage-wrap {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-ink);
+  overflow: auto;
+}
+
+.lineage-graph {
+  width: 100%;
+  min-height: 280px;
+  display: block;
+}
+
+.lineage-edge {
+  fill: none;
+  stroke: color-mix(in srgb, var(--text-tertiary) 60%, transparent);
+  stroke-width: 1.4;
+}
+
+.lineage-node {
+  cursor: pointer;
+}
+
+.lineage-node-rect {
+  fill: color-mix(in srgb, var(--color-bg-panel) 70%, transparent);
+  stroke: var(--color-border-subtle);
+  stroke-width: 1;
+}
+
+.lineage-node--run .lineage-node-rect {
+  stroke: var(--color-accent);
+}
+
+.lineage-node--artifact .lineage-node-rect {
+  stroke: var(--success-3);
+}
+
+.lineage-node-label {
+  fill: var(--text-primary);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
