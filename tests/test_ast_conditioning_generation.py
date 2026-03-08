@@ -117,7 +117,11 @@ class AstConditioningJobEngineTests(unittest.TestCase):
             with open(ast_path, "w", encoding="utf-8") as f:
                 json.dump({"nodes": [{"node_type": "gene"}], "edges": []}, f)
 
-            io_cfg = SimpleNamespace(logs_dir=td)
+            ckpt_dir = os.path.join(td, "checkpoints")
+            os.makedirs(ckpt_dir, exist_ok=True)
+            with open(os.path.join(ckpt_dir, "latest.pt"), "wb") as f:
+                f.write(b"checkpoint")
+            io_cfg = SimpleNamespace(logs_dir=td, checkpoints_dir=ckpt_dir)
             train_cfg = SimpleNamespace(window_size=16, tokenizer="base", model_type="mlp")
 
             captured = {}
@@ -126,6 +130,12 @@ class AstConditioningJobEngineTests(unittest.TestCase):
                 captured["ast_conditioning"] = kwargs.get("ast_conditioning")
                 return "ACGT"
 
+            manifest_kwargs = {}
+
+            def _capture_manifest(*_args, **kwargs):
+                manifest_kwargs.update(kwargs)
+                return os.path.join(td, "manifest.json")
+
             with patch("perceptrome.jobs.engine.load_full_config", return_value={}), \
                 patch("perceptrome.jobs.engine.extract_configs", return_value=(None, train_cfg, io_cfg)), \
                 patch("perceptrome.jobs.engine.ensure_dirs"), \
@@ -133,7 +143,7 @@ class AstConditioningJobEngineTests(unittest.TestCase):
                 patch("perceptrome.jobs.engine.ensure_run_layout", return_value=SimpleNamespace(run_id="r1")), \
                 patch("perceptrome.jobs.engine.path_in_run", side_effect=lambda _layout, _kind, name: os.path.join(td, name)), \
                 patch("perceptrome.jobs.engine.generate_plasmid_sequence", side_effect=_fake_generate_plasmid_sequence), \
-                patch.object(JobEngine, "_write_run_manifest", return_value=os.path.join(td, "manifest.json")), \
+                patch.object(JobEngine, "_write_run_manifest", side_effect=_capture_manifest), \
                 patch("perceptrome.jobs.engine.update_run_manifest"):
                 engine = JobEngine()
                 out = engine._run_generate_plasmid(
@@ -155,6 +165,10 @@ class AstConditioningJobEngineTests(unittest.TestCase):
             self.assertIsNotNone(captured["ast_conditioning"])
             self.assertEqual(captured["ast_conditioning"].artifact_path, ast_path)
             self.assertEqual(captured["ast_conditioning"].node_type_prompts, ("gene",))
+            self.assertTrue(manifest_kwargs.get("run_parents"))
+            self.assertTrue(manifest_kwargs.get("run_children"))
+            generated = (manifest_kwargs.get("artifacts") or [])[0]
+            self.assertTrue(generated.get("parents"))
 
 
 if __name__ == "__main__":

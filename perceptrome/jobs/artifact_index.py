@@ -34,6 +34,7 @@ def build_artifact_entry(
     artifact_type: Optional[str] = None,
     mime_type: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
+    parents: Optional[Iterable[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     sha256, size_bytes = compute_file_digest(path)
     inferred_mime = mime_type or mimetypes.guess_type(path)[0]
@@ -51,6 +52,8 @@ def build_artifact_entry(
         entry["mime_type"] = str(inferred_mime)
     if metadata:
         entry["metadata"] = dict(metadata)
+    if parents:
+        entry["parents"] = [dict(parent) for parent in parents if isinstance(parent, dict)]
     return entry
 
 

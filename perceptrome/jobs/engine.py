@@ -91,8 +91,29 @@ class JobEngine:
             self._event_sink(event)
 
     @staticmethod
-    def _artifact_entry(*, artifact_id: str, role: str, path: str, artifact_type: str | None = None, mime_type: str | None = None, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        return build_artifact_entry(artifact_id=artifact_id, role=role, path=path, artifact_type=artifact_type, mime_type=mime_type, metadata=metadata)
+    def _artifact_entry(*, artifact_id: str, role: str, path: str, artifact_type: str | None = None, mime_type: str | None = None, metadata: Optional[Dict[str, Any]] = None, parents: Optional[list[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        return build_artifact_entry(artifact_id=artifact_id, role=role, path=path, artifact_type=artifact_type, mime_type=mime_type, metadata=metadata, parents=parents)
+
+    @staticmethod
+    def _lineage_ref(*, path: str | None = None, artifact_id: str | None = None, relation: str | None = None) -> Dict[str, Any]:
+        ref: Dict[str, Any] = {}
+        if artifact_id:
+            ref["artifact_id"] = str(artifact_id)
+        if path:
+            ref["path"] = str(path)
+        if relation:
+            ref["relation"] = str(relation)
+        return ref
+
+    @classmethod
+    def _collect_existing_parent_refs(cls, pairs: list[tuple[str, str | None, str]]) -> list[Dict[str, Any]]:
+        refs: list[Dict[str, Any]] = []
+        for artifact_id, path, relation in pairs:
+            if not path:
+                continue
+            if os.path.exists(path):
+                refs.append(cls._lineage_ref(artifact_id=artifact_id, path=path, relation=relation))
+        return refs
 
     @classmethod
     def _artifacts_for_paths(cls, mappings: Dict[str, str], role_prefix: str, artifact_type: str | None = None) -> list[Dict[str, Any]]:
@@ -200,7 +221,8 @@ class JobEngine:
         accession = str(params["accession"])
         _ensure_record(accession, src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=False)
         enc_path = encoded_cache_path(io_cfg, accession, tok, window_size, stride, frame, source=src, **self._cache_kwargs(tok, min_orf, pol))
-        if os.path.exists(enc_path) and not bool(params.get("reencode", False)):
+        used_cached_encoding = os.path.exists(enc_path) and not bool(params.get("reencode", False))
+        if used_cached_encoding:
             encoded = np.load(enc_path)
         else:
             encoded = encode_accession(accession, io_cfg, window_size, stride, tokenizer=tok, frame_offset=frame, min_orf_aa=min_orf, source=src, max_windows_per_protein=pol.get("max_windows_per_protein"), protein_len_min=pol.get("protein_len_min"), protein_len_max=pol.get("protein_len_max"), translation_only=bool(pol.get("translation_only", False)), protein_opts=pol.get("protein_opts") or {}, save_to_disk=True, out_path=enc_path)
@@ -228,6 +250,9 @@ class JobEngine:
         self._emit("train", f"trained {accession}", loss=float(last_total))
 
         run_id = str(params.get("manifest_id") or f"train_one_{accession}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
+        run_parents = self._collect_existing_parent_refs([
+            ("encoded_windows", enc_path if used_cached_encoding else None, "consumed.encoded_cache"),
+        ])
         manifest_path = self._write_run_manifest(
             io_cfg=io_cfg,
             spec=spec,
@@ -252,8 +277,15 @@ class JobEngine:
             },
             metrics={"last_total_loss": float(last_total), "encoded_shape": list(getattr(encoded, "shape", []))},
             provenance_metadata={"state_file": io_cfg.state_file},
+            run_parents=run_parents,
             artifacts=[
-                self._artifact_entry(artifact_id="encoded_windows", role="dataset.encoded", path=enc_path, artifact_type="npy"),
+                self._artifact_entry(
+                    artifact_id="encoded_windows",
+                    role="dataset.encoded",
+                    path=enc_path,
+                    artifact_type="npy",
+                    parents=[self._lineage_ref(path=enc_path, artifact_id="encoded_windows", relation="consumed.encoded_cache")] if used_cached_encoding else None,
+                ),
             ],
         )
         return {"accession": accession, "last_total_loss": float(last_total), "manifest_path": manifest_path}
@@ -281,6 +313,7 @@ class JobEngine:
         processed = 0
         last_total = 0.0
         for_epoch_losses: list[float] = []
+        run_parent_refs: list[Dict[str, Any]] = []
         while epoch < max_epochs:
             self._check_cancel()
             indices = list(range(len(accessions)))
@@ -292,8 +325,10 @@ class JobEngine:
                 pol = self._resolve_proteome_params(params, train_cfg, tok, src)
                 _ensure_record(acc, src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=False)
                 enc_path = encoded_cache_path(io_cfg, acc, tok, window_size, stride, frame, source=src, **self._cache_kwargs(tok, min_orf, pol))
-                if os.path.exists(enc_path) and not bool(params.get("reencode", False)):
+                used_cached_encoding = os.path.exists(enc_path) and not bool(params.get("reencode", False))
+                if used_cached_encoding:
                     encoded = np.load(enc_path)
+                    run_parent_refs.append(self._lineage_ref(artifact_id=f"encoded_windows:{acc}", path=enc_path, relation="consumed.encoded_cache"))
                 else:
                     encoded = encode_accession(acc, io_cfg, window_size, stride, tokenizer=tok, frame_offset=frame, min_orf_aa=min_orf, source=src, max_windows_per_protein=pol.get("max_windows_per_protein"), protein_len_min=pol.get("protein_len_min"), protein_len_max=pol.get("protein_len_max"), translation_only=bool(pol.get("translation_only", False)), protein_opts=pol.get("protein_opts") or {}, save_to_disk=True, out_path=enc_path)
                 last_total = float(train_on_encoded(acc, encoded, steps=steps, batch_size=batch, state=state, io_cfg=io_cfg, train_cfg=train_cfg, tokenizer=tok, window_size_bp=window_size, loss_type=params.get("loss_type"), run_id=params.get("tb_run_id"), tensorboard_log_every=params.get("tb_log_every")))
@@ -324,6 +359,7 @@ class JobEngine:
             model_objective_config={"model_type": getattr(train_cfg, "model_type", None), "loss_type": params.get("loss_type")},
             metrics={"processed_accessions": processed, "last_total_loss": float(last_total), "losses": for_epoch_losses},
             provenance_metadata={"state_file": io_cfg.state_file, "max_epochs": max_epochs},
+            run_parents=run_parent_refs,
             artifacts=[self._artifact_entry(artifact_id="stream_state", role="provenance.state", path=io_cfg.state_file, artifact_type="json")],
         )
         return {"processed_accessions": processed, "manifest_path": manifest_path}
@@ -345,6 +381,12 @@ class JobEngine:
         )
         layout = ensure_run_layout()
         output = path_in_run(layout, "outputs", os.path.basename(str(p.get("output", "generated/novel_plasmid.fasta"))))
+        checkpoint_path = os.path.join(str(getattr(io_cfg, "checkpoints_dir", "") or ""), "latest.pt")
+        ast_artifact_path = str(getattr(ast_conditioning, "artifact_path", "") or "")
+        run_parents = self._collect_existing_parent_refs([
+            ("model.checkpoint", checkpoint_path, "consumed.checkpoint"),
+            ("conditioning.ast", ast_artifact_path, "consumed.ast_artifact"),
+        ])
         seq = generate_plasmid_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_bp=int(p.get("length_bp", 10000)), num_windows=p.get("num_windows"), window_size_bp=int(p.get("window_size") or train_cfg.window_size), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), gc_bias=float(p.get("gc_bias", 1.0)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), target_gc=float(p.get("target_gc", 0.5)), max_homopolymer=p.get("max_homopolymer"), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), name=str(p.get("name", "perceptrome_plasmid_1")), output_path=output, tokenizer=tokenizer, provenance_inputs={"config": str(spec.config_path)}, ast_conditioning=ast_conditioning)
         self._emit("generate", "plasmid generated", output=output, length=len(seq))
         run_id = str(p.get("manifest_id") or f"generate_plasmid_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
@@ -371,9 +413,19 @@ class JobEngine:
             },
             training_metrics={"generate_plasmid": {"length_bp": len(seq)}},
             metrics={"length_bp": len(seq)},
-            artifacts=[self._artifact_entry(artifact_id="generated_plasmid", role="generated.sequence", path=output, artifact_type="fasta")],
+            run_parents=run_parents,
+            run_children=[self._lineage_ref(artifact_id="generated_plasmid", path=output, relation="produced.generated_sequence")],
+            artifacts=[
+                self._artifact_entry(
+                    artifact_id="generated_plasmid",
+                    role="generated.sequence",
+                    path=output,
+                    artifact_type="fasta",
+                    parents=run_parents,
+                )
+            ],
         )
-        update_run_manifest(layout, paths={"generated": {"plasmid_fasta": output, "manifest": manifest_path}}, artifacts=[self._artifact_entry(artifact_id="generated_plasmid", role="generated.sequence", path=output, artifact_type="fasta")])
+        update_run_manifest(layout, paths={"generated": {"plasmid_fasta": output, "manifest": manifest_path}}, artifacts=[self._artifact_entry(artifact_id="generated_plasmid", role="generated.sequence", path=output, artifact_type="fasta", parents=run_parents)])
         return {"output": output, "length": len(seq), "manifest_path": manifest_path}
 
     def _run_generate_protein(self, spec: JobSpec) -> Dict[str, Any]:
@@ -392,6 +444,12 @@ class JobEngine:
         )
         layout = ensure_run_layout()
         output = path_in_run(layout, "outputs", os.path.basename(str(p.get("output", "generated/novel_protein.faa"))))
+        checkpoint_path = os.path.join(str(getattr(io_cfg, "checkpoints_dir", "") or ""), "latest.pt")
+        ast_artifact_path = str(getattr(ast_conditioning, "artifact_path", "") or "")
+        run_parents = self._collect_existing_parent_refs([
+            ("model.checkpoint", checkpoint_path, "consumed.checkpoint"),
+            ("conditioning.ast", ast_artifact_path, "consumed.ast_artifact"),
+        ])
         seq = generate_protein_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_aa=int(p.get("length_aa", 600)), num_windows=p.get("num_windows"), window_aa=int(p.get("window_aa") or train_cfg.protein_window_aa), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), name=str(p.get("name", "perceptrome_protein_1")), output_path=output, reject=bool(p.get("reject", False)), reject_tries=int(p.get("reject_tries", 40)), reject_max_run=int(p.get("reject_max_run", 10)), reject_max_x_frac=float(p.get("reject_max_x_frac", 0.15)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), max_homopolymer=p.get("max_homopolymer"), max_x_frac=p.get("max_x_frac"), max_internal_stops=int(p.get("max_internal_stops", 0)), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), provenance_inputs={"config": str(spec.config_path)}, ast_conditioning=ast_conditioning)
         self._emit("generate", "protein generated", output=output, length=len(seq))
         run_id = str(p.get("manifest_id") or f"generate_protein_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
@@ -418,9 +476,19 @@ class JobEngine:
             },
             training_metrics={"generate_protein": {"length_aa": len(seq)}},
             metrics={"length_aa": len(seq)},
-            artifacts=[self._artifact_entry(artifact_id="generated_protein", role="generated.sequence", path=output, artifact_type="fasta")],
+            run_parents=run_parents,
+            run_children=[self._lineage_ref(artifact_id="generated_protein", path=output, relation="produced.generated_sequence")],
+            artifacts=[
+                self._artifact_entry(
+                    artifact_id="generated_protein",
+                    role="generated.sequence",
+                    path=output,
+                    artifact_type="fasta",
+                    parents=run_parents,
+                )
+            ],
         )
-        update_run_manifest(layout, paths={"generated": {"protein_faa": output, "manifest": manifest_path}}, artifacts=[self._artifact_entry(artifact_id="generated_protein", role="generated.sequence", path=output, artifact_type="fasta")])
+        update_run_manifest(layout, paths={"generated": {"protein_faa": output, "manifest": manifest_path}}, artifacts=[self._artifact_entry(artifact_id="generated_protein", role="generated.sequence", path=output, artifact_type="fasta", parents=run_parents)])
         return {"output": output, "length": len(seq), "manifest_path": manifest_path}
 
     def _run_validate_plasmid(self, spec: JobSpec) -> Dict[str, Any]:
@@ -555,6 +623,13 @@ class JobEngine:
 
         layout = ensure_run_layout()
         catalog_path = str(p["catalog"])
+        checkpoint_path = os.path.join(str(getattr(io_cfg, "checkpoints_dir", "") or ""), "latest.pt")
+        ast_artifact_path = str(getattr(ast_conditioning, "artifact_path", "") or "")
+        run_parents = self._collect_existing_parent_refs([
+            ("model.checkpoint", checkpoint_path, "consumed.checkpoint"),
+            ("conditioning.ast", ast_artifact_path, "consumed.ast_artifact"),
+            ("dataset.catalog", catalog_path, "consumed.catalog"),
+        ])
         references = []
         for accession in read_catalog(catalog_path):
             ref_path = _ensure_record(accession, "fasta", io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=bool(p.get("force_fetch", False)))
@@ -647,7 +722,13 @@ class JobEngine:
             training_metrics={"design_loop": {"rounds_completed": result.get("rounds_completed"), "best_score": float(best.get("score", 0.0))}},
             metrics={"rounds_completed": result.get("rounds_completed"), "best_score": float(best.get("score", 0.0))},
             provenance_metadata={"summary_json": summary_json},
-            artifacts=self._artifacts_for_paths({"best_fasta": best_fasta, "summary_json": summary_json, "evolution_lineage": lineage_path}, "design_loop"),
+            run_parents=run_parents,
+            run_children=[self._lineage_ref(artifact_id="best_fasta", path=best_fasta, relation="produced.generated_sequence")],
+            artifacts=[
+                self._artifact_entry(artifact_id="best_fasta", role="design_loop.best_fasta", path=best_fasta, parents=run_parents),
+                self._artifact_entry(artifact_id="summary_json", role="design_loop.summary_json", path=summary_json),
+                self._artifact_entry(artifact_id="evolution_lineage", role="design_loop.evolution_lineage", path=lineage_path),
+            ],
         )
         update_run_manifest(
             layout,
@@ -663,7 +744,11 @@ class JobEngine:
             generated_sequences={"design_loop": {"best_fasta": best_fasta, "evolution_lineage": lineage_path}},
             validation_results={"design_loop": {"summary_json": summary_json, "evolution_lineage": lineage_path}},
             evolution_history={"generations": lineage_generations},
-            artifacts=self._artifacts_for_paths({"best_fasta": best_fasta, "summary_json": summary_json, "evolution_lineage": lineage_path}, "design_loop"),
+            artifacts=[
+                self._artifact_entry(artifact_id="best_fasta", role="design_loop.best_fasta", path=best_fasta, parents=run_parents),
+                self._artifact_entry(artifact_id="summary_json", role="design_loop.summary_json", path=summary_json),
+                self._artifact_entry(artifact_id="evolution_lineage", role="design_loop.evolution_lineage", path=lineage_path),
+            ],
         )
         return {
             "best_candidate": best,

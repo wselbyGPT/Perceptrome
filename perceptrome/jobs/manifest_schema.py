@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 from perceptrome.jobs.artifact_index import normalize_artifact_list
 
-RUN_MANIFEST_SCHEMA_VERSION = 4
+RUN_MANIFEST_SCHEMA_VERSION = 5
 RUN_MANIFEST_TYPE = "run_manifest"
 
 RUN_MANIFEST_SECTIONS = (
@@ -31,6 +31,8 @@ def empty_run_manifest(*, run_kind: str, config_path: str, config_hash: str | No
             "id": run_id,
             "kind": str(run_kind),
             "created_at": created_at,
+            "parents": [],
+            "children": [],
         },
         "dataset_catalog_manifest": None,
         "tokenizer_encoding_config": None,
@@ -55,9 +57,20 @@ def empty_run_manifest(*, run_kind: str, config_path: str, config_hash: str | No
 
 def _ensure_section_defaults(payload: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(payload)
+    run = out.get("run")
+    if isinstance(run, dict):
+        run.setdefault("parents", [])
+        run.setdefault("children", [])
+    else:
+        out["run"] = {"parents": [], "children": []}
+
     for key in RUN_MANIFEST_SECTIONS:
         if key == "artifacts":
-            out["artifacts"] = normalize_artifact_list(out.get("artifacts"))
+            artifacts = normalize_artifact_list(out.get("artifacts"))
+            for artifact in artifacts:
+                if not isinstance(artifact.get("parents"), list):
+                    artifact["parents"] = []
+            out["artifacts"] = artifacts
             continue
         out.setdefault(key, None)
     return out
