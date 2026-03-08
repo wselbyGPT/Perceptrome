@@ -9,9 +9,9 @@
       name="description"
       content="Perceptrome web interface for authenticated runs, logs, and results."
     />
-    <script type="module" crossorigin src="/assets/index-CG3UeTji.js"></script>
-    <link rel="modulepreload" crossorigin href="/assets/auth_api-ClpJ3xBc.js">
-    <link rel="stylesheet" crossorigin href="/assets/auth_api-B123tcEF.css">
+    <script type="module" crossorigin src="/assets/index-CzV-H5gn.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/auth_api-C3j5QkHe.js">
+    <link rel="stylesheet" crossorigin href="/assets/auth_api-BqHYb5Pl.css">
   </head>
   <body class="page-home">
     <div class="app-shell">
@@ -23,8 +23,9 @@
 
         <div class="auth-controls toolbar">
           <span id="whoami" aria-live="polite"></span>
-          <button id="change-password-btn" type="button" class="btn btn-secondary">Change password</button>
-          <button id="logout-btn" type="button" class="btn btn-secondary">Logout</button>
+          <button id="change-password-btn" type="button" class="btn btn--secondary">Change password</button>
+          <a href="/datasets.html" class="btn btn--secondary">Datasets</a>
+          <button id="logout-btn" type="button" class="btn btn--secondary">Logout</button>
         </div>
       </header>
 
@@ -45,10 +46,59 @@
 
               <div id="status" role="status" aria-live="polite">Waiting to connect…</div>
 
-              <div class="run-actions">
-                <button id="run-start-btn" class="btn" type="button">Start Run</button>
-                <button id="run-stop-btn" class="btn btn-secondary" type="button">Stop Run</button>
-              </div>
+              <form id="run-form" class="stack">
+                <div class="row">
+                  <label class="input-group">
+                    <span class="label">Job kind</span>
+                    <select id="run-kind" class="input">
+                      <option value="generate_plasmid">generate_plasmid</option>
+                      <option value="generate_protein">generate_protein</option>
+                      <option value="validate_plasmid">validate_plasmid</option>
+                      <option value="pretrain">pretrain</option>
+                      <option value="train_one">train_one</option>
+                      <option value="stream">stream</option>
+                    </select>
+                  </label>
+                  <label class="input-group">
+                    <span class="label">Config path</span>
+                    <input id="config-path" class="input" value="config/stream_config.yaml" />
+                  </label>
+                </div>
+                <div class="row">
+                  <label class="input-group">
+                    <span class="label">Dataset</span>
+                    <select id="dataset" class="input">
+                      <option value="plasmids_100">plasmids_100</option>
+                      <option value="plasmids_500">plasmids_500</option>
+                      <option value="viruses_100">viruses_100</option>
+                      <option value="genomes_200">genomes_200</option>
+                    </select>
+                  </label>
+                  <label class="input-group">
+                    <span class="label">Model family</span>
+                    <select id="model-family" class="input">
+                      <option value="baseline">baseline</option>
+                      <option value="vae">vae</option>
+                      <option value="transformer">transformer</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="row3">
+                  <label class="input-group">
+                    <span class="label">Temperature</span>
+                    <input id="temperature" class="input" type="number" min="0.1" step="0.1" value="1.0" />
+                  </label>
+                  <label class="input-group">
+                    <span class="label">Length bp</span>
+                    <input id="length-bp" class="input" type="number" min="64" step="1" value="10000" />
+                  </label>
+                  <button id="run-start-btn" class="btn btn--primary" type="submit">Start Run</button>
+                </div>
+                <div class="run-actions">
+                  <button id="run-stop-btn" class="btn btn--secondary" type="button">Stop Run</button>
+                  <button id="refresh-history-btn" class="btn btn--secondary" type="button">Refresh History</button>
+                </div>
+              </form>
             </div>
           </section>
 
@@ -60,6 +110,54 @@
               </div>
             </div>
             <div id="results" class="results-wrap" aria-live="polite"></div>
+            <h3 class="panel-title mt-2">Generated Sequences</h3>
+            <pre id="generated-sequences" class="results-wrap"></pre>
+            <h3 class="panel-title mt-2">Validation</h3>
+            <pre id="validation-results" class="results-wrap"></pre>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2 class="panel-title">Run History & Artifacts</h2>
+                <p class="panel-subtitle">Persisted runs and authenticated downloads</p>
+              </div>
+            </div>
+            <div id="run-history" class="results-wrap"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="lineage-panel-title">
+            <div class="panel-header">
+              <div>
+                <h2 class="panel-title" id="lineage-panel-title">Lineage Graph</h2>
+                <p class="panel-subtitle">Run/artifact provenance with reproducibility badges</p>
+              </div>
+            </div>
+            <div class="row3">
+              <label class="input-group">
+                <span class="label">Depth</span>
+                <input id="lineage-depth" class="input" type="number" min="0" max="6" value="2" />
+              </label>
+              <label class="input-group">
+                <span class="label">Artifact type</span>
+                <input id="lineage-artifact-type" class="input" placeholder="json, npy, ..." />
+              </label>
+              <button id="refresh-lineage-btn" class="btn btn--secondary" type="button">Refresh Lineage</button>
+            </div>
+            <label class="input-group mt-2">
+              <span class="label">Run states</span>
+              <select id="lineage-run-state" class="input" multiple>
+                <option value="queued">queued</option>
+                <option value="running">running</option>
+                <option value="completed">completed</option>
+                <option value="failed">failed</option>
+                <option value="canceled">canceled</option>
+              </select>
+            </label>
+            <div class="lineage-wrap mt-2">
+              <svg id="lineage-graph" class="lineage-graph" viewBox="0 0 720 280" role="img" aria-label="Lineage graph"></svg>
+            </div>
+            <pre id="lineage-details" class="results-wrap mt-2">Select a run to view lineage.</pre>
           </section>
         </section>
 
@@ -71,10 +169,21 @@
                 <p class="panel-subtitle">Server messages and streaming job output</p>
               </div>
               <div class="run-actions">
-                <button id="clear-logs-btn" class="btn btn-secondary" type="button">Clear</button>
+                <button id="clear-logs-btn" class="btn btn--secondary btn--sm" type="button">Clear</button>
               </div>
             </div>
             <div id="logs" class="terminal" aria-live="polite"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2 class="panel-title">Metrics & Checkpoints</h2>
+                <p class="panel-subtitle">Streaming metrics and saved model state</p>
+              </div>
+            </div>
+            <pre id="metrics" class="results-wrap"></pre>
+            <pre id="checkpoints" class="results-wrap"></pre>
           </section>
         </section>
       </main>

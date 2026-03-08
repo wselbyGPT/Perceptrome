@@ -4,9 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Perceptrome — Admin Users</title>
-    <script type="module" crossorigin src="/assets/admin_users-Da6JQs4b.js"></script>
-    <link rel="modulepreload" crossorigin href="/assets/auth_api-ClpJ3xBc.js">
-    <link rel="stylesheet" crossorigin href="/assets/auth_api-B123tcEF.css">
+    <script type="module" crossorigin src="/assets/admin_users-BAjbvBT4.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/auth_api-C3j5QkHe.js">
+    <link rel="stylesheet" crossorigin href="/assets/auth_api-BqHYb5Pl.css">
   </head>
   <body class="page-admin">
     <div class="admin-wrap">
@@ -17,44 +17,44 @@
         </div>
         <div class="toolbar">
           <span id="whoami" class="muted"></span>
-          <a href="/" class="btn btn-secondary">Back to App</a>
-          <button id="logout-btn" class="btn btn-secondary" type="button">Logout</button>
+          <a href="/" class="btn btn--secondary">Back to App</a>
+          <button id="logout-btn" class="btn btn--secondary" type="button">Logout</button>
         </div>
       </div>
 
       <div class="panel">
         <h2>Create User</h2>
 
-        <form id="create-user-form">
-          <div class="row mt-10">
-            <div>
-              <label for="email">Email</label>
+        <form id="create-user-form" class="stack">
+          <div class="row">
+            <div class="input-group">
+              <label class="label" for="email">Email</label>
               <input id="email" class="input" type="email" required />
             </div>
-            <div>
-              <label for="username">Username (optional)</label>
+            <div class="input-group">
+              <label class="label" for="username">Username (optional)</label>
               <input id="username" class="input" type="text" minlength="3" />
             </div>
           </div>
 
-          <div class="row3 mt-10">
-            <div>
-              <label for="password">Temporary Password</label>
+          <div class="row3">
+            <div class="input-group">
+              <label class="label" for="password">Temporary Password</label>
               <input id="password" class="input" type="text" minlength="8" required />
             </div>
-            <div>
-              <label for="role">Role</label>
+            <div class="input-group">
+              <label class="label" for="role">Role</label>
               <select id="role" class="input">
                 <option value="user" selected>user</option>
                 <option value="admin">admin</option>
               </select>
             </div>
-            <div class="toolbar">
-              <button id="gen-pass-btn" class="btn btn-secondary" type="button">Generate Password</button>
+            <div class="cluster">
+              <button id="gen-pass-btn" class="btn btn--secondary" type="button">Generate Password</button>
             </div>
           </div>
 
-          <div class="toolbar mt-10">
+          <div class="cluster">
             <label class="checkbox-label">
               <input id="is-active" class="input" type="checkbox" checked />
               <span>Active</span>
@@ -65,9 +65,9 @@
             </label>
           </div>
 
-          <div class="toolbar mt-12">
-            <button id="create-btn" class="btn" type="submit">Create User</button>
-            <button id="refresh-btn" class="btn btn-secondary" type="button">Refresh List</button>
+          <div class="cluster mt-2">
+            <button id="create-btn" class="btn btn--primary" type="submit">Create User</button>
+            <button id="refresh-btn" class="btn btn--secondary" type="button">Refresh List</button>
           </div>
 
           <div id="form-msg" class="msg"></div>

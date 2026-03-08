@@ -34,6 +34,39 @@ function nowStamp(): string {
   return d.toLocaleTimeString();
 }
 
+
+function applyRunConfigFromQuery(): void {
+  const params = new URLSearchParams(window.location.search);
+  const dataset = params.get("dataset");
+  const kind = params.get("kind");
+  const configPath = params.get("config_path");
+
+  if (dataset) {
+    const datasetEl = document.getElementById("dataset") as HTMLSelectElement | null;
+    if (datasetEl) {
+      if (!Array.from(datasetEl.options).some((o) => o.value === dataset)) {
+        const option = document.createElement("option");
+        option.value = dataset;
+        option.textContent = dataset;
+        datasetEl.appendChild(option);
+      }
+      datasetEl.value = dataset;
+    }
+  }
+
+  if (kind) {
+    const kindEl = document.getElementById("run-kind") as HTMLSelectElement | null;
+    if (kindEl && Array.from(kindEl.options).some((o) => o.value === kind)) {
+      kindEl.value = kind;
+    }
+  }
+
+  if (configPath) {
+    const cfgEl = document.getElementById("config-path") as HTMLInputElement | null;
+    if (cfgEl) cfgEl.value = configPath;
+  }
+}
+
 export function setupPerceptromeViz(ws: WebSocket) {
   const statusEl = mustEl<HTMLElement>("status");
   const logsEl = mustEl<HTMLElement>("logs");
@@ -54,6 +87,8 @@ export function setupPerceptromeViz(ws: WebSocket) {
   const stopBtn = document.getElementById("run-stop-btn") as HTMLButtonElement | null;
   const refreshHistoryBtn = document.getElementById("refresh-history-btn") as HTMLButtonElement | null;
   const refreshLineageBtn = document.getElementById("refresh-lineage-btn") as HTMLButtonElement | null;
+
+  applyRunConfigFromQuery();
 
   let socketOpen = false;
   let runActive = false;

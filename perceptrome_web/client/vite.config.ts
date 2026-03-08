@@ -9,6 +9,7 @@ export default defineConfig({
         index: resolve(__dirname, "index.html"),
         login: resolve(__dirname, "login.html"),
         admin_users: resolve(__dirname, "admin_users.html"),
+        datasets: resolve(__dirname, "datasets.html"),
         change_password: resolve(__dirname, "change_password.html"),
         verify_email: resolve(__dirname, "verify_email.html"),
         forgot_password: resolve(__dirname, "forgot_password.html"),
