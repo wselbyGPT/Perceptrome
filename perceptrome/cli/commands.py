@@ -26,6 +26,7 @@ from perceptrome.cli.common import (
 from perceptrome.catalog_schema import parse_catalog_schema
 from perceptrome.encoding.bio_ast_builder import BioASTBuilder
 from perceptrome.encoding.genbank_features import parse_cds_features_from_genbank
+from perceptrome.encoding.bio_ast_viz import ast_to_graph_json, ast_to_tree_json
 from perceptrome.io_utils import select_unique_accessions, write_catalog
 from perceptrome.encoding.parse import parse_fasta_sequence, parse_genbank_dna
 from perceptrome.pretrain import PretrainPipelineConfig, run_pretraining
@@ -384,6 +385,8 @@ def _collect_bio_ast_transforms(accession: str, source: str, io_cfg) -> Dict[str
         "motif_features": _motif_level_features(built),
         "tree_tensors": _tree_tensors_with_ids(built),
         "graph_edges": _graph_edge_list(built),
+        "tree_json": ast_to_tree_json(built.ast, accession=str(accession)),
+        "graph_json": ast_to_graph_json(built.ast, accession=str(accession)),
     }
 
 
@@ -403,6 +406,8 @@ def _build_and_write_bio_ast(accession: str, source: str, io_cfg) -> Optional[Di
         "motif_features": "motif_features.json",
         "tree_tensors": "tree_tensors.json",
         "graph_edges": "graph_edges.json",
+        "tree_json": "tree_json.json",
+        "graph_json": "graph_json.json",
     }
     output_paths: Dict[str, str] = {}
     for key, filename in filenames.items():
@@ -439,6 +444,8 @@ def cmd_bio_ast_export(args: argparse.Namespace) -> int:
         "motif_features": "motif_features.json",
         "tree_tensors": "tree_tensors.json",
         "graph_edges": "graph_edges.json",
+        "tree_json": "tree_json.json",
+        "graph_json": "graph_json.json",
     }
     if args.transform == "all":
         payload = {}
@@ -469,6 +476,23 @@ def cmd_bio_ast_inspect(args: argparse.Namespace) -> int:
     print(f"accession={args.accession}")
     print(f"nodes={len(nodes)}")
     print(f"edges={len(edges)}")
+    return 0
+
+
+def cmd_bio_ast_visualize(args: argparse.Namespace) -> int:
+    cfg = load_full_config(args.config)
+    ncbi_cfg, _, io_cfg = extract_configs(cfg)
+    ensure_dirs(io_cfg)
+    setup_logging(io_cfg.logs_dir)
+    src = str(args.source).lower()
+    _ensure_record(str(args.accession), src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=bool(getattr(args, "force", False)))
+
+    outputs = _build_and_write_bio_ast(str(args.accession), src, io_cfg)
+    if not outputs:
+        return 1
+    print(f"{args.accession}: visualization artifacts written")
+    print(f"tree_json={outputs['tree_json']}")
+    print(f"graph_json={outputs['graph_json']}")
     return 0
 
 
