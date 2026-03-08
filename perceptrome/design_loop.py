@@ -10,7 +10,7 @@ from perceptrome.evolution_adapters import (
     genome_to_candidate_metadata,
     seed_metadata_from_defaults,
 )
-from perceptrome.generate import generate_plasmid_sequence
+from perceptrome.generate import AstConditioningConfig, generate_plasmid_sequence
 from perceptrome.genome_evolution import crossover_genomes, initialize_genome, mutate_genome, repair, validate
 
 
@@ -127,6 +127,7 @@ def run_design_loop(
     enable_sequence_operators: bool = False,
     sequence_operator_top_k: int = 3,
     emit: Optional[Callable[[str, str], None]] = None,
+    ast_conditioning: Optional[AstConditioningConfig] = None,
 ) -> Dict[str, Any]:
     rng = random.Random(seed)
     population_size = max(2, int(population_size))
@@ -182,6 +183,7 @@ def run_design_loop(
             top_k=max(1, int(metadata.get("top_k", 1))),
             target_gc=float(metadata["target_gc"]),
             max_homopolymer=int(metadata["max_homopolymer"]),
+            ast_conditioning=ast_conditioning,
         )
 
         if enable_sequence_operators and sequence_overrides:
@@ -380,5 +382,20 @@ def run_design_loop(
         "round_summaries": round_summaries,
         "evolution_history": {
             "generations": evolution_generations,
+        },
+        "ast_conditioning": {
+            "enabled": bool(ast_conditioning is not None),
+            "artifact_path": (ast_conditioning.artifact_path if ast_conditioning is not None else None),
+            "node_type_prompts": (list(ast_conditioning.node_type_prompts) if ast_conditioning is not None else []),
+            "region_spans": ([[int(a), int(b)] for a, b in ast_conditioning.region_spans] if ast_conditioning is not None else []),
+            "graph_guided_mask": (
+                {
+                    "mode": ast_conditioning.graph_mask,
+                    "hop_limit": int(ast_conditioning.graph_hop_limit),
+                    "mask_strength": float(ast_conditioning.mask_strength),
+                }
+                if ast_conditioning is not None
+                else {"mode": "none", "hop_limit": 1, "mask_strength": 0.0}
+            ),
         },
     }
