@@ -1,6 +1,5 @@
 import argparse
 import datetime
-import difflib
 import json
 import logging
 import os
@@ -30,6 +29,7 @@ from perceptrome.encoding.genbank_features import parse_cds_features_from_genban
 from perceptrome.io_utils import select_unique_accessions, write_catalog
 from perceptrome.encoding.parse import parse_fasta_sequence, parse_genbank_dna
 from perceptrome.pretrain import PretrainPipelineConfig, run_pretraining
+from perceptrome.scoring import reference_score
 from perceptrome.run_layout import ensure_run_layout, path_in_run, update_run_manifest
 from perceptrome.jobs import JobEngine, JobSpec
 from perceptrome.jobs.manifest_schema import extract_tokenizer_encoding_config
@@ -145,55 +145,8 @@ def _is_checkpoint_model_mismatch(err: Exception) -> bool:
     return "Checkpoint model_type=" in msg and "requested model_type=" in msg
 
 
-def _kmer_set(seq: str, k: int) -> set[str]:
-    if k <= 0 or len(seq) < k:
-        return set()
-    return {seq[i : i + k] for i in range(len(seq) - k + 1)}
-
-
-def _jaccard_kmers(a: str, b: str, k: int = 9) -> float:
-    ka = _kmer_set(a, k)
-    kb = _kmer_set(b, k)
-    if not ka and not kb:
-        return 1.0
-    if not ka or not kb:
-        return 0.0
-    return float(len(ka & kb) / len(ka | kb))
-
-
-def _sequence_similarity(a: str, b: str) -> float:
-    """Similarity score in [0,1] based on global edit-like matching."""
-    if not a and not b:
-        return 1.0
-    if not a or not b:
-        return 0.0
-    return float(difflib.SequenceMatcher(None, a, b).ratio())
-
-
-def _gc_fraction(seq: str) -> float:
-    seq = (seq or "").upper()
-    if not seq:
-        return 0.0
-    return float((seq.count("G") + seq.count("C")) / len(seq))
-
-
 def _reference_score(generated_seq: str, ref_seq: str) -> Dict[str, float]:
-    seq_sim = _sequence_similarity(generated_seq, ref_seq)
-    kmer_sim = _jaccard_kmers(generated_seq, ref_seq, k=9)
-    gc_delta = abs(_gc_fraction(generated_seq) - _gc_fraction(ref_seq))
-    length_ratio = (
-        min(len(generated_seq), len(ref_seq)) / max(len(generated_seq), len(ref_seq))
-        if generated_seq and ref_seq
-        else 0.0
-    )
-    score = (0.55 * seq_sim) + (0.30 * kmer_sim) + (0.10 * length_ratio) + (0.05 * (1.0 - gc_delta))
-    return {
-        "score": float(score),
-        "seq_similarity": float(seq_sim),
-        "kmer_jaccard": float(kmer_sim),
-        "gc_delta": float(gc_delta),
-        "length_ratio": float(length_ratio),
-    }
+    return reference_score(generated_seq, ref_seq)
 
 
 # -----------------------------
