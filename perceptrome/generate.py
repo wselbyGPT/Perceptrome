@@ -16,6 +16,12 @@ from .model import get_device, load_or_init_model
 from .encoding_main import tokenizer_meta, IDX_TO_CODON, CODON_VOCAB_SIZE, GC_COUNT_PER_TOKEN, IDX_TO_AA, AA_VOCAB_SIZE
 from .jobs.provenance import collect_and_write_provenance, resolve_seed, set_global_seeds
 from .run_layout import ensure_run_layout, path_in_run, update_run_manifest
+from .scorecard import (
+    build_plasmid_scorecard,
+    build_protein_scorecard,
+    gc_fraction as scorecard_gc_fraction,
+    max_homopolymer_run as scorecard_max_homopolymer_run,
+)
 
 
 def _run_local_io_cfg(io_cfg: IOConfig) -> IOConfig:
@@ -208,25 +214,14 @@ def _passes_protein_filters(seq: str, max_run: int, max_x_frac: float) -> bool:
     return True
 
 
+
+
 def _max_homopolymer_run(seq: str) -> int:
-    if not seq:
-        return 0
-    run = 1
-    best = 1
-    for i in range(1, len(seq)):
-        if seq[i] == seq[i - 1]:
-            run += 1
-            best = max(best, run)
-        else:
-            run = 1
-    return best
+    return scorecard_max_homopolymer_run(seq)
 
 
 def _gc_fraction(seq: str) -> float:
-    if not seq:
-        return 0.0
-    gc = sum(1 for ch in seq if ch in ("G", "C"))
-    return gc / float(len(seq))
+    return scorecard_gc_fraction(seq)
 
 
 def _plasmid_candidate_score(
@@ -252,24 +247,25 @@ def _protein_candidate_score(
     recon_weight: float,
     allowed: Optional[set] = None,
 ) -> Dict[str, float]:
-    allowed = allowed if allowed is not None else set(IDX_TO_AA)
-    run = _max_homopolymer_run(seq)
-    x_frac = seq.count("X") / float(max(1, len(seq)))
-    invalid_frac = sum(1 for ch in seq if ch not in allowed) / float(max(1, len(seq)))
-    stop_count = seq.count("*")
-    pen_run = max(0, run - max_homopolymer) / max(1.0, float(max_homopolymer))
-    pen_x = max(0.0, x_frac - max_x_frac)
-    pen_stop = max(0, stop_count - int(max_internal_stops))
-    pen_invalid = invalid_frac * 2.0
-    score = -(pen_run + pen_x + pen_stop + pen_invalid) - (float(recon_weight) * float(recon) if recon is not None else 0.0)
+    scorecard = build_protein_scorecard(
+        seq,
+        {
+            "max_homopolymer": max_homopolymer,
+            "max_x_frac": max_x_frac,
+            "max_internal_stops": max_internal_stops,
+            "roundtrip_recon": recon,
+            "recon_weight": recon_weight,
+            "allowed": allowed,
+        },
+    )
+    metrics = scorecard["metrics"]
     return {
-        "score": float(score),
-        "max_homopolymer": float(run),
-        "x_fraction": float(x_frac),
-        "invalid_fraction": float(invalid_frac),
-        "stop_count": float(stop_count),
+        "score": float(metrics["score"]),
+        "max_homopolymer": float(metrics["max_homopolymer"]),
+        "x_fraction": float(metrics["x_fraction"]),
+        "invalid_fraction": float(metrics["invalid_fraction"]),
+        "stop_count": float(metrics["stop_count"]),
     }
-
 
 def _make_out_paths(output_path: str, summary_path: Optional[str]) -> Tuple[str, str]:
     out_dir = os.path.dirname(output_path) or "."
@@ -467,28 +463,34 @@ def generate_plasmid_sequence(
     candidates: List[Dict[str, object]] = []
     for i in range(nc):
         seq = _sample_once()
-        gc = _gc_fraction(seq)
-        run = _max_homopolymer_run(seq)
-        gc_dev = abs(gc - target_gc)
         recon = _roundtrip_recon_score(model, seq, tok, seq_len, vocab_size, device) if roundtrip_score else None
-        score, run_pen = _plasmid_candidate_score(
-            gc_dev=gc_dev,
-            homopolymer_run=run,
-            max_homopolymer=max_homopolymer,
-            recon=recon,
-            recon_weight=recon_weight,
+        scorecard = build_plasmid_scorecard(
+            seq,
+            {
+                "sequence_id": f"candidate-{i}",
+                "tokenizer": tok,
+                "model_type": model_type,
+                "target_gc": target_gc,
+                "max_homopolymer": max_homopolymer,
+                "roundtrip_recon": recon,
+                "recon_weight": float(recon_weight),
+            },
         )
+        metrics = scorecard["metrics"]
         candidates.append({
             "candidate": i,
             "sequence": seq,
             "length": len(seq),
-            "gc_fraction": gc,
-            "gc_deviation": gc_dev,
-            "max_homopolymer": run,
-            "homopolymer_penalty": run_pen,
+            "gc_fraction": metrics.get("gc_fraction"),
+            "gc_deviation": metrics.get("gc_deviation"),
+            "max_homopolymer": metrics.get("max_homopolymer"),
+            "homopolymer_penalty": metrics.get("homopolymer_penalty"),
             "roundtrip_recon": recon,
             "recon_weight": float(recon_weight),
-            "score": score,
+            "score": metrics.get("score"),
+            "scorecard_version": scorecard.get("scorecard_version"),
+            "risk_flags": scorecard.get("risk_flags", []),
+            "summary": scorecard.get("summary", {}),
         })
 
     ranked = sorted(candidates, key=lambda x: float(x["score"]), reverse=True)
@@ -510,6 +512,7 @@ def generate_plasmid_sequence(
         summary_csv,
         {
             "mode": "plasmid",
+            "scorecard_version": ranked[0].get("scorecard_version") if ranked else None,
             "tokenizer": tok,
             "num_candidates": nc,
             "top_k": top_k,
@@ -680,15 +683,21 @@ def generate_protein_sequence(
     for i in range(nc):
         cand = _sample_candidate()
         recon = _roundtrip_recon_score(model, cand, tok, seq_len, vocab_size, device) if roundtrip_score else None
-        metrics = _protein_candidate_score(
-            seq=cand,
-            max_homopolymer=max_homopolymer,
-            max_x_frac=max_x_frac,
-            max_internal_stops=max_internal_stops,
-            recon=recon,
-            recon_weight=recon_weight,
-            allowed=allowed,
+        scorecard = build_protein_scorecard(
+            cand,
+            {
+                "sequence_id": f"candidate-{i}",
+                "tokenizer": tok,
+                "model_type": model_type,
+                "max_homopolymer": max_homopolymer,
+                "max_x_frac": max_x_frac,
+                "max_internal_stops": max_internal_stops,
+                "roundtrip_recon": recon,
+                "recon_weight": float(recon_weight),
+                "allowed": allowed,
+            },
         )
+        metrics = scorecard["metrics"]
         candidates.append({
             "candidate": i,
             "sequence": cand,
@@ -700,6 +709,9 @@ def generate_protein_sequence(
             "roundtrip_recon": recon,
             "recon_weight": float(recon_weight),
             "score": metrics["score"],
+            "scorecard_version": scorecard.get("scorecard_version"),
+            "risk_flags": scorecard.get("risk_flags", []),
+            "summary": scorecard.get("summary", {}),
         })
 
     ranked = sorted(candidates, key=lambda x: float(x["score"]), reverse=True)
@@ -720,6 +732,7 @@ def generate_protein_sequence(
         summary_csv,
         {
             "mode": "protein",
+            "scorecard_version": ranked[0].get("scorecard_version") if ranked else None,
             "num_candidates": nc,
             "top_k": top_k,
             "max_homopolymer": max_homopolymer,
