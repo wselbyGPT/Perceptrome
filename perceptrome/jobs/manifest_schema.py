@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-RUN_MANIFEST_SCHEMA_VERSION = 3
+from perceptrome.jobs.artifact_index import normalize_artifact_list
+
+RUN_MANIFEST_SCHEMA_VERSION = 4
 RUN_MANIFEST_TYPE = "run_manifest"
 
 RUN_MANIFEST_SECTIONS = (
@@ -17,6 +19,7 @@ RUN_MANIFEST_SECTIONS = (
     "validation_results",
     "evolution_history",
     "provenance_metadata",
+    "artifacts",
 )
 
 
@@ -39,6 +42,7 @@ def empty_run_manifest(*, run_kind: str, config_path: str, config_hash: str | No
         "generated_sequences": None,
         "validation_results": None,
         "evolution_history": None,
+        "artifacts": [],
         "provenance_metadata": {
             "software": {"git_sha": git_sha},
             "config": {
@@ -52,6 +56,9 @@ def empty_run_manifest(*, run_kind: str, config_path: str, config_hash: str | No
 def _ensure_section_defaults(payload: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(payload)
     for key in RUN_MANIFEST_SECTIONS:
+        if key == "artifacts":
+            out["artifacts"] = normalize_artifact_list(out.get("artifacts"))
+            continue
         out.setdefault(key, None)
     return out
 
@@ -74,6 +81,17 @@ def _upgrade_legacy_v1(payload: Dict[str, Any]) -> Dict[str, Any]:
         "source": payload.get("source"),
         "artifact_path": payload.get("artifact_path"),
     }
+    if payload.get("artifact_path"):
+        base["artifacts"] = [
+            {
+                "id": str(payload.get("accession") or "legacy_artifact"),
+                "role": artifact_type,
+                "path": str(payload.get("artifact_path")),
+                "sha256": None,
+                "size_bytes": None,
+                "created_at": created_at,
+            }
+        ]
 
     if artifact_type == "fetched_record":
         base["provenance_metadata"]["fetch"] = payload.get("fetch")

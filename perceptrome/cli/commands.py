@@ -37,6 +37,7 @@ from perceptrome.pretrain import PretrainPipelineConfig, run_pretraining
 from perceptrome.scoring import reference_score
 from perceptrome.run_layout import ensure_run_layout, path_in_run, update_run_manifest
 from perceptrome.jobs import JobEngine, JobSpec
+from perceptrome.jobs.artifact_index import build_artifact_entry
 from perceptrome.jobs.manifest_schema import extract_tokenizer_encoding_config
 from perceptrome.jobs.manifest_writer import (
     config_hash,
@@ -49,6 +50,10 @@ from perceptrome.jobs.manifest_writer import (
 # -----------------------------
 # Small helpers
 # -----------------------------
+
+
+def _artifact(artifact_id: str, role: str, path: str, artifact_type: Optional[str] = None, mime_type: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return build_artifact_entry(artifact_id=str(artifact_id), role=str(role), path=str(path), artifact_type=artifact_type, mime_type=mime_type, metadata=metadata)
 def _pick_window_stride(args, train_cfg, tok: str) -> Tuple[int, int]:
     # Prefer CLI flags; fall back to config.
     if tok == "aa":
@@ -373,6 +378,7 @@ def _write_fetch_manifest(
                 "backoff_seconds": float(getattr(ncbi_cfg, "backoff_seconds", 0.0)),
             },
         },
+        artifacts=[_artifact(f"fetch_{accession}", "dataset.fetch", path, artifact_type="record")],
     )
 
 
@@ -417,6 +423,7 @@ def _build_encoded_manifest_payload(
         "metrics": {
             "encoded_shape": list(encoded_shape) if encoded_shape is not None else None,
         },
+        "artifacts": [_artifact(f"encoded_{accession}", "dataset.encoded", encoded_path, artifact_type="npy")],
     }
 
 
@@ -539,7 +546,11 @@ def _build_and_write_bio_ast(accession: str, source: str, io_cfg) -> Optional[Di
             handle.write("\n")
         output_paths[key] = out_path
 
-    update_run_manifest(layout, paths={"bio_ast": {str(accession): output_paths}})
+    update_run_manifest(
+        layout,
+        paths={"bio_ast": {str(accession): output_paths}},
+        artifacts=[_artifact(f"bio_ast_{accession}_{k}", f"bio_ast.{k}", v, artifact_type="json") for k, v in output_paths.items()],
+    )
     return output_paths
 
 
@@ -707,7 +718,16 @@ def _export_bio_ast_embeddings_for_accession(
         json.dump(metadata, handle, indent=2, sort_keys=True)
         handle.write("\n")
 
-    update_run_manifest(layout, paths={"embeddings": {"bio_ast": {accession: metadata["artifacts"]}}})
+    update_run_manifest(
+        layout,
+        paths={"embeddings": {"bio_ast": {accession: metadata["artifacts"]}}},
+        artifacts=[
+            _artifact(f"embedding_{accession}_fixed", "embeddings.fixed", fixed_path, artifact_type="npy"),
+            _artifact(f"embedding_{accession}_token", "embeddings.token", token_path, artifact_type="npy"),
+            _artifact(f"embedding_{accession}_node", "embeddings.node", node_path, artifact_type="npy"),
+            _artifact(f"embedding_{accession}_metadata", "embeddings.metadata", meta_path, artifact_type="json"),
+        ],
+    )
     return {"fixed": fixed_path, "token": token_path, "node": node_path, "metadata": meta_path}
 
 
@@ -1011,7 +1031,11 @@ def cmd_encode_one(args: argparse.Namespace) -> int:
         protein_opts=protein_opts,
     )
     write_sidecar_run_manifest(target_path=out_path, **payload)
-    update_run_manifest(layout, paths={"encoded": {str(args.accession): out_path}})
+    update_run_manifest(
+        layout,
+        paths={"encoded": {str(args.accession): out_path}},
+        artifacts=[_artifact(f"encoded_{args.accession}", "dataset.encoded", out_path, artifact_type="npy")],
+    )
     ast_outputs = _build_and_write_bio_ast(args.accession, src, io_cfg)
     if ast_outputs:
         logging.info("%s: bio AST artifacts written under %s", args.accession, os.path.dirname(next(iter(ast_outputs.values()))))
@@ -1470,6 +1494,11 @@ def cmd_compare_lanes(args: argparse.Namespace) -> int:
                 "config_diffs": diffs,
             }
         },
+        artifacts=[
+            _artifact("compare_lanes_json", "metrics.compare_lanes", result_json, artifact_type="json"),
+            _artifact("compare_lanes_csv", "metrics.compare_lanes", result_csv, artifact_type="csv"),
+            _artifact("compare_lanes_diff", "provenance.compare_lanes", diff_json, artifact_type="json"),
+        ],
     )
 
     print(f"[compare-lanes] baseline={baseline_manifest}")

@@ -16,6 +16,7 @@ except Exception:  # pragma: no cover
 
 from .interfaces import PretrainBackbone
 from .objectives import ObjectiveWeights
+from perceptrome.jobs.artifact_index import build_artifact_entry
 from perceptrome.run_layout import ensure_run_layout, path_in_run, update_run_manifest
 
 
@@ -85,6 +86,7 @@ class PretrainRunner:
             layout,
             paths={"pretrain": {"output_dir": self.cfg.output_dir, "final_metrics_json": metrics_json_path, "checkpoint_index_json": checkpoint_index_path}},
             checkpoints={"pretrain": {"output_dir": self.cfg.output_dir, "index_json": checkpoint_index_path}},
+            artifacts=[build_artifact_entry(artifact_id="pretrain_output_dir", role="pretrain.output_dir", path=self.cfg.output_dir, artifact_type="directory")],
         )
         for epoch in range(int(self.cfg.epochs)):
             self.backbone.train()
@@ -129,6 +131,7 @@ class PretrainRunner:
                         layout,
                         paths={"pretrain": {"latest_step_checkpoint": ckpt_path}},
                         checkpoints={"pretrain": {"latest_step_checkpoint": ckpt_path, "count": len(self.checkpoint_paths)}},
+                        artifacts=[build_artifact_entry(artifact_id=f"step_checkpoint_{self.global_step}", role="pretrain.checkpoint", path=ckpt_path, artifact_type="pytorch_checkpoint")],
                     )
 
             epoch_ckpt = os.path.join(self.cfg.output_dir, f"epoch_{epoch + 1}.pt")
@@ -138,6 +141,7 @@ class PretrainRunner:
                 layout,
                 paths={"pretrain": {"latest_epoch_checkpoint": epoch_ckpt}},
                 checkpoints={"pretrain": {"latest_epoch_checkpoint": epoch_ckpt, "count": len(self.checkpoint_paths)}},
+                artifacts=[build_artifact_entry(artifact_id=f"epoch_checkpoint_{epoch + 1}", role="pretrain.checkpoint", path=epoch_ckpt, artifact_type="pytorch_checkpoint")],
             )
             if val_loader is not None:
                 self.validate(val_loader)
@@ -158,6 +162,10 @@ class PretrainRunner:
             pretraining_metrics={"pretrain": dict(metrics)},
             checkpoints={"pretrain": {**checkpoint_index, "index_json": checkpoint_index_path}},
             paths={"pretrain": {"final_metrics_json": metrics_json_path, "checkpoint_index_json": checkpoint_index_path}},
+            artifacts=[
+                build_artifact_entry(artifact_id="pretrain_checkpoint_index", role="pretrain.checkpoint_index", path=checkpoint_index_path, artifact_type="json"),
+                build_artifact_entry(artifact_id="pretrain_final_metrics", role="pretrain.metrics", path=metrics_json_path, artifact_type="json"),
+            ],
         )
         metrics["checkpoint_index_json"] = checkpoint_index_path
         metrics["final_metrics_json"] = metrics_json_path
