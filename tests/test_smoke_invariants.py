@@ -56,7 +56,7 @@ from perceptrome.generate import (
     _write_top_k_fasta,
 )
 from perceptrome.scope.stream import ScopeStreamContext
-from perceptrome.scorecard import build_protein_scorecard
+from perceptrome.scorecard import build_plasmid_scorecard, build_protein_scorecard
 
 
 class TokenizerInvariantTests(unittest.TestCase):
@@ -319,6 +319,38 @@ class CandidateScoringTests(unittest.TestCase):
         self.assertEqual(metrics["max_homopolymer"], 2.0)
         self.assertEqual(metrics["stop_count"], 2.0)
         self.assertLess(metrics["score"], -3.3)
+
+
+    def test_plasmid_scorecard_similarity_neighbors_include_source_and_length_delta(self):
+        card = build_plasmid_scorecard(
+            "ATGCGTATGCGT",
+            {
+                "reference_neighbors": [
+                    {"reference_id": "catalog-1", "source": "catalog", "sequence": "ATGCGTATGCGT"},
+                    {"reference_id": "snapshot-1", "source": "training_snapshot", "sequence": "ATGCGTATGC"},
+                ],
+                "reference_top_n": 2,
+            },
+        )
+        neighbors = card.get("reference_neighbors", [])
+        self.assertEqual(len(neighbors), 2)
+        self.assertIn("source", neighbors[0])
+        self.assertIn("length_delta", neighbors[0])
+
+    def test_protein_scorecard_exposes_similarity_neighbors(self):
+        card = build_protein_scorecard(
+            "MKTLLILAV",
+            {
+                "similarity_references": [
+                    {"reference_id": "prot-1", "source": "training_corpus", "sequence": "MKTLLILAV"},
+                    {"reference_id": "prot-2", "source": "training_snapshot", "sequence": "MKTLLI"},
+                ],
+                "reference_top_n": 2,
+            },
+        )
+        neighbors = card.get("reference_neighbors", [])
+        self.assertEqual(len(neighbors), 2)
+        self.assertEqual(neighbors[0]["reference_id"], "prot-1")
 
     def test_protein_scorecard_includes_diagnostics_and_risk_flags(self):
         card = build_protein_scorecard(

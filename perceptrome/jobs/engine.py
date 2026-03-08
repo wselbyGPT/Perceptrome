@@ -41,6 +41,7 @@ from perceptrome.jobs.manifest_writer import config_hash, write_experiment_run_m
 from perceptrome.pretrain import PretrainPipelineConfig, run_pretraining
 from perceptrome.run_layout import ensure_run_layout, path_in_run, update_run_manifest
 from perceptrome.scoring import reference_score
+from perceptrome.scorecard import build_plasmid_scorecard, build_protein_scorecard
 
 JobKind = Literal["train_one", "stream", "generate_plasmid", "generate_protein", "validate_plasmid", "pretrain", "design_loop"]
 
@@ -121,6 +122,67 @@ class JobEngine:
         for key, path in mappings.items():
             rows.append(cls._artifact_entry(artifact_id=key, role=f"{role_prefix}.{key}", path=path, artifact_type=artifact_type))
         return rows
+
+
+    @staticmethod
+    def _safe_parse_fasta(path: str) -> str | None:
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            return parse_fasta_sequence(path)
+        except Exception:
+            return None
+
+    def _collect_similarity_references(self, *, params: Dict[str, Any], io_cfg: Any, ncbi_cfg: Any | None, sequence_kind: str) -> list[Dict[str, str]]:
+        refs: list[Dict[str, str]] = []
+        for item in params.get("scorecard_reference_neighbors", []) or []:
+            if not isinstance(item, dict):
+                continue
+            seq = str(item.get("sequence") or "").strip()
+            if not seq:
+                continue
+            refs.append({
+                "reference_id": str(item.get("reference_id") or item.get("id") or "reference"),
+                "source": str(item.get("source") or "catalog"),
+                "sequence": seq,
+            })
+
+        catalog = params.get("similarity_catalog")
+        if catalog:
+            try:
+                for accession in read_catalog(str(catalog)):
+                    try:
+                        ref_path = _ensure_record(accession, "fasta", io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=bool(params.get("force_fetch", False)))
+                        ref_seq = self._safe_parse_fasta(ref_path)
+                        if ref_seq:
+                            refs.append({"reference_id": str(accession), "source": "catalog", "sequence": ref_seq})
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+        for path in params.get("similarity_fasta_paths", []) or []:
+            seq = self._safe_parse_fasta(str(path))
+            if seq:
+                refs.append({"reference_id": os.path.basename(str(path)), "source": "training_snapshot", "sequence": seq})
+
+        for item in params.get("similarity_sequences", []) or []:
+            if not isinstance(item, dict):
+                continue
+            seq = str(item.get("sequence") or "").strip()
+            if seq:
+                refs.append({
+                    "reference_id": str(item.get("reference_id") or item.get("id") or "sequence"),
+                    "source": str(item.get("source") or "training_corpus"),
+                    "sequence": seq,
+                })
+
+        # lightweight dedupe
+        dedup: dict[tuple[str, str], Dict[str, str]] = {}
+        for row in refs:
+            key = (str(row.get("reference_id")), str(row.get("sequence")))
+            dedup[key] = row
+        return list(dedup.values())
 
     def _write_run_manifest(self, *, io_cfg: Any, spec: JobSpec, run_id: str, **sections: Any) -> str:
         path = write_experiment_run_manifest(
@@ -433,8 +495,18 @@ class JobEngine:
             ("model.checkpoint", checkpoint_path, "consumed.checkpoint"),
             ("conditioning.ast", ast_artifact_path, "consumed.ast_artifact"),
         ])
-        seq = generate_plasmid_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_bp=int(p.get("length_bp", 10000)), num_windows=p.get("num_windows"), window_size_bp=int(p.get("window_size") or train_cfg.window_size), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), gc_bias=float(p.get("gc_bias", 1.0)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), target_gc=float(p.get("target_gc", 0.5)), max_homopolymer=p.get("max_homopolymer"), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), name=str(p.get("name", "perceptrome_plasmid_1")), output_path=output, tokenizer=tokenizer, provenance_inputs={"config": str(spec.config_path)}, ast_conditioning=ast_conditioning, scorecard_reference_neighbors=p.get("scorecard_reference_neighbors"), scorecard_reference_top_n=int(p.get("scorecard_reference_top_n", 5)), scorecard_motifs=p.get("scorecard_motifs"))
+        similarity_refs = self._collect_similarity_references(params=p, io_cfg=io_cfg, ncbi_cfg=None, sequence_kind="plasmid")
+        seq = generate_plasmid_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_bp=int(p.get("length_bp", 10000)), num_windows=p.get("num_windows"), window_size_bp=int(p.get("window_size") or train_cfg.window_size), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), gc_bias=float(p.get("gc_bias", 1.0)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), target_gc=float(p.get("target_gc", 0.5)), max_homopolymer=p.get("max_homopolymer"), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), name=str(p.get("name", "perceptrome_plasmid_1")), output_path=output, tokenizer=tokenizer, provenance_inputs={"config": str(spec.config_path)}, ast_conditioning=ast_conditioning, scorecard_reference_neighbors=similarity_refs, scorecard_reference_top_n=int(p.get("scorecard_reference_top_n", 5)), scorecard_motifs=p.get("scorecard_motifs"))
         self._emit("generate", "plasmid generated", output=output, length=len(seq))
+        plasmid_card = build_plasmid_scorecard(seq, {
+            "reference_neighbors": similarity_refs,
+            "reference_top_n": int(p.get("scorecard_reference_top_n", 5)),
+        })
+        similarity_artifact = path_in_run(layout, "artifacts", f"{os.path.basename(output)}.similarity.json")
+        with open(similarity_artifact, "w", encoding="utf-8") as f:
+            json.dump({"sequence_kind": "plasmid", "top_neighbors": plasmid_card.get("reference_neighbors", [])}, f, indent=2)
+            f.write("\n")
+
         run_id = str(p.get("manifest_id") or f"generate_plasmid_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
         manifest_path = self._write_run_manifest(
             io_cfg=io_cfg,
@@ -454,6 +526,8 @@ class JobEngine:
                         "top_k": int(p.get("top_k", 1)),
                         "num_candidates": int(p.get("num_candidates", 1)),
                         "tokenizer": tokenizer,
+                        "similarity_artifact": similarity_artifact,
+                        "top_neighbors": plasmid_card.get("reference_neighbors", []),
                     }
                 ]
             },
@@ -464,6 +538,7 @@ class JobEngine:
             run_children=[self._lineage_ref(artifact_id="generated_plasmid", path=output, relation="produced.generated_sequence")],
             artifacts=[
                 config_snapshot_artifact,
+                self._artifact_entry(artifact_id="plasmid_similarity", role="generated.similarity", path=similarity_artifact, artifact_type="json"),
                 self._artifact_entry(
                     artifact_id="generated_plasmid",
                     role="generated.sequence",
@@ -473,7 +548,7 @@ class JobEngine:
                 )
             ],
         )
-        update_run_manifest(layout, paths={"generated": {"plasmid_fasta": output, "manifest": manifest_path}, "provenance": {"config_snapshot": config_snapshot["path"]}}, provenance={"config_snapshot": config_snapshot}, artifacts=[config_snapshot_artifact, self._artifact_entry(artifact_id="generated_plasmid", role="generated.sequence", path=output, artifact_type="fasta", parents=run_parents)])
+        update_run_manifest(layout, paths={"generated": {"plasmid_fasta": output, "plasmid_similarity_json": similarity_artifact, "manifest": manifest_path}, "provenance": {"config_snapshot": config_snapshot["path"]}}, provenance={"config_snapshot": config_snapshot}, artifacts=[config_snapshot_artifact, self._artifact_entry(artifact_id="generated_plasmid", role="generated.sequence", path=output, artifact_type="fasta", parents=run_parents), self._artifact_entry(artifact_id="plasmid_similarity", role="generated.similarity", path=similarity_artifact, artifact_type="json")])
         return {"output": output, "length": len(seq), "manifest_path": manifest_path, "config_snapshot": config_snapshot}
 
     def _run_generate_protein(self, spec: JobSpec) -> Dict[str, Any]:
@@ -499,8 +574,14 @@ class JobEngine:
             ("model.checkpoint", checkpoint_path, "consumed.checkpoint"),
             ("conditioning.ast", ast_artifact_path, "consumed.ast_artifact"),
         ])
-        seq = generate_protein_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_aa=int(p.get("length_aa", 600)), num_windows=p.get("num_windows"), window_aa=int(p.get("window_aa") or train_cfg.protein_window_aa), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), name=str(p.get("name", "perceptrome_protein_1")), output_path=output, reject=bool(p.get("reject", False)), reject_tries=int(p.get("reject_tries", 40)), reject_max_run=int(p.get("reject_max_run", 10)), reject_max_x_frac=float(p.get("reject_max_x_frac", 0.15)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), max_homopolymer=p.get("max_homopolymer"), max_x_frac=p.get("max_x_frac"), max_internal_stops=int(p.get("max_internal_stops", 0)), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), provenance_inputs={"config": str(spec.config_path)}, ast_conditioning=ast_conditioning)
+        similarity_refs = self._collect_similarity_references(params=p, io_cfg=io_cfg, ncbi_cfg=None, sequence_kind="protein")
+        seq = generate_protein_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_aa=int(p.get("length_aa", 600)), num_windows=p.get("num_windows"), window_aa=int(p.get("window_aa") or train_cfg.protein_window_aa), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), name=str(p.get("name", "perceptrome_protein_1")), output_path=output, reject=bool(p.get("reject", False)), reject_tries=int(p.get("reject_tries", 40)), reject_max_run=int(p.get("reject_max_run", 10)), reject_max_x_frac=float(p.get("reject_max_x_frac", 0.15)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), max_homopolymer=p.get("max_homopolymer"), max_x_frac=p.get("max_x_frac"), max_internal_stops=int(p.get("max_internal_stops", 0)), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), provenance_inputs={"config": str(spec.config_path)}, ast_conditioning=ast_conditioning, scorecard_similarity_references=similarity_refs, scorecard_reference_top_n=int(p.get("scorecard_reference_top_n", 5)))
         self._emit("generate", "protein generated", output=output, length=len(seq))
+        protein_card = build_protein_scorecard(seq, {"similarity_references": similarity_refs, "reference_top_n": int(p.get("scorecard_reference_top_n", 5))})
+        similarity_artifact = path_in_run(layout, "artifacts", f"{os.path.basename(output)}.similarity.json")
+        with open(similarity_artifact, "w", encoding="utf-8") as f:
+            json.dump({"sequence_kind": "protein", "top_neighbors": protein_card.get("reference_neighbors", [])}, f, indent=2)
+            f.write("\n")
         run_id = str(p.get("manifest_id") or f"generate_protein_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
         manifest_path = self._write_run_manifest(
             io_cfg=io_cfg,
@@ -520,6 +601,8 @@ class JobEngine:
                         "top_k": int(p.get("top_k", 1)),
                         "num_candidates": int(p.get("num_candidates", 1)),
                         "tokenizer": "aa",
+                        "similarity_artifact": similarity_artifact,
+                        "top_neighbors": protein_card.get("reference_neighbors", []),
                     }
                 ]
             },
@@ -530,6 +613,7 @@ class JobEngine:
             run_children=[self._lineage_ref(artifact_id="generated_protein", path=output, relation="produced.generated_sequence")],
             artifacts=[
                 config_snapshot_artifact,
+                self._artifact_entry(artifact_id="protein_similarity", role="generated.similarity", path=similarity_artifact, artifact_type="json"),
                 self._artifact_entry(
                     artifact_id="generated_protein",
                     role="generated.sequence",
@@ -539,7 +623,7 @@ class JobEngine:
                 )
             ],
         )
-        update_run_manifest(layout, paths={"generated": {"protein_faa": output, "manifest": manifest_path}, "provenance": {"config_snapshot": config_snapshot["path"]}}, provenance={"config_snapshot": config_snapshot}, artifacts=[config_snapshot_artifact, self._artifact_entry(artifact_id="generated_protein", role="generated.sequence", path=output, artifact_type="fasta", parents=run_parents)])
+        update_run_manifest(layout, paths={"generated": {"protein_faa": output, "protein_similarity_json": similarity_artifact, "manifest": manifest_path}, "provenance": {"config_snapshot": config_snapshot["path"]}}, provenance={"config_snapshot": config_snapshot}, artifacts=[config_snapshot_artifact, self._artifact_entry(artifact_id="generated_protein", role="generated.sequence", path=output, artifact_type="fasta", parents=run_parents), self._artifact_entry(artifact_id="protein_similarity", role="generated.similarity", path=similarity_artifact, artifact_type="json")])
         return {"output": output, "length": len(seq), "manifest_path": manifest_path, "config_snapshot": config_snapshot}
 
     def _run_validate_plasmid(self, spec: JobSpec) -> Dict[str, Any]:

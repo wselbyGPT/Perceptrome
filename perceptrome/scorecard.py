@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 from .encoding.constants import START_CODON, STOP_CODONS
 from .encoding.orf import find_orfs_proteins, translate_orf
 from .encoding.parse import reverse_complement
+from .similarity import score_neighbors
 
 SCORECARD_VERSION = "v2"
 
@@ -58,7 +59,9 @@ class PerSequenceMetrics:
 @dataclass(frozen=True)
 class ReferenceNeighborMatch:
     reference_id: str
+    source: str
     reference_length: int
+    length_delta: int
     score: float
     seq_similarity: float
     kmer_jaccard: float
@@ -138,28 +141,17 @@ def sequence_similarity(a: str, b: str) -> float:
     return float(difflib.SequenceMatcher(None, a, b).ratio())
 
 
-def _reference_neighbor(generated_seq: str, ref_id: str, ref_seq: str) -> ReferenceNeighborMatch:
-    seq_sim = sequence_similarity(generated_seq, ref_seq)
-    kmer_sim = jaccard_kmers(generated_seq, ref_seq, k=9)
-    gc_delta = abs(gc_fraction(generated_seq) - gc_fraction(ref_seq))
-    length_ratio = min(len(generated_seq), len(ref_seq)) / max(len(generated_seq), len(ref_seq)) if generated_seq and ref_seq else 0.0
-    score = (0.55 * seq_sim) + (0.30 * kmer_sim) + (0.10 * length_ratio) + (0.05 * (1.0 - gc_delta))
-    return ReferenceNeighborMatch(
-        reference_id=str(ref_id),
-        reference_length=len(ref_seq),
-        score=float(score),
-        seq_similarity=float(seq_sim),
-        kmer_jaccard=float(kmer_sim),
-        gc_delta=float(gc_delta),
-        length_ratio=float(length_ratio),
-    )
-
-
-def _build_reference_neighbors(sequence: str, context: Mapping[str, Any]) -> List[ReferenceNeighborMatch]:
-    matches: List[ReferenceNeighborMatch] = []
+def _build_reference_neighbors(sequence: str, context: Mapping[str, Any], *, sequence_kind: str = "plasmid") -> List[ReferenceNeighborMatch]:
+    references: List[Mapping[str, Any]] = []
     reference_sequence = context.get("reference_sequence")
     if isinstance(reference_sequence, str):
-        matches.append(_reference_neighbor(sequence, str(context.get("reference_id") or "reference"), reference_sequence))
+        references.append(
+            {
+                "reference_id": str(context.get("reference_id") or "reference"),
+                "source": str(context.get("reference_source") or "catalog"),
+                "sequence": reference_sequence,
+            }
+        )
 
     for item in context.get("reference_neighbors", []) or []:
         if not isinstance(item, Mapping):
@@ -167,11 +159,31 @@ def _build_reference_neighbors(sequence: str, context: Mapping[str, Any]) -> Lis
         ref_seq = item.get("sequence")
         if not isinstance(ref_seq, str):
             continue
-        matches.append(_reference_neighbor(sequence, str(item.get("reference_id") or item.get("id") or "reference"), ref_seq))
+        references.append(
+            {
+                "reference_id": str(item.get("reference_id") or item.get("id") or "reference"),
+                "source": str(item.get("source") or "catalog"),
+                "sequence": ref_seq,
+            }
+        )
 
-    matches.sort(key=lambda row: row.score, reverse=True)
+    for item in context.get("similarity_references", []) or []:
+        if not isinstance(item, Mapping):
+            continue
+        ref_seq = item.get("sequence")
+        if not isinstance(ref_seq, str):
+            continue
+        references.append(
+            {
+                "reference_id": str(item.get("reference_id") or item.get("id") or "reference"),
+                "source": str(item.get("source") or "training_corpus"),
+                "sequence": ref_seq,
+            }
+        )
+
     top_n = int(context.get("reference_top_n", 5))
-    return matches[: max(1, top_n)]
+    rows = score_neighbors(sequence, references, sequence_kind=sequence_kind, top_n=top_n)
+    return [ReferenceNeighborMatch(**row) for row in rows]
 
 
 def _normalize_motif_set(context: Mapping[str, Any]) -> Dict[str, str]:
@@ -514,7 +526,7 @@ def build_plasmid_scorecard(sequence: str, context: Mapping[str, Any]) -> Dict[s
     min_orf_aa = int(context.get("min_orf_aa", 90))
     orf_summary = _orf_summary(sequence.upper(), min_orf_aa=min_orf_aa)
 
-    reference_neighbors = _build_reference_neighbors(sequence, context)
+    reference_neighbors = _build_reference_neighbors(sequence, context, sequence_kind="plasmid")
     risk_flags: List[RiskFlag] = []
     if max_homopolymer is not None and run > int(max_homopolymer):
         risk_flags.append(RiskFlag(code="homopolymer", severity="warning", message=f"Homopolymer run {run} exceeds limit {max_homopolymer}."))
@@ -627,6 +639,8 @@ def build_protein_scorecard(sequence: str, context: Mapping[str, Any]) -> Dict[s
     if int(low_complexity.get("longest_region", 0)) >= int(context.get("low_complexity_longest_warn", 40)):
         risk_flags.append(RiskFlag(code="low_complexity_long_span", severity="warning", message=f"Longest low-complexity span {low_complexity['longest_region']} aa is high."))
 
+    reference_neighbors = _build_reference_neighbors(sequence, context, sequence_kind="protein")
+
     summary = HumanReadableSummary(
         title="Protein scorecard",
         highlights=[
@@ -637,6 +651,8 @@ def build_protein_scorecard(sequence: str, context: Mapping[str, Any]) -> Dict[s
             f"Heuristic score={score:.4f}",
         ],
     )
+    if reference_neighbors:
+        summary.highlights.append(f"Best neighbor score={reference_neighbors[0].score:.4f} ({reference_neighbors[0].reference_id}, {reference_neighbors[0].source})")
 
     card = SequenceScorecard(
         scorecard_version=SCORECARD_VERSION,
@@ -661,9 +677,14 @@ def build_protein_scorecard(sequence: str, context: Mapping[str, Any]) -> Dict[s
             instability_proxy=float(proxies["instability_proxy"]),
             low_complexity_fraction=float(low_complexity.get("covered_fraction", 0.0)),
             low_complexity_longest=int(low_complexity.get("longest_region", 0)),
+            seq_similarity=reference_neighbors[0].seq_similarity if reference_neighbors else None,
+            kmer_jaccard=reference_neighbors[0].kmer_jaccard if reference_neighbors else None,
+            gc_delta=reference_neighbors[0].gc_delta if reference_neighbors else None,
+            length_ratio=reference_neighbors[0].length_ratio if reference_neighbors else None,
             roundtrip_recon=float(recon) if recon is not None else None,
             recon_weight=float(recon_weight),
         ),
+        reference_neighbors=reference_neighbors,
         risk_flags=risk_flags,
         summary=summary,
     )
