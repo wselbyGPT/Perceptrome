@@ -1,6 +1,7 @@
 # server/app/main.py
 import asyncio
 from datetime import datetime, timedelta
+import hashlib
 import json
 import logging
 import smtplib
@@ -88,6 +89,7 @@ _run_lock = threading.Lock()
 _runs: dict[str, RunRecord] = {}
 
 VALID_JOB_KINDS = {"train_one", "stream", "generate_plasmid", "generate_protein", "validate_plasmid", "pretrain"}
+REPLAY_DESCRIPTOR_VERSION = 1
 
 
 def _json_dumps(value: Any) -> str:
@@ -222,6 +224,192 @@ def _parse_job_spec(config: dict[str, Any]) -> tuple[str, JobSpec]:
 
     spec = JobSpec(kind=kind, config_path=config_path, params=params)
     return run_id, spec
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _load_json_file(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _extract_seed_info(params: dict[str, Any]) -> dict[str, Any]:
+    seed_keys = {
+        "seed",
+        "random_seed",
+        "rng_seed",
+        "np_seed",
+        "torch_seed",
+        "python_seed",
+    }
+    return {k: params[k] for k in sorted(seed_keys) if k in params}
+
+
+def _extract_required_parent_artifacts(manifest_path: Path) -> list[dict[str, Any]]:
+    payload = _load_json_file(manifest_path)
+    required: list[dict[str, Any]] = []
+    seen_paths: set[Path] = set()
+
+    def _append_parent(ref: dict[str, Any]):
+        raw_path = ref.get("path")
+        if not isinstance(raw_path, str) or not raw_path:
+            return
+        resolved = Path(raw_path).expanduser().resolve()
+        if resolved in seen_paths:
+            return
+        seen_paths.add(resolved)
+        exists = resolved.exists() and resolved.is_file()
+        required.append(
+            {
+                "path": str(resolved),
+                "sha256": _sha256_file(resolved) if exists else None,
+                "size_bytes": resolved.stat().st_size if exists else None,
+                "artifact_id": ref.get("artifact_id"),
+                "relation": ref.get("relation"),
+            }
+        )
+
+    run = payload.get("run")
+    if isinstance(run, dict):
+        for parent in run.get("parents") or []:
+            if isinstance(parent, dict):
+                _append_parent(parent)
+
+    for artifact in payload.get("artifacts") or []:
+        if not isinstance(artifact, dict):
+            continue
+        for parent in artifact.get("parents") or []:
+            if isinstance(parent, dict):
+                _append_parent(parent)
+    return required
+
+
+def _build_replay_descriptor(*, cfg: dict[str, Any], spec: JobSpec, result_data: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    manifest_path_value = result_data.get("manifest_path")
+    manifest_path = Path(str(manifest_path_value)).expanduser().resolve() if isinstance(manifest_path_value, str) and manifest_path_value else None
+    explicit_params = dict(spec.params)
+    descriptor: dict[str, Any] = {
+        "schema_version": REPLAY_DESCRIPTOR_VERSION,
+        "run_kind": spec.kind,
+        "config_path": spec.config_path,
+        "resolved_config_snapshot": result_data.get("config_snapshot"),
+        "explicit_params": explicit_params,
+        "seed_info": _extract_seed_info(explicit_params),
+        "required_input_artifacts": _extract_required_parent_artifacts(manifest_path) if manifest_path and manifest_path.exists() else [],
+        "source_run_config": cfg,
+    }
+    descriptor_path: str | None = None
+    if manifest_path:
+        descriptor_path = str(manifest_path.with_name(f"{manifest_path.stem}.replay.json"))
+        target = Path(descriptor_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("w", encoding="utf-8") as handle:
+            json.dump(descriptor, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+    return descriptor, descriptor_path
+
+
+def _descriptor_hash(descriptor: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(descriptor, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _validate_required_inputs(required_inputs: list[dict[str, Any]]) -> None:
+    for item in required_inputs:
+        path_value = item.get("path")
+        expected_hash = item.get("sha256")
+        if not isinstance(path_value, str) or not path_value:
+            raise HTTPException(status_code=400, detail="Replay descriptor has an invalid required artifact path")
+        target = Path(path_value).expanduser().resolve()
+        if not target.exists() or not target.is_file():
+            raise HTTPException(status_code=409, detail=f"Required artifact missing for replay: {target}")
+        if isinstance(expected_hash, str) and expected_hash:
+            actual_hash = _sha256_file(target)
+            if actual_hash != expected_hash:
+                raise HTTPException(status_code=409, detail=f"Required artifact hash mismatch for replay: {target}")
+
+
+def _update_manifest_metadata(manifest_path: str, metadata: dict[str, Any]) -> None:
+    if not manifest_path:
+        return
+    target = Path(manifest_path).expanduser().resolve()
+    if not target.exists() or not target.is_file():
+        return
+    payload = _load_json_file(target)
+    provenance = payload.get("provenance_metadata")
+    if not isinstance(provenance, dict):
+        provenance = {}
+    replay_meta = provenance.get("replay")
+    if not isinstance(replay_meta, dict):
+        replay_meta = {}
+    replay_meta.update(metadata)
+    provenance["replay"] = replay_meta
+    payload["provenance_metadata"] = provenance
+    with target.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
+def _execute_run(*, cfg: dict[str, Any], user: User, db: Session, manifest_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    run_id, spec = _parse_job_spec(cfg)
+    record = _upsert_run(run_id, spec)
+    _save_run_submission(db, user, run_id, spec, cfg)
+    record.state = "running"
+    _mark_run_started(db, run_id)
+    result = JobEngine(cancel_event=record.cancel_event).run(spec)
+    final_state: RunState = "completed" if result.ok else ("canceled" if result.exit_code == 130 else "failed")
+    result_data = dict(result.data or {})
+    manifest_path = result_data.get("manifest_path") if isinstance(result_data.get("manifest_path"), str) else None
+    manifest_uri = _extract_manifest_uri(result_data, run_id)
+    descriptor, descriptor_path = _build_replay_descriptor(cfg=cfg, spec=spec, result_data=result_data)
+    descriptor_hash = _descriptor_hash(descriptor)
+    final_payload = {
+        "run_id": run_id,
+        "ok": bool(result.ok),
+        "state": final_state,
+        "message": result.message,
+        "manifest_path": manifest_path,
+        "manifest_uri": manifest_uri,
+        "replay_descriptor": descriptor,
+        "replay_descriptor_path": descriptor_path,
+        "replay_descriptor_hash": descriptor_hash,
+        **result_data,
+    }
+    with _run_lock:
+        record.state = final_state
+        record.result = final_payload
+    if manifest_path:
+        _record_artifact(db, run_id, manifest_path, phase="manifest", label="Run manifest")
+    if descriptor_path:
+        _record_artifact(db, run_id, descriptor_path, phase="provenance", label="Replay descriptor")
+    if manifest_path and manifest_metadata:
+        _update_manifest_metadata(manifest_path, manifest_metadata)
+    _finalize_run(db, run_id, final_state, final_payload, result.message)
+    return {"ok": result.ok, "message": result.message, "user_id": user.id, "role": user.role, "result": final_payload}
+
+
+def _load_run_replay_descriptor(source_run: Run) -> tuple[dict[str, Any], str]:
+    result_payload = _json_loads(source_run.result_json)
+    descriptor = result_payload.get("replay_descriptor")
+    descriptor_path = result_payload.get("replay_descriptor_path")
+    if isinstance(descriptor, dict):
+        return descriptor, _descriptor_hash(descriptor)
+    if isinstance(descriptor_path, str) and descriptor_path:
+        descriptor_file = Path(descriptor_path).expanduser().resolve()
+        if not descriptor_file.exists() or not descriptor_file.is_file():
+            raise HTTPException(status_code=400, detail="Replay descriptor file is missing")
+        descriptor_payload = _load_json_file(descriptor_file)
+        return descriptor_payload, _descriptor_hash(descriptor_payload)
+    raise HTTPException(status_code=400, detail="Replay descriptor is unavailable for this run")
 
 
 def _upsert_run(run_id: str, spec: JobSpec) -> RunRecord:
@@ -717,32 +905,38 @@ def change_password(
 @app.post("/api/runs/start")
 def start_run(payload: RunStartRequest | None = None, user: User = Depends(get_current_user_strict), db: Session = Depends(get_db)):
     cfg = dict((payload.config if payload else {}) or {})
-    run_id, spec = _parse_job_spec(cfg)
-    record = _upsert_run(run_id, spec)
-    _save_run_submission(db, user, run_id, spec, cfg)
-    record.state = "running"
-    _mark_run_started(db, run_id)
-    result = JobEngine(cancel_event=record.cancel_event).run(spec)
-    final_state: RunState = "completed" if result.ok else ("canceled" if result.exit_code == 130 else "failed")
-    result_data = dict(result.data or {})
-    manifest_path = result_data.get("manifest_path") if isinstance(result_data.get("manifest_path"), str) else None
-    manifest_uri = _extract_manifest_uri(result_data, run_id)
-    final_payload = {
-        "run_id": run_id,
-        "ok": bool(result.ok),
-        "state": final_state,
-        "message": result.message,
-        "manifest_path": manifest_path,
-        "manifest_uri": manifest_uri,
-        **result_data,
+    return _execute_run(cfg=cfg, user=user, db=db)
+
+
+@app.post("/api/runs/{run_id}/replay")
+def replay_run(run_id: str, user: User = Depends(get_current_user_strict), db: Session = Depends(get_db)):
+    source_run = _find_run(db, run_id)
+    if not source_run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    _assert_run_access(source_run, user)
+
+    descriptor, descriptor_hash = _load_run_replay_descriptor(source_run)
+    required_inputs = descriptor.get("required_input_artifacts")
+    if not isinstance(required_inputs, list):
+        raise HTTPException(status_code=400, detail="Replay descriptor is invalid: required_input_artifacts must be a list")
+    if any(not isinstance(item, dict) for item in required_inputs):
+        raise HTTPException(status_code=400, detail="Replay descriptor is invalid: each required_input_artifacts entry must be an object")
+    _validate_required_inputs(required_inputs)
+
+    explicit_params = descriptor.get("explicit_params")
+    if not isinstance(explicit_params, dict):
+        raise HTTPException(status_code=400, detail="Replay descriptor is invalid: explicit_params must be an object")
+
+    replay_run_id = f"replay_{uuid4().hex}"
+    replay_cfg = {
+        "run_id": replay_run_id,
+        "manifest_id": replay_run_id,
+        "kind": descriptor.get("run_kind"),
+        "config_path": descriptor.get("config_path"),
+        "params": explicit_params,
     }
-    with _run_lock:
-        record.state = final_state
-        record.result = final_payload
-    if manifest_path:
-        _record_artifact(db, run_id, manifest_path, phase="manifest", label="Run manifest")
-    _finalize_run(db, run_id, final_state, final_payload, result.message)
-    return {"ok": result.ok, "message": result.message, "user_id": user.id, "role": user.role, "result": final_payload}
+    metadata = {"replayed_from_run_id": run_id, "descriptor_hash": descriptor_hash}
+    return _execute_run(cfg=replay_cfg, user=user, db=db, manifest_metadata=metadata)
 
 
 @app.get("/api/runs", response_model=list[RunOut])
