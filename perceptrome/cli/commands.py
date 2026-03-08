@@ -1,5 +1,6 @@
 import argparse
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -29,6 +30,7 @@ from perceptrome.encoding.genbank_features import parse_cds_features_from_genban
 from perceptrome.encoding.bio_ast_viz import ast_to_graph_json, ast_to_tree_json
 from perceptrome.io_utils import select_unique_accessions, write_catalog
 from perceptrome.encoding.parse import parse_fasta_sequence, parse_genbank_dna
+from perceptrome.encoding.encode import encode_sequence_one_hot
 from perceptrome.pretrain import PretrainPipelineConfig, run_pretraining
 from perceptrome.scoring import reference_score
 from perceptrome.run_layout import ensure_run_layout, path_in_run, update_run_manifest
@@ -495,6 +497,137 @@ def cmd_bio_ast_visualize(args: argparse.Namespace) -> int:
     print(f"graph_json={outputs['graph_json']}")
     return 0
 
+
+
+
+def _checkpoint_sha256(path: Optional[str]) -> Optional[str]:
+    if not path or not os.path.exists(path):
+        return None
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _export_bio_ast_embeddings_for_accession(
+    *,
+    accession: str,
+    source: str,
+    io_cfg,
+    ckpt_path: Optional[str],
+    hidden_dim: int,
+    ast_tree_layers: int,
+    ast_motif_kernel_size: int,
+    ast_motif_channels: int,
+) -> Dict[str, Any]:
+    import torch
+    from perceptrome.model import BioASTEmbeddingAPI
+
+    built = _build_bio_ast(accession=accession, source=source, io_cfg=io_cfg)
+    seq_tokens = encode_sequence_one_hot(built.sequence, window_size=len(built.sequence), stride=max(1, len(built.sequence)))[0]
+    tree_tensors = built.to_tree_message_passing_tensors()
+
+    seq_tensor = torch.from_numpy(seq_tokens).unsqueeze(0).to(dtype=torch.float32)
+    node_ids = torch.from_numpy(tree_tensors["node_type_ids"]).unsqueeze(0).to(dtype=torch.long)
+    coords = torch.from_numpy(tree_tensors["coords"]).unsqueeze(0).to(dtype=torch.float32)
+    strand = torch.from_numpy(tree_tensors["strand"]).unsqueeze(0).to(dtype=torch.long)
+
+    embedder = BioASTEmbeddingAPI(
+        seq_vocab_size=int(seq_tensor.shape[-1]),
+        hidden_dim=int(hidden_dim),
+        ast_tree_layers=int(ast_tree_layers),
+        motif_kernel_size=int(ast_motif_kernel_size),
+        motif_channels=int(ast_motif_channels),
+    )
+    embedder.eval()
+
+    with torch.no_grad():
+        embeddings = embedder(seq_tensor, node_ids, ast_coords=coords, ast_strand=strand)
+
+    layout = ensure_run_layout()
+    emb_dir = path_in_run(layout, "artifacts", os.path.join("embeddings", "bio_ast"))
+    os.makedirs(emb_dir, exist_ok=True)
+
+    fixed_path = os.path.join(emb_dir, f"{accession}.fixed.npy")
+    token_path = os.path.join(emb_dir, f"{accession}.token.npy")
+    node_path = os.path.join(emb_dir, f"{accession}.node.npy")
+    meta_path = os.path.join(emb_dir, f"{accession}.metadata.json")
+
+    np.save(fixed_path, embeddings.fixed.detach().cpu().numpy())
+    np.save(token_path, embeddings.token.detach().cpu().numpy())
+    np.save(node_path, embeddings.node.detach().cpu().numpy())
+
+    metadata = {
+        "schema_version": "bio_ast_embedding_v1",
+        "checkpoint": {
+            "path": ckpt_path,
+            "sha256": _checkpoint_sha256(ckpt_path),
+        },
+        "ast_config": {
+            "ast_tree_layers": int(ast_tree_layers),
+            "ast_motif_kernel_size": int(ast_motif_kernel_size),
+            "ast_motif_channels": int(ast_motif_channels),
+        },
+        "accession": str(accession),
+        "sequence_length": int(len(built.sequence)),
+        "node_count": int(len(built.ast.nodes)),
+        "embedding_shapes": {
+            "fixed": list(embeddings.fixed.shape),
+            "token": list(embeddings.token.shape),
+            "node": list(embeddings.node.shape),
+        },
+        "artifacts": {
+            "fixed_npy": fixed_path,
+            "token_npy": token_path,
+            "node_npy": node_path,
+        },
+    }
+    with open(meta_path, "w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+    update_run_manifest(layout, paths={"embeddings": {"bio_ast": {accession: metadata["artifacts"]}}})
+    return {"fixed": fixed_path, "token": token_path, "node": node_path, "metadata": meta_path}
+
+
+
+def cmd_bio_ast_embed_export(args: argparse.Namespace) -> int:
+    cfg = load_full_config(args.config)
+    ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
+    ensure_dirs(io_cfg)
+    setup_logging(io_cfg.logs_dir)
+
+    src = str(args.source).lower()
+    accessions = []
+    if getattr(args, "accession", None):
+        accessions.extend([str(a) for a in args.accession])
+    if getattr(args, "catalog", None):
+        accessions.extend(read_catalog(str(args.catalog)))
+    accessions = [a for a in accessions if a]
+    if not accessions:
+        raise ValueError("Provide at least one accession via --accession or --catalog")
+
+    hidden_dim = int(getattr(args, "hidden_dim", None) or train_cfg.hidden_dim)
+    ast_tree_layers = int(getattr(args, "ast_tree_layers", 4))
+    ast_motif_kernel_size = int(getattr(args, "ast_motif_kernel_size", 7))
+    ast_motif_channels = int(getattr(args, "ast_motif_channels", 64))
+
+    ckpt_path = os.path.join(io_cfg.checkpoints_dir, "latest.pt")
+    for accession in accessions:
+        _ensure_record(accession, src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=bool(getattr(args, "force", False)))
+        outputs = _export_bio_ast_embeddings_for_accession(
+            accession=accession,
+            source=src,
+            io_cfg=io_cfg,
+            ckpt_path=ckpt_path if os.path.exists(ckpt_path) else None,
+            hidden_dim=hidden_dim,
+            ast_tree_layers=ast_tree_layers,
+            ast_motif_kernel_size=ast_motif_kernel_size,
+            ast_motif_channels=ast_motif_channels,
+        )
+        print(f"{accession}: embeddings exported -> {outputs['metadata']}")
+    return 0
 
 def _warn_if_encoded_manifest_incompatible(encoded_path: str, expected: Dict[str, Any]) -> None:
     mpath = sidecar_manifest_path(encoded_path)
