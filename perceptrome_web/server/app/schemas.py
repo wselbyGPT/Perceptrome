@@ -85,6 +85,15 @@ class RunArtifactOut(BaseModel):
     created_at: datetime
 
 
+class ConfigSnapshotOut(BaseModel):
+    path: str
+    sha256: str
+    format: str = "json"
+
+
+class RunResultOut(BaseModel):
+    config_snapshot: ConfigSnapshotOut | None = None
+
 class RunOut(BaseModel):
     run_id: str
     user_id: str
@@ -92,7 +101,7 @@ class RunOut(BaseModel):
     state: str
     message: str | None = None
     config: dict = Field(default_factory=dict)
-    result: dict | None = None
+    result: RunResultOut | dict | None = None
     submitted_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
