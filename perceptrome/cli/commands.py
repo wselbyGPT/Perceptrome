@@ -1,4 +1,5 @@
 import argparse
+import csv
 import datetime
 import hashlib
 import json
@@ -7,6 +8,7 @@ import os
 import random
 import subprocess
 import sys
+import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -232,6 +234,109 @@ def _default_split_path(io_cfg, split_name: str) -> str:
 def _new_experiment_id(prefix: str = "exp") -> str:
     ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     return f"{prefix}_{ts}_{uuid.uuid4().hex[:8]}"
+
+
+def _load_split_payload(split_path: str) -> Dict[str, Any]:
+    if not os.path.exists(split_path):
+        raise FileNotFoundError(f"Split file not found: {split_path}")
+    with open(split_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    if not isinstance(payload.get("splits"), dict):
+        raise ValueError(f"Invalid split file (missing splits): {split_path}")
+    return payload
+
+
+def _split_signature(split_payload: Dict[str, Any]) -> Dict[str, List[str]]:
+    splits = split_payload.get("splits") or {}
+    return {
+        "train": list(splits.get("train", [])),
+        "val": list(splits.get("val", [])),
+        "test": list(splits.get("test", [])),
+    }
+
+
+def _assert_split_parity(token_split: Dict[str, Any], ast_split: Dict[str, Any], token_path: str, ast_path: str) -> None:
+    a = _split_signature(token_split)
+    b = _split_signature(ast_split)
+    if a != b:
+        raise ValueError(
+            "Split mismatch between baseline and AST runs. "
+            f"baseline={token_path} ast={ast_path}. Ensure identical train/val/test accession lists."
+        )
+
+
+def _flatten_dict(payload: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for key, value in payload.items():
+        p = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict):
+            out.update(_flatten_dict(value, p))
+        else:
+            out[p] = value
+    return out
+
+
+def _config_diff(token_cfg: Dict[str, Any], ast_cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    left = _flatten_dict(token_cfg)
+    right = _flatten_dict(ast_cfg)
+    keys = sorted(set(left) | set(right))
+    diffs: List[Dict[str, Any]] = []
+    for key in keys:
+        if left.get(key) != right.get(key):
+            diffs.append({"key": key, "token_baseline": left.get(key), "ast_enabled": right.get(key)})
+    return diffs
+
+
+def _assert_benchmark_config_parity(token_cfg: Dict[str, Any], ast_cfg: Dict[str, Any]) -> None:
+    req = [
+        "training.window_size",
+        "training.stride",
+        "training.tokenizer",
+        "training.frame_offset",
+        "training.min_orf_aa",
+        "training.batch_size",
+        "training.steps_per_plasmid",
+    ]
+    left = _flatten_dict(token_cfg)
+    right = _flatten_dict(ast_cfg)
+    mismatched = [k for k in req if left.get(k) != right.get(k)]
+    if mismatched:
+        details = ", ".join(f"{k}: baseline={left.get(k)!r} ast={right.get(k)!r}" for k in mismatched)
+        raise ValueError(f"Config parity check failed for compare-lanes ({details})")
+
+
+def _count_model_parameters(*, cfg: Dict[str, Any], args: argparse.Namespace) -> int:
+    from perceptrome.encoding_main import tokenizer_meta
+    from perceptrome.model import get_device, load_or_init_model
+
+    _, train_cfg, io_cfg = extract_configs(cfg)
+    io_cfg = _run_local_io_cfg(io_cfg)
+    ensure_dirs(io_cfg)
+    tok = _get_tok(args, train_cfg)
+    window_size, _ = _pick_window_stride(args, train_cfg, tok)
+    seq_len, vocab_size = tokenizer_meta(tok, window_size)
+    loss_type = getattr(args, "loss_type", None) or ("ce" if tok == "aa" else "mse")
+
+    model, _, _, _ = load_or_init_model(
+        io_cfg=io_cfg,
+        seq_len=seq_len,
+        vocab_size=vocab_size,
+        hidden_dim=train_cfg.hidden_dim,
+        learning_rate=train_cfg.learning_rate,
+        device=get_device(),
+        tokenizer=tok,
+        loss_type=loss_type,
+        model_type=train_cfg.model_type,
+        transformer_d_model=train_cfg.transformer_d_model,
+        transformer_nhead=train_cfg.transformer_nhead,
+        transformer_layers=train_cfg.transformer_layers,
+        transformer_dropout=train_cfg.transformer_dropout,
+        ast_tree_layers=train_cfg.ast_tree_layers,
+        ast_motif_kernel_size=train_cfg.ast_motif_kernel_size,
+        ast_motif_channels=train_cfg.ast_motif_channels,
+        beta_kl=train_cfg.beta_kl,
+    )
+    return int(sum(int(p.numel()) for p in model.parameters()))
 
 
 def _run_local_io_cfg(io_cfg):
@@ -1222,6 +1327,156 @@ def cmd_pretrain(args: argparse.Namespace) -> int:
         print(f"  {k}: {float(v):.6f}")
     return 0
 
+
+def cmd_compare_lanes(args: argparse.Namespace) -> int:
+    baseline_cfg = load_full_config(args.baseline_config or args.config)
+    ast_cfg = load_full_config(args.ast_config or args.config)
+    _assert_benchmark_config_parity(baseline_cfg, ast_cfg)
+
+    _, _, io_cfg = extract_configs(baseline_cfg)
+    ensure_dirs(io_cfg)
+    setup_logging(io_cfg.logs_dir)
+
+    split_name = str(args.split_name)
+    baseline_split_path = str(args.baseline_split_path) if getattr(args, "baseline_split_path", None) else _default_split_path(io_cfg, split_name)
+    ast_split_path = str(args.ast_split_path) if getattr(args, "ast_split_path", None) else baseline_split_path
+    baseline_split = _load_split_payload(baseline_split_path)
+    ast_split = _load_split_payload(ast_split_path)
+    _assert_split_parity(baseline_split, ast_split, baseline_split_path, ast_split_path)
+
+    split_sig = _split_signature(baseline_split)
+    train_accessions = list(split_sig.get("train", []))
+    if not train_accessions:
+        raise ValueError("compare-lanes requires a non-empty train split")
+
+    layout = ensure_run_layout(run_id=(getattr(args, "experiment_id", None) or _new_experiment_id("compare_lanes")))
+    catalog_path = path_in_run(layout, "inputs", f"{split_name}.train.catalog.txt")
+    with open(catalog_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(train_accessions) + "\n")
+
+    baseline_params = vars(args).copy()
+    baseline_params["catalog"] = catalog_path
+    baseline_params["max_epochs"] = int(args.max_epochs)
+    baseline_params["model_type"] = str(args.baseline_model_type)
+
+    ast_params = vars(args).copy()
+    ast_params["catalog"] = catalog_path
+    ast_params["max_epochs"] = int(args.max_epochs)
+    ast_params["model_type"] = str(args.ast_model_type)
+
+    random.seed(int(args.seed))
+    np.random.seed(int(args.seed))
+    t0 = time.perf_counter()
+    baseline_result = JobEngine().run(JobSpec(kind="stream", config_path=str(args.baseline_config or args.config), params=baseline_params))
+    baseline_runtime = time.perf_counter() - t0
+    if not baseline_result.ok:
+        raise RuntimeError(f"baseline lane failed: {baseline_result.message}")
+
+    random.seed(int(args.seed))
+    np.random.seed(int(args.seed))
+    t1 = time.perf_counter()
+    ast_result = JobEngine().run(JobSpec(kind="stream", config_path=str(args.ast_config or args.config), params=ast_params))
+    ast_runtime = time.perf_counter() - t1
+    if not ast_result.ok:
+        raise RuntimeError(f"AST lane failed: {ast_result.message}")
+
+    baseline_manifest = str(baseline_result.data.get("manifest_path"))
+    ast_manifest = str(ast_result.data.get("manifest_path"))
+    if not baseline_manifest or not os.path.exists(baseline_manifest):
+        raise RuntimeError("baseline metrics manifest missing")
+    if not ast_manifest or not os.path.exists(ast_manifest):
+        raise RuntimeError("AST metrics manifest missing")
+
+    with open(baseline_manifest, "r", encoding="utf-8") as f:
+        baseline_payload = json.load(f)
+    with open(ast_manifest, "r", encoding="utf-8") as f:
+        ast_payload = json.load(f)
+
+    baseline_metrics = baseline_payload.get("metrics") or {}
+    ast_metrics = ast_payload.get("metrics") or {}
+
+    baseline_count = _count_model_parameters(cfg=baseline_cfg, args=argparse.Namespace(**baseline_params))
+    ast_count = _count_model_parameters(cfg=ast_cfg, args=argparse.Namespace(**ast_params))
+
+    rows = [
+        {
+            "lane": "token_baseline",
+            "run_kind": "stream",
+            "config_path": str(args.baseline_config or args.config),
+            "split_path": baseline_split_path,
+            "manifest_path": baseline_manifest,
+            "processed_accessions": baseline_metrics.get("processed_accessions"),
+            "last_total_loss": baseline_metrics.get("last_total_loss"),
+            "runtime_seconds": baseline_runtime,
+            "parameter_count": baseline_count,
+            "seed": int(args.seed),
+            "train_count": len(split_sig["train"]),
+            "val_count": len(split_sig["val"]),
+            "test_count": len(split_sig["test"]),
+        },
+        {
+            "lane": "ast_enabled",
+            "run_kind": "stream",
+            "config_path": str(args.ast_config or args.config),
+            "split_path": ast_split_path,
+            "manifest_path": ast_manifest,
+            "processed_accessions": ast_metrics.get("processed_accessions"),
+            "last_total_loss": ast_metrics.get("last_total_loss"),
+            "runtime_seconds": ast_runtime,
+            "parameter_count": ast_count,
+            "seed": int(args.seed),
+            "train_count": len(split_sig["train"]),
+            "val_count": len(split_sig["val"]),
+            "test_count": len(split_sig["test"]),
+        },
+    ]
+
+    diffs = _config_diff(baseline_cfg, ast_cfg)
+    result_json = path_in_run(layout, "metrics", "compare_lanes.json")
+    result_csv = path_in_run(layout, "metrics", "compare_lanes.csv")
+    diff_json = path_in_run(layout, "provenance", "compare_lanes_config_diff.json")
+
+    with open(result_json, "w", encoding="utf-8") as f:
+        json.dump({"rows": rows, "config_diffs": diffs}, f, indent=2)
+        f.write("\n")
+    with open(result_csv, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+    with open(diff_json, "w", encoding="utf-8") as f:
+        json.dump(diffs, f, indent=2)
+        f.write("\n")
+
+    update_run_manifest(
+        layout,
+        paths={
+            "compare_lanes": {
+                "catalog": catalog_path,
+                "baseline_manifest": baseline_manifest,
+                "ast_manifest": ast_manifest,
+                "results_json": result_json,
+                "results_csv": result_csv,
+                "config_diff_json": diff_json,
+            }
+        },
+        metrics={"compare_lanes": {"rows": rows}},
+        provenance={
+            "compare_lanes": {
+                "seed": int(args.seed),
+                "split_name": split_name,
+                "baseline_split": baseline_split_path,
+                "ast_split": ast_split_path,
+                "config_diffs": diffs,
+            }
+        },
+    )
+
+    print(f"[compare-lanes] baseline={baseline_manifest}")
+    print(f"[compare-lanes] ast={ast_manifest}")
+    print(f"[compare-lanes] results_json={result_json}")
+    print(f"[compare-lanes] results_csv={result_csv}")
+    return 0
 
 
 def cmd_design_loop(args: argparse.Namespace) -> int:
