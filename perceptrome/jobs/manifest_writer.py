@@ -66,6 +66,8 @@ def build_run_manifest(
     evolution_history: Optional[Dict[str, Any]] = None,
     provenance_metadata: Optional[Dict[str, Any]] = None,
     artifacts: Optional[Iterable[Dict[str, Any]]] = None,
+    run_parents: Optional[Iterable[Dict[str, Any]]] = None,
+    run_children: Optional[Iterable[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     manifest = empty_run_manifest(
         run_kind=run_kind,
@@ -91,6 +93,12 @@ def build_run_manifest(
         manifest["provenance_metadata"] = merged
     if artifacts:
         append_artifact_entries(manifest, artifacts)
+    run = manifest.get("run")
+    if isinstance(run, dict):
+        if run_parents:
+            run["parents"] = [dict(parent) for parent in run_parents if isinstance(parent, dict)]
+        if run_children:
+            run["children"] = [dict(child) for child in run_children if isinstance(child, dict)]
     return manifest
 
 
