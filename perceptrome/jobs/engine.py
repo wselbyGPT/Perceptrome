@@ -134,6 +134,35 @@ class JobEngine:
         self._emit("manifest", "run manifest written", path=path)
         return path
 
+    def _write_resolved_config_snapshot(self, *, spec: JobSpec, cfg: Dict[str, Any], params: Dict[str, Any], layout: Any | None = None) -> tuple[Any, Dict[str, Any], Dict[str, Any]]:
+        run_layout = layout or ensure_run_layout()
+        snapshot_path = path_in_run(run_layout, "artifacts", "resolved_config.json")
+        snapshot_payload = {
+            "run_kind": spec.kind,
+            "config_path": str(spec.config_path),
+            "loaded_config": cfg,
+            "overrides": params,
+        }
+        os.makedirs(os.path.dirname(snapshot_path) or ".", exist_ok=True)
+        with open(snapshot_path, "w", encoding="utf-8") as f:
+            json.dump(snapshot_payload, f, indent=2, sort_keys=True)
+            f.write("\n")
+
+        snapshot_sha = config_hash(snapshot_payload)
+        snapshot_meta = {
+            "path": snapshot_path,
+            "sha256": snapshot_sha,
+            "format": "json",
+        }
+        artifact = self._artifact_entry(
+            artifact_id="resolved_config",
+            role="provenance.config_snapshot",
+            path=snapshot_path,
+            artifact_type="json",
+            metadata={"sha256": snapshot_sha, "format": "json"},
+        )
+        return run_layout, snapshot_meta, artifact
+
     def run(self, spec: JobSpec) -> JobResult:
         self._events = []
         self._emit("start", f"Starting job kind={spec.kind}")
@@ -249,6 +278,8 @@ class JobEngine:
         cleanup_accession_files(accession, io_cfg, enc_path)
         self._emit("train", f"trained {accession}", loss=float(last_total))
 
+        layout, config_snapshot, config_snapshot_artifact = self._write_resolved_config_snapshot(spec=spec, cfg=cfg, params=params)
+
         run_id = str(params.get("manifest_id") or f"train_one_{accession}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
         run_parents = self._collect_existing_parent_refs([
             ("encoded_windows", enc_path if used_cached_encoding else None, "consumed.encoded_cache"),
@@ -276,9 +307,10 @@ class JobEngine:
                 "batch_size": batch_size,
             },
             metrics={"last_total_loss": float(last_total), "encoded_shape": list(getattr(encoded, "shape", []))},
-            provenance_metadata={"state_file": io_cfg.state_file},
+            provenance_metadata={"state_file": io_cfg.state_file, "config_snapshot": config_snapshot},
             run_parents=run_parents,
             artifacts=[
+                config_snapshot_artifact,
                 self._artifact_entry(
                     artifact_id="encoded_windows",
                     role="dataset.encoded",
@@ -288,7 +320,13 @@ class JobEngine:
                 ),
             ],
         )
-        return {"accession": accession, "last_total_loss": float(last_total), "manifest_path": manifest_path}
+        update_run_manifest(
+            layout,
+            paths={"provenance": {"config_snapshot": config_snapshot["path"]}, "training": {"manifest": manifest_path}},
+            provenance={"config_snapshot": config_snapshot},
+            artifacts=[config_snapshot_artifact],
+        )
+        return {"accession": accession, "last_total_loss": float(last_total), "manifest_path": manifest_path, "config_snapshot": config_snapshot}
 
     def _run_stream(self, spec: JobSpec) -> Dict[str, Any]:
         cfg = load_full_config(spec.config_path)
@@ -297,6 +335,7 @@ class JobEngine:
         setup_logging(io_cfg.logs_dir)
         state = load_state(io_cfg.state_file)
         params = dict(spec.params)
+        layout, config_snapshot, config_snapshot_artifact = self._write_resolved_config_snapshot(spec=spec, cfg=cfg, params=params)
         accessions = read_catalog(str(params["catalog"]))
 
         args = type("A", (), params)
@@ -358,11 +397,17 @@ class JobEngine:
             },
             model_objective_config={"model_type": getattr(train_cfg, "model_type", None), "loss_type": params.get("loss_type")},
             metrics={"processed_accessions": processed, "last_total_loss": float(last_total), "losses": for_epoch_losses},
-            provenance_metadata={"state_file": io_cfg.state_file, "max_epochs": max_epochs},
+            provenance_metadata={"state_file": io_cfg.state_file, "max_epochs": max_epochs, "config_snapshot": config_snapshot},
             run_parents=run_parent_refs,
-            artifacts=[self._artifact_entry(artifact_id="stream_state", role="provenance.state", path=io_cfg.state_file, artifact_type="json")],
+            artifacts=[config_snapshot_artifact, self._artifact_entry(artifact_id="stream_state", role="provenance.state", path=io_cfg.state_file, artifact_type="json")],
         )
-        return {"processed_accessions": processed, "manifest_path": manifest_path}
+        update_run_manifest(
+            layout,
+            paths={"provenance": {"config_snapshot": config_snapshot["path"]}, "training": {"manifest": manifest_path}},
+            provenance={"config_snapshot": config_snapshot},
+            artifacts=[config_snapshot_artifact],
+        )
+        return {"processed_accessions": processed, "manifest_path": manifest_path, "config_snapshot": config_snapshot}
 
     def _run_generate_plasmid(self, spec: JobSpec) -> Dict[str, Any]:
         cfg = load_full_config(spec.config_path)
@@ -380,6 +425,7 @@ class JobEngine:
             ast_mask_strength=float(p.get("ast_mask_strength", 0.0)),
         )
         layout = ensure_run_layout()
+        _, config_snapshot, config_snapshot_artifact = self._write_resolved_config_snapshot(spec=spec, cfg=cfg, params=p, layout=layout)
         output = path_in_run(layout, "outputs", os.path.basename(str(p.get("output", "generated/novel_plasmid.fasta"))))
         checkpoint_path = os.path.join(str(getattr(io_cfg, "checkpoints_dir", "") or ""), "latest.pt")
         ast_artifact_path = str(getattr(ast_conditioning, "artifact_path", "") or "")
@@ -413,9 +459,11 @@ class JobEngine:
             },
             training_metrics={"generate_plasmid": {"length_bp": len(seq)}},
             metrics={"length_bp": len(seq)},
+            provenance_metadata={"config_snapshot": config_snapshot},
             run_parents=run_parents,
             run_children=[self._lineage_ref(artifact_id="generated_plasmid", path=output, relation="produced.generated_sequence")],
             artifacts=[
+                config_snapshot_artifact,
                 self._artifact_entry(
                     artifact_id="generated_plasmid",
                     role="generated.sequence",
@@ -425,8 +473,8 @@ class JobEngine:
                 )
             ],
         )
-        update_run_manifest(layout, paths={"generated": {"plasmid_fasta": output, "manifest": manifest_path}}, artifacts=[self._artifact_entry(artifact_id="generated_plasmid", role="generated.sequence", path=output, artifact_type="fasta", parents=run_parents)])
-        return {"output": output, "length": len(seq), "manifest_path": manifest_path}
+        update_run_manifest(layout, paths={"generated": {"plasmid_fasta": output, "manifest": manifest_path}, "provenance": {"config_snapshot": config_snapshot["path"]}}, provenance={"config_snapshot": config_snapshot}, artifacts=[config_snapshot_artifact, self._artifact_entry(artifact_id="generated_plasmid", role="generated.sequence", path=output, artifact_type="fasta", parents=run_parents)])
+        return {"output": output, "length": len(seq), "manifest_path": manifest_path, "config_snapshot": config_snapshot}
 
     def _run_generate_protein(self, spec: JobSpec) -> Dict[str, Any]:
         cfg = load_full_config(spec.config_path)
@@ -443,6 +491,7 @@ class JobEngine:
             ast_mask_strength=float(p.get("ast_mask_strength", 0.0)),
         )
         layout = ensure_run_layout()
+        _, config_snapshot, config_snapshot_artifact = self._write_resolved_config_snapshot(spec=spec, cfg=cfg, params=p, layout=layout)
         output = path_in_run(layout, "outputs", os.path.basename(str(p.get("output", "generated/novel_protein.faa"))))
         checkpoint_path = os.path.join(str(getattr(io_cfg, "checkpoints_dir", "") or ""), "latest.pt")
         ast_artifact_path = str(getattr(ast_conditioning, "artifact_path", "") or "")
@@ -476,9 +525,11 @@ class JobEngine:
             },
             training_metrics={"generate_protein": {"length_aa": len(seq)}},
             metrics={"length_aa": len(seq)},
+            provenance_metadata={"config_snapshot": config_snapshot},
             run_parents=run_parents,
             run_children=[self._lineage_ref(artifact_id="generated_protein", path=output, relation="produced.generated_sequence")],
             artifacts=[
+                config_snapshot_artifact,
                 self._artifact_entry(
                     artifact_id="generated_protein",
                     role="generated.sequence",
@@ -488,14 +539,16 @@ class JobEngine:
                 )
             ],
         )
-        update_run_manifest(layout, paths={"generated": {"protein_faa": output, "manifest": manifest_path}}, artifacts=[self._artifact_entry(artifact_id="generated_protein", role="generated.sequence", path=output, artifact_type="fasta", parents=run_parents)])
-        return {"output": output, "length": len(seq), "manifest_path": manifest_path}
+        update_run_manifest(layout, paths={"generated": {"protein_faa": output, "manifest": manifest_path}, "provenance": {"config_snapshot": config_snapshot["path"]}}, provenance={"config_snapshot": config_snapshot}, artifacts=[config_snapshot_artifact, self._artifact_entry(artifact_id="generated_protein", role="generated.sequence", path=output, artifact_type="fasta", parents=run_parents)])
+        return {"output": output, "length": len(seq), "manifest_path": manifest_path, "config_snapshot": config_snapshot}
 
     def _run_validate_plasmid(self, spec: JobSpec) -> Dict[str, Any]:
         cfg = load_full_config(spec.config_path)
         ncbi_cfg, _, io_cfg = extract_configs(cfg)
         ensure_dirs(io_cfg)
         p = dict(spec.params)
+        layout = ensure_run_layout()
+        _, config_snapshot, config_snapshot_artifact = self._write_resolved_config_snapshot(spec=spec, cfg=cfg, params=p, layout=layout)
         generated_fasta = str(p["generated_fasta"])
         catalog_path = str(p["catalog"])
         generated_seq = parse_fasta_sequence(generated_fasta)
@@ -513,7 +566,6 @@ class JobEngine:
         rows.sort(key=lambda r: r["score"], reverse=True)
         top_n = max(1, int(p.get("top_n", 5)))
         top_rows = rows[:top_n]
-        layout = ensure_run_layout()
         output_json = p.get("output_json")
         payload = {"generated_fasta": generated_fasta, "catalog": catalog_path, "top_n": top_n, "results": top_rows}
         out_path = path_in_run(layout, "outputs", os.path.basename(str(output_json or "validation.json")))
@@ -547,15 +599,17 @@ class JobEngine:
             },
             training_metrics={"validate_plasmid": {"evaluated": len(rows), "top_score": float(top_rows[0]["score"]) if top_rows else None}},
             metrics={"evaluated": len(rows), "top_score": float(top_rows[0]["score"]) if top_rows else None},
-            artifacts=self._artifacts_for_paths({"report_json": out_path, "machine_report_json": machine_json}, "validation", artifact_type="json") + ([self._artifact_entry(artifact_id="user_report_json", role="validation.user_report", path=str(output_json), artifact_type="json")] if output_json else []),
+            provenance_metadata={"config_snapshot": config_snapshot},
+            artifacts=[config_snapshot_artifact] + self._artifacts_for_paths({"report_json": out_path, "machine_report_json": machine_json}, "validation", artifact_type="json") + ([self._artifact_entry(artifact_id="user_report_json", role="validation.user_report", path=str(output_json), artifact_type="json")] if output_json else []),
         )
         update_run_manifest(
             layout,
-            paths={"validation": {"report_json": out_path, "machine_report_json": machine_json, "manifest": manifest_path}},
+            paths={"validation": {"report_json": out_path, "machine_report_json": machine_json, "manifest": manifest_path}, "provenance": {"config_snapshot": config_snapshot["path"]}},
+            provenance={"config_snapshot": config_snapshot},
             validation_results={"validate_plasmid": {"top_n": top_n, "output_json": out_path, "machine_artifact_json": machine_json}},
-            artifacts=self._artifacts_for_paths({"report_json": out_path, "machine_report_json": machine_json}, "validation", artifact_type="json") + ([self._artifact_entry(artifact_id="user_report_json", role="validation.user_report", path=str(output_json), artifact_type="json")] if output_json else []),
+            artifacts=[config_snapshot_artifact] + self._artifacts_for_paths({"report_json": out_path, "machine_report_json": machine_json}, "validation", artifact_type="json") + ([self._artifact_entry(artifact_id="user_report_json", role="validation.user_report", path=str(output_json), artifact_type="json")] if output_json else []),
         )
-        return {"results": top_rows, "top_n": top_n, "manifest_path": manifest_path, "output_json": out_path, "machine_artifact_json": machine_json}
+        return {"results": top_rows, "top_n": top_n, "manifest_path": manifest_path, "output_json": out_path, "machine_artifact_json": machine_json, "config_snapshot": config_snapshot}
 
     def _run_pretrain(self, spec: JobSpec) -> Dict[str, Any]:
         cfg = load_full_config(spec.config_path)
@@ -564,6 +618,8 @@ class JobEngine:
         ensure_dirs(io_cfg)
         setup_logging(io_cfg.logs_dir)
         p = dict(spec.params)
+        layout = ensure_run_layout()
+        _, config_snapshot, config_snapshot_artifact = self._write_resolved_config_snapshot(spec=spec, cfg=cfg, params=p, layout=layout)
         dataset_path = str(p.get("dataset") or pre_cfg.get("dataset_path", "")).strip()
         if not dataset_path:
             raise ValueError("Pretraining requires --dataset")
@@ -574,7 +630,7 @@ class JobEngine:
             epochs=int(p.get("epochs") or pre_cfg.get("epochs", 1)),
             hidden_size=int(p.get("hidden_size") or pre_cfg.get("hidden_size", 256)),
             lr=float(p.get("learning_rate") or pre_cfg.get("learning_rate", 1e-4)),
-            output_dir=path_in_run(ensure_run_layout(), "artifacts", os.path.basename(str(p.get("output_dir") or pre_cfg.get("output_dir", "model/pretrain")))),
+            output_dir=path_in_run(layout, "artifacts", os.path.basename(str(p.get("output_dir") or pre_cfg.get("output_dir", "model/pretrain")))),
             enable_mlm=bool(pre_cfg.get("enable_mlm", True)) if not p.get("disable_mlm", False) else False,
             enable_sme=bool(pre_cfg.get("enable_sme", True)) if not p.get("disable_sme", False) else False,
             enable_contrastive=bool(pre_cfg.get("enable_contrastive", True)) if not p.get("disable_contrastive", False) else False,
@@ -602,9 +658,16 @@ class JobEngine:
             checkpoints={"output_dir": str(pipeline_cfg.output_dir), "index_json": str(metrics.get("checkpoint_index_json", ""))},
             pretraining_metrics=dict(metrics),
             metrics=dict(metrics),
-            artifacts=self._artifacts_for_paths({"checkpoint_index_json": str(metrics.get("checkpoint_index_json", "")), "final_metrics_json": str(metrics.get("final_metrics_json", ""))}, "pretrain", artifact_type="json"),
+            provenance_metadata={"config_snapshot": config_snapshot},
+            artifacts=[config_snapshot_artifact] + self._artifacts_for_paths({"checkpoint_index_json": str(metrics.get("checkpoint_index_json", "")), "final_metrics_json": str(metrics.get("final_metrics_json", ""))}, "pretrain", artifact_type="json"),
         )
-        return {"metrics": metrics, "completed_at": datetime.now(timezone.utc).isoformat(), "manifest_path": manifest_path}
+        update_run_manifest(
+            layout,
+            paths={"pretrain": {"manifest": manifest_path}, "provenance": {"config_snapshot": config_snapshot["path"]}},
+            provenance={"config_snapshot": config_snapshot},
+            artifacts=[config_snapshot_artifact],
+        )
+        return {"metrics": metrics, "completed_at": datetime.now(timezone.utc).isoformat(), "manifest_path": manifest_path, "config_snapshot": config_snapshot}
 
     def _run_design_loop(self, spec: JobSpec) -> Dict[str, Any]:
         cfg = load_full_config(spec.config_path)
@@ -622,6 +685,7 @@ class JobEngine:
         )
 
         layout = ensure_run_layout()
+        _, config_snapshot, config_snapshot_artifact = self._write_resolved_config_snapshot(spec=spec, cfg=cfg, params=p, layout=layout)
         catalog_path = str(p["catalog"])
         checkpoint_path = os.path.join(str(getattr(io_cfg, "checkpoints_dir", "") or ""), "latest.pt")
         ast_artifact_path = str(getattr(ast_conditioning, "artifact_path", "") or "")
@@ -721,10 +785,11 @@ class JobEngine:
             evolution_history={"generations": lineage_generations},
             training_metrics={"design_loop": {"rounds_completed": result.get("rounds_completed"), "best_score": float(best.get("score", 0.0))}},
             metrics={"rounds_completed": result.get("rounds_completed"), "best_score": float(best.get("score", 0.0))},
-            provenance_metadata={"summary_json": summary_json},
+            provenance_metadata={"summary_json": summary_json, "config_snapshot": config_snapshot},
             run_parents=run_parents,
             run_children=[self._lineage_ref(artifact_id="best_fasta", path=best_fasta, relation="produced.generated_sequence")],
             artifacts=[
+                config_snapshot_artifact,
                 self._artifact_entry(artifact_id="best_fasta", role="design_loop.best_fasta", path=best_fasta, parents=run_parents),
                 self._artifact_entry(artifact_id="summary_json", role="design_loop.summary_json", path=summary_json),
                 self._artifact_entry(artifact_id="evolution_lineage", role="design_loop.evolution_lineage", path=lineage_path),
@@ -738,13 +803,16 @@ class JobEngine:
                     "summary_json": summary_json,
                     "evolution_lineage": lineage_path,
                     "manifest": manifest_path,
-                }
+                },
+                "provenance": {"config_snapshot": config_snapshot["path"]},
             },
+            provenance={"config_snapshot": config_snapshot},
             metrics={"design_loop": {"best_score": float(best.get("score", 0.0)), "rounds_completed": result.get("rounds_completed")}},
             generated_sequences={"design_loop": {"best_fasta": best_fasta, "evolution_lineage": lineage_path}},
             validation_results={"design_loop": {"summary_json": summary_json, "evolution_lineage": lineage_path}},
             evolution_history={"generations": lineage_generations},
             artifacts=[
+                config_snapshot_artifact,
                 self._artifact_entry(artifact_id="best_fasta", role="design_loop.best_fasta", path=best_fasta, parents=run_parents),
                 self._artifact_entry(artifact_id="summary_json", role="design_loop.summary_json", path=summary_json),
                 self._artifact_entry(artifact_id="evolution_lineage", role="design_loop.evolution_lineage", path=lineage_path),
@@ -757,4 +825,5 @@ class JobEngine:
             "lineage_json": lineage_path,
             "manifest_path": manifest_path,
             "rounds_completed": result.get("rounds_completed"),
+            "config_snapshot": config_snapshot,
         }
