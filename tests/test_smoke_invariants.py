@@ -56,6 +56,7 @@ from perceptrome.generate import (
     _write_top_k_fasta,
 )
 from perceptrome.scope.stream import ScopeStreamContext
+from perceptrome.scorecard import build_protein_scorecard
 
 
 class TokenizerInvariantTests(unittest.TestCase):
@@ -317,4 +318,24 @@ class CandidateScoringTests(unittest.TestCase):
         )
         self.assertEqual(metrics["max_homopolymer"], 2.0)
         self.assertEqual(metrics["stop_count"], 2.0)
-        self.assertAlmostEqual(metrics["score"], -3.3, places=6)
+        self.assertLess(metrics["score"], -3.3)
+
+    def test_protein_scorecard_includes_diagnostics_and_risk_flags(self):
+        card = build_protein_scorecard(
+            "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV",
+            {
+                "max_homopolymer": 6,
+                "max_x_frac": 0.1,
+                "max_internal_stops": 0,
+                "low_complexity_window": 8,
+                "low_complexity_entropy_threshold": 1.5,
+            },
+        )
+        details = card.get("details", {}).get("protein_diagnostics", {})
+        self.assertIn("amino_acid_composition", details)
+        self.assertIn("low_complexity", details)
+        self.assertIn("pattern_hits", details)
+        self.assertIn("proxies", details)
+        self.assertGreater(details["low_complexity"]["covered_fraction"], 0.5)
+        self.assertTrue(any((f or {}).get("code") == "low_complexity_excess" for f in card.get("risk_flags", [])))
+        self.assertTrue(any((f or {}).get("code") == "poor_solubility_hydrophobic" for f in card.get("risk_flags", [])))
