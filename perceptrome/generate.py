@@ -1,7 +1,8 @@
 import csv
 import json
 import logging, os
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -28,6 +29,148 @@ def _run_local_io_cfg(io_cfg: IOConfig) -> IOConfig:
         logs_dir=io_cfg.logs_dir,
         state_file=io_cfg.state_file,
     )
+
+
+
+@dataclass(frozen=True)
+class AstConditioningConfig:
+    artifact_path: Optional[str] = None
+    node_type_prompts: Tuple[str, ...] = ()
+    region_spans: Tuple[Tuple[int, int], ...] = ()
+    graph_mask: str = "none"
+    graph_hop_limit: int = 1
+    mask_strength: float = 0.0
+
+
+def _parse_region_span(span: str) -> Tuple[int, int]:
+    raw = str(span or "").strip()
+    if ":" not in raw:
+        raise ValueError(f"Invalid AST region span '{span}'. Expected START:END")
+    a, b = raw.split(":", 1)
+    start = int(a)
+    end = int(b)
+    if start < 0 or end <= start:
+        raise ValueError(f"Invalid AST region span '{span}'. Expected 0 <= START < END")
+    return (start, end)
+
+
+def parse_ast_conditioning_config(
+    *,
+    ast_artifact: Optional[str],
+    ast_node_type_prompt: Optional[Sequence[str]],
+    ast_region_span: Optional[Sequence[str]],
+    ast_graph_mask: Optional[str],
+    ast_graph_hop_limit: int,
+    ast_mask_strength: float,
+) -> Optional[AstConditioningConfig]:
+    has_inputs = any(
+        [
+            ast_artifact,
+            ast_node_type_prompt,
+            ast_region_span,
+            ast_graph_mask not in (None, "none"),
+            float(ast_mask_strength or 0.0) > 0.0,
+        ]
+    )
+    if not has_inputs:
+        return None
+
+    node_prompts = tuple(sorted({str(v).strip().lower() for v in (ast_node_type_prompt or []) if str(v).strip()}))
+    spans = tuple(_parse_region_span(v) for v in (ast_region_span or []))
+    graph_mask = str(ast_graph_mask or "none").strip().lower()
+    if graph_mask not in {"none", "neighbors", "successors"}:
+        raise ValueError(f"Unsupported --ast-graph-mask: {graph_mask}")
+
+    mask_strength = max(0.0, min(1.0, float(ast_mask_strength or 0.0)))
+    hop_limit = max(1, int(ast_graph_hop_limit or 1))
+
+    return AstConditioningConfig(
+        artifact_path=(str(ast_artifact) if ast_artifact else None),
+        node_type_prompts=node_prompts,
+        region_spans=spans,
+        graph_mask=graph_mask,
+        graph_hop_limit=hop_limit,
+        mask_strength=mask_strength,
+    )
+
+
+def _load_ast_conditioning_payload(cfg: AstConditioningConfig) -> Dict[str, Any]:
+    artifact_payload: Dict[str, Any] = {}
+    if cfg.artifact_path:
+        with open(cfg.artifact_path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            artifact_payload = loaded
+
+    node_counts: Dict[str, int] = {}
+    for node in artifact_payload.get("nodes", []) if isinstance(artifact_payload.get("nodes"), list) else []:
+        if not isinstance(node, dict):
+            continue
+        ntype = str(node.get("node_type", "")).strip().lower()
+        if not ntype:
+            continue
+        node_counts[ntype] = int(node_counts.get(ntype, 0) + 1)
+
+    edges = artifact_payload.get("edges")
+    edge_count = len(edges) if isinstance(edges, list) else 0
+
+    return {
+        "artifact": artifact_payload,
+        "node_type_counts": node_counts,
+        "edge_count": int(edge_count),
+    }
+
+
+def _build_ast_guided_mask(vocab_size: int, conditioning: Optional[AstConditioningConfig], details: Optional[Dict[str, Any]] = None) -> np.ndarray:
+    weights = np.ones((vocab_size,), dtype=np.float64)
+    if conditioning is None or conditioning.mask_strength <= 0.0:
+        return weights
+
+    node_counts = dict((details or {}).get("node_type_counts") or {})
+    total_nodes = float(sum(max(0, int(v)) for v in node_counts.values()))
+    prompt_mass = float(sum(max(0, int(node_counts.get(p, 0))) for p in conditioning.node_type_prompts))
+    prompt_ratio = (prompt_mass / total_nodes) if total_nodes > 0.0 else 0.0
+
+    span_bp = sum(max(0, int(e) - int(s)) for s, e in conditioning.region_spans)
+    span_factor = min(1.0, span_bp / 1000.0) if span_bp > 0 else 0.0
+
+    graph_factor = 0.0
+    if conditioning.graph_mask != "none":
+        edges = float((details or {}).get("edge_count") or 0.0)
+        graph_factor = min(1.0, (edges / 100.0) * min(3, conditioning.graph_hop_limit) / 3.0)
+
+    emphasis = max(0.0, min(1.0, (0.5 * prompt_ratio) + (0.3 * span_factor) + (0.2 * graph_factor)))
+    if emphasis <= 0.0:
+        return weights
+
+    gc_target = min(0.95, max(0.05, 0.5 + ((emphasis - 0.5) * conditioning.mask_strength * 0.6)))
+    for idx in range(vocab_size):
+        gc_ratio = 0.0
+        if vocab_size == 4:
+            gc_ratio = 1.0 if idx in (1, 2) else 0.0
+        elif 0 <= idx < len(GC_COUNT_PER_TOKEN):
+            gc_ratio = float(GC_COUNT_PER_TOKEN[idx]) / 3.0
+        gc_delta = gc_ratio - 0.5
+        weights[idx] = max(1e-6, 1.0 + (2.0 * conditioning.mask_strength * gc_delta * (gc_target - 0.5) * 2.0))
+    return weights
+
+
+def ast_conditioning_metadata(conditioning: Optional[AstConditioningConfig], details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if conditioning is None:
+        return {"enabled": False}
+    return {
+        "enabled": True,
+        "artifact_path": conditioning.artifact_path,
+        "node_type_prompts": list(conditioning.node_type_prompts),
+        "region_spans": [[int(s), int(e)] for s, e in conditioning.region_spans],
+        "graph_guided_mask": {
+            "mode": conditioning.graph_mask,
+            "hop_limit": int(conditioning.graph_hop_limit),
+            "mask_strength": float(conditioning.mask_strength),
+            "artifact_edge_count": int((details or {}).get("edge_count", 0)),
+        },
+        "node_type_counts": dict((details or {}).get("node_type_counts") or {}),
+    }
 
 def _sample_from_logits(logits: np.ndarray, temperature: float) -> int:
     """Sample an index from a logits vector using softmax( logits / T )."""
@@ -220,6 +363,7 @@ def generate_plasmid_sequence(
     roundtrip_score: bool = False,
     recon_weight: float = 0.1,
     provenance_inputs: Optional[Dict[str, str]] = None,
+    ast_conditioning: Optional[AstConditioningConfig] = None,
 ) -> str:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -285,6 +429,8 @@ def generate_plasmid_sequence(
     temperature = float(temperature)
     latent_scale = float(latent_scale)
     gc_bias = float(gc_bias)
+    ast_details = _load_ast_conditioning_payload(ast_conditioning) if ast_conditioning is not None else None
+    ast_vocab_mask = _build_ast_guided_mask(vocab_size=vocab_size, conditioning=ast_conditioning, details=ast_details)
 
     def _sample_once() -> str:
         seq_parts: List[str] = []
@@ -300,6 +446,7 @@ def generate_plasmid_sequence(
                         if gc_bias != 1.0:
                             w[1] *= gc_bias
                             w[2] *= gc_bias
+                        w = w * ast_vocab_mask[: w.shape[0]]
                         idx = _sample_from_logits(np.log(np.clip(w, 1e-9, None)), temperature)
                         seq_parts.append(idx_to_base[idx])
                 else:
@@ -307,6 +454,7 @@ def generate_plasmid_sequence(
                         w = 1.0 / (1.0 + np.exp(-logits[j]))
                         if gc_bias != 1.0:
                             w *= (gc_bias ** GC_COUNT_PER_TOKEN[: w.shape[0]])
+                        w = w * ast_vocab_mask[: w.shape[0]]
                         idx = _sample_from_logits(np.log(np.clip(w, 1e-9, None)), temperature)
                         seq_parts.append(IDX_TO_CODON[idx])
         return "".join(seq_parts)[:target_bp]
@@ -368,6 +516,7 @@ def generate_plasmid_sequence(
             "target_gc": target_gc,
             "max_homopolymer": max_homopolymer,
             "recon_weight": float(recon_weight),
+            "ast_conditioning": ast_conditioning_metadata(ast_conditioning, ast_details),
             "winner": {k: v for k, v in winner.items() if k != "sequence"},
             "top_candidates": [{k: v for k, v in c.items() if k != "sequence"} for c in ranked[:top_k]],
             "top_k_output_path": top_k_output,
@@ -431,6 +580,7 @@ def generate_protein_sequence(
     roundtrip_score: bool = False,
     recon_weight: float = 0.1,
     provenance_inputs: Optional[Dict[str, str]] = None,
+    ast_conditioning: Optional[AstConditioningConfig] = None,
 ) -> str:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -491,6 +641,8 @@ def generate_protein_sequence(
 
     temperature = float(temperature)
     latent_scale = float(latent_scale)
+    ast_details = _load_ast_conditioning_payload(ast_conditioning) if ast_conditioning is not None else None
+    ast_vocab_mask = _build_ast_guided_mask(vocab_size=vocab_size, conditioning=ast_conditioning, details=ast_details)
 
     def _sample_once() -> str:
         aa_chars: List[str] = []
@@ -500,7 +652,7 @@ def generate_protein_sequence(
                 logits_flat = model.decode(z)
                 logits = logits_flat.view(seq_len, vocab_size).cpu().numpy()
                 for j in range(seq_len):
-                    idx = _sample_from_logits(logits[j], temperature)
+                    idx = _sample_from_logits(logits[j] + np.log(np.clip(ast_vocab_mask[: logits[j].shape[0]], 1e-9, None)), temperature)
                     aa_chars.append(IDX_TO_AA[idx])
         return "".join(aa_chars)[:target_aa]
 
@@ -574,6 +726,7 @@ def generate_protein_sequence(
             "max_x_frac": max_x_frac,
             "max_internal_stops": max_internal_stops,
             "recon_weight": float(recon_weight),
+            "ast_conditioning": ast_conditioning_metadata(ast_conditioning, ast_details),
             "winner": {k: v for k, v in ranked[0].items() if k != "sequence"},
             "top_candidates": [{k: v for k, v in c.items() if k != "sequence"} for c in ranked[:top_k]],
             "top_k_output_path": top_k_output,

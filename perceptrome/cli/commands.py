@@ -152,6 +152,21 @@ def _reference_score(generated_seq: str, ref_seq: str) -> Dict[str, float]:
     return reference_score(generated_seq, ref_seq)
 
 
+def _normalize_ast_cli_args(params: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(params)
+    if normalized.get("ast_node_type_prompt") is None:
+        normalized["ast_node_type_prompt"] = []
+    if normalized.get("ast_region_span") is None:
+        normalized["ast_region_span"] = []
+    if normalized.get("ast_graph_mask") is None:
+        normalized["ast_graph_mask"] = "none"
+    if normalized.get("ast_graph_hop_limit") is None:
+        normalized["ast_graph_hop_limit"] = 1
+    if normalized.get("ast_mask_strength") is None:
+        normalized["ast_mask_strength"] = 0.0
+    return normalized
+
+
 # -----------------------------
 # Commands
 # -----------------------------
@@ -1170,7 +1185,7 @@ def cmd_stream(args: argparse.Namespace) -> int:
     return 0
 
 def cmd_generate_plasmid(args: argparse.Namespace) -> int:
-    spec = JobSpec(kind="generate_plasmid", config_path=str(args.config), params=vars(args).copy())
+    spec = JobSpec(kind="generate_plasmid", config_path=str(args.config), params=_normalize_ast_cli_args(vars(args).copy()))
     result = JobEngine().run(spec)
     if not result.ok:
         raise RuntimeError(result.message)
@@ -1189,7 +1204,7 @@ def cmd_validate_plasmid(args: argparse.Namespace) -> int:
     return 0
 
 def cmd_generate_protein(args: argparse.Namespace) -> int:
-    spec = JobSpec(kind="generate_protein", config_path=str(args.config), params=vars(args).copy())
+    spec = JobSpec(kind="generate_protein", config_path=str(args.config), params=_normalize_ast_cli_args(vars(args).copy()))
     result = JobEngine().run(spec)
     if not result.ok:
         raise RuntimeError(result.message)
@@ -1210,7 +1225,7 @@ def cmd_pretrain(args: argparse.Namespace) -> int:
 
 
 def cmd_design_loop(args: argparse.Namespace) -> int:
-    spec = JobSpec(kind="design_loop", config_path=str(args.config), params=vars(args).copy())
+    spec = JobSpec(kind="design_loop", config_path=str(args.config), params=_normalize_ast_cli_args(vars(args).copy()))
     result = JobEngine().run(spec)
     if not result.ok:
         raise RuntimeError(result.message)

@@ -31,7 +31,11 @@ from perceptrome.cli.common import (
 )
 from perceptrome.encoding.parse import parse_fasta_sequence
 from perceptrome.design_loop import run_design_loop
-from perceptrome.generate import generate_plasmid_sequence, generate_protein_sequence
+from perceptrome.generate import (
+    generate_plasmid_sequence,
+    generate_protein_sequence,
+    parse_ast_conditioning_config,
+)
 from perceptrome.jobs.manifest_writer import config_hash, write_experiment_run_manifest
 from perceptrome.pretrain import PretrainPipelineConfig, run_pretraining
 from perceptrome.run_layout import ensure_run_layout, path_in_run, update_run_manifest
@@ -315,9 +319,17 @@ class JobEngine:
         setup_logging(io_cfg.logs_dir)
         p = dict(spec.params)
         tokenizer = str(p.get("tokenizer") or getattr(train_cfg, "tokenizer", "base"))
+        ast_conditioning = parse_ast_conditioning_config(
+            ast_artifact=p.get("ast_artifact"),
+            ast_node_type_prompt=p.get("ast_node_type_prompt"),
+            ast_region_span=p.get("ast_region_span"),
+            ast_graph_mask=p.get("ast_graph_mask"),
+            ast_graph_hop_limit=int(p.get("ast_graph_hop_limit", 1)),
+            ast_mask_strength=float(p.get("ast_mask_strength", 0.0)),
+        )
         layout = ensure_run_layout()
         output = path_in_run(layout, "outputs", os.path.basename(str(p.get("output", "generated/novel_plasmid.fasta"))))
-        seq = generate_plasmid_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_bp=int(p.get("length_bp", 10000)), num_windows=p.get("num_windows"), window_size_bp=int(p.get("window_size") or train_cfg.window_size), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), gc_bias=float(p.get("gc_bias", 1.0)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), target_gc=float(p.get("target_gc", 0.5)), max_homopolymer=p.get("max_homopolymer"), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), name=str(p.get("name", "perceptrome_plasmid_1")), output_path=output, tokenizer=tokenizer, provenance_inputs={"config": str(spec.config_path)})
+        seq = generate_plasmid_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_bp=int(p.get("length_bp", 10000)), num_windows=p.get("num_windows"), window_size_bp=int(p.get("window_size") or train_cfg.window_size), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), gc_bias=float(p.get("gc_bias", 1.0)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), target_gc=float(p.get("target_gc", 0.5)), max_homopolymer=p.get("max_homopolymer"), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), name=str(p.get("name", "perceptrome_plasmid_1")), output_path=output, tokenizer=tokenizer, provenance_inputs={"config": str(spec.config_path)}, ast_conditioning=ast_conditioning)
         self._emit("generate", "plasmid generated", output=output, length=len(seq))
         run_id = str(p.get("manifest_id") or f"generate_plasmid_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
         manifest_path = self._write_run_manifest(
@@ -353,9 +365,17 @@ class JobEngine:
         ensure_dirs(io_cfg)
         setup_logging(io_cfg.logs_dir)
         p = dict(spec.params)
+        ast_conditioning = parse_ast_conditioning_config(
+            ast_artifact=p.get("ast_artifact"),
+            ast_node_type_prompt=p.get("ast_node_type_prompt"),
+            ast_region_span=p.get("ast_region_span"),
+            ast_graph_mask=p.get("ast_graph_mask"),
+            ast_graph_hop_limit=int(p.get("ast_graph_hop_limit", 1)),
+            ast_mask_strength=float(p.get("ast_mask_strength", 0.0)),
+        )
         layout = ensure_run_layout()
         output = path_in_run(layout, "outputs", os.path.basename(str(p.get("output", "generated/novel_protein.faa"))))
-        seq = generate_protein_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_aa=int(p.get("length_aa", 600)), num_windows=p.get("num_windows"), window_aa=int(p.get("window_aa") or train_cfg.protein_window_aa), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), name=str(p.get("name", "perceptrome_protein_1")), output_path=output, reject=bool(p.get("reject", False)), reject_tries=int(p.get("reject_tries", 40)), reject_max_run=int(p.get("reject_max_run", 10)), reject_max_x_frac=float(p.get("reject_max_x_frac", 0.15)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), max_homopolymer=p.get("max_homopolymer"), max_x_frac=p.get("max_x_frac"), max_internal_stops=int(p.get("max_internal_stops", 0)), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), provenance_inputs={"config": str(spec.config_path)})
+        seq = generate_protein_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_aa=int(p.get("length_aa", 600)), num_windows=p.get("num_windows"), window_aa=int(p.get("window_aa") or train_cfg.protein_window_aa), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), name=str(p.get("name", "perceptrome_protein_1")), output_path=output, reject=bool(p.get("reject", False)), reject_tries=int(p.get("reject_tries", 40)), reject_max_run=int(p.get("reject_max_run", 10)), reject_max_x_frac=float(p.get("reject_max_x_frac", 0.15)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), max_homopolymer=p.get("max_homopolymer"), max_x_frac=p.get("max_x_frac"), max_internal_stops=int(p.get("max_internal_stops", 0)), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), provenance_inputs={"config": str(spec.config_path)}, ast_conditioning=ast_conditioning)
         self._emit("generate", "protein generated", output=output, length=len(seq))
         run_id = str(p.get("manifest_id") or f"generate_protein_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
         manifest_path = self._write_run_manifest(
@@ -503,6 +523,14 @@ class JobEngine:
         ensure_dirs(io_cfg)
         setup_logging(io_cfg.logs_dir)
         p = dict(spec.params)
+        ast_conditioning = parse_ast_conditioning_config(
+            ast_artifact=p.get("ast_artifact"),
+            ast_node_type_prompt=p.get("ast_node_type_prompt"),
+            ast_region_span=p.get("ast_region_span"),
+            ast_graph_mask=p.get("ast_graph_mask"),
+            ast_graph_hop_limit=int(p.get("ast_graph_hop_limit", 1)),
+            ast_mask_strength=float(p.get("ast_mask_strength", 0.0)),
+        )
 
         layout = ensure_run_layout()
         catalog_path = str(p["catalog"])
@@ -529,6 +557,7 @@ class JobEngine:
             enable_sequence_operators=bool(p.get("enable_sequence_operators", False)),
             sequence_operator_top_k=int(p.get("sequence_operator_top_k", 3)),
             emit=lambda stage, message: self._emit(stage, message),
+            ast_conditioning=ast_conditioning,
         )
 
         best = result.get("best_candidate", {})
