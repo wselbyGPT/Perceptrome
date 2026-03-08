@@ -35,6 +35,7 @@ from perceptrome.generate import generate_plasmid_sequence, generate_protein_seq
 from perceptrome.jobs.manifest_writer import config_hash, write_experiment_run_manifest
 from perceptrome.pretrain import PretrainPipelineConfig, run_pretraining
 from perceptrome.run_layout import ensure_run_layout, path_in_run, update_run_manifest
+from perceptrome.scoring import reference_score
 
 JobKind = Literal["train_one", "stream", "generate_plasmid", "generate_protein", "validate_plasmid", "pretrain", "design_loop"]
 
@@ -396,8 +397,13 @@ class JobEngine:
         for accession in read_catalog(catalog_path):
             ref_path = _ensure_record(accession, "fasta", io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=bool(p.get("force_fetch", False)))
             ref_seq = parse_fasta_sequence(ref_path)
-            score = 1.0 if generated_seq == ref_seq else 0.0
-            rows.append({"accession": accession, "ref_path": ref_path, "score": score, "ref_len": len(ref_seq)})
+            row_scores = reference_score(generated_seq, ref_seq)
+            rows.append({
+                "accession": accession,
+                "ref_path": ref_path,
+                "ref_len": len(ref_seq),
+                **row_scores,
+            })
         rows.sort(key=lambda r: r["score"], reverse=True)
         top_n = max(1, int(p.get("top_n", 5)))
         top_rows = rows[:top_n]
