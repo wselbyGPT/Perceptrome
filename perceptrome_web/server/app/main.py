@@ -51,6 +51,10 @@ from .schemas import (
     LineageNodeOut,
     LineageEdgeOut,
     RunLineageOut,
+    DatasetCatalogItemOut,
+    DatasetDetailOut,
+    DatasetPreviewOut,
+    DatasetSplitOut,
 )
 from perceptrome.jobs import JobEngine, JobEvent, JobSpec
 
@@ -612,6 +616,90 @@ def _filter_lineage_graph(
         connected.add(edge.source)
         connected.add(edge.target)
     return [node for node in filtered.values() if node.id in connected], filtered_edges
+
+
+
+
+def _dataset_config_dir() -> Path:
+    return Path(__file__).resolve().parents[3] / "config"
+
+
+def _count_dataset_sequences(path: Path) -> int:
+    count = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                count += 1
+    return count
+
+
+def _dataset_split_metadata(dataset_id: str, sequence_count: int) -> list[DatasetSplitOut]:
+    if sequence_count <= 0:
+        return []
+    if "_" in dataset_id:
+        prefix = dataset_id.split("_", 1)[0]
+        siblings = sorted(_dataset_config_dir().glob(f"{prefix}_*.txt"))
+        if len(siblings) >= 2:
+            return [DatasetSplitOut(name="catalog_group", count=len(siblings))]
+    train_count = int(round(sequence_count * 0.8))
+    val_count = int(round(sequence_count * 0.1))
+    test_count = max(sequence_count - train_count - val_count, 0)
+    return [
+        DatasetSplitOut(name="train", count=train_count),
+        DatasetSplitOut(name="validation", count=val_count),
+        DatasetSplitOut(name="test", count=test_count),
+    ]
+
+
+def _build_dataset_catalog_item(path: Path) -> DatasetCatalogItemOut:
+    dataset_id = path.stem
+    source = dataset_id.split("_", 1)[0]
+    sequence_count = _count_dataset_sequences(path)
+    split_metadata = _dataset_split_metadata(dataset_id, sequence_count)
+    tags = sorted({source, f"size:{sequence_count}", "manifest", "config"})
+    last_updated_hash = _sha256_file(path)
+    return DatasetCatalogItemOut(
+        dataset_id=dataset_id,
+        source=source,
+        sequence_count=sequence_count,
+        split_metadata=split_metadata,
+        tags=tags,
+        last_updated_hash=last_updated_hash,
+    )
+
+
+def _load_dataset_catalog() -> list[DatasetCatalogItemOut]:
+    cfg = _dataset_config_dir()
+    if not cfg.exists() or not cfg.is_dir():
+        return []
+    items: list[DatasetCatalogItemOut] = []
+    for path in sorted(cfg.glob("*.txt")):
+        items.append(_build_dataset_catalog_item(path))
+    return items
+
+
+def _find_dataset_manifest(dataset_id: str) -> Path:
+    target = (_dataset_config_dir() / f"{dataset_id}.txt").resolve()
+    cfg_root = _dataset_config_dir().resolve()
+    if cfg_root not in target.parents:
+        raise HTTPException(status_code=400, detail="Invalid dataset id")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return target
+
+
+def _dataset_preview_rows(path: Path, limit: int = 25) -> tuple[list[str], int]:
+    rows: list[str] = []
+    total = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            value = line.strip()
+            if not value:
+                continue
+            total += 1
+            if len(rows) < max(1, min(limit, 100)):
+                rows.append(value)
+    return rows, total
 
 
 def _upsert_run(run_id: str, spec: JobSpec) -> RunRecord:
@@ -1238,6 +1326,33 @@ def download_artifact_by_path(run_id: str, path: str, user: User = Depends(get_c
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="Artifact file not found")
     return FileResponse(path=target, filename=target.name)
+
+
+@app.get("/api/datasets", response_model=list[DatasetCatalogItemOut])
+def list_datasets(user: User = Depends(get_current_user_strict)):
+    _ = user
+    return _load_dataset_catalog()
+
+
+@app.get("/api/datasets/{dataset_id}", response_model=DatasetDetailOut)
+def get_dataset(dataset_id: str, user: User = Depends(get_current_user_strict)):
+    _ = user
+    path = _find_dataset_manifest(dataset_id)
+    item = _build_dataset_catalog_item(path)
+    return DatasetDetailOut(**item.model_dump(), manifest_path=str(path))
+
+
+@app.get("/api/datasets/{dataset_id}/preview", response_model=DatasetPreviewOut)
+def preview_dataset(dataset_id: str, limit: int = 25, user: User = Depends(get_current_user_strict)):
+    _ = user
+    path = _find_dataset_manifest(dataset_id)
+    preview, total_rows = _dataset_preview_rows(path, limit=limit)
+    return DatasetPreviewOut(
+        dataset_id=dataset_id,
+        source=dataset_id.split("_", 1)[0],
+        preview=preview,
+        total_rows=total_rows,
+    )
 
 
 @app.get("/api/admin/users")
