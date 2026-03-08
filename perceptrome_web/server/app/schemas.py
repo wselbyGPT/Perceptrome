@@ -109,6 +109,23 @@ class RunOut(BaseModel):
     artifacts: list[RunArtifactOut] = Field(default_factory=list)
 
 
+class RunSummaryOut(BaseModel):
+    total_runs: int
+    state_counts: dict[str, int] = Field(default_factory=dict)
+    queued: int = 0
+    running: int = 0
+    completed: int = 0
+    failed: int = 0
+    canceled: int = 0
+    latest_failed_run_id: str | None = None
+    latest_failed_at: datetime | None = None
+
+
+class RunsBoardOut(BaseModel):
+    generated_at: datetime
+    runs: list[RunOut] = Field(default_factory=list)
+
+
 class LineageNodeOut(BaseModel):
     id: str
     kind: str

@@ -93,7 +93,7 @@ async function boot() {
 
   if (me.role !== "admin") {
     alert("Admin access required.");
-    window.location.href = "/";
+    window.location.href = "/runs.html";
     return;
   }
 

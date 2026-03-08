@@ -21,6 +21,28 @@ export type RunRecord = {
   artifacts: RunArtifact[];
 };
 
+export type RunSummary = {
+  total_runs: number;
+  state_counts: Record<string, number>;
+  queued: number;
+  running: number;
+  completed: number;
+  failed: number;
+  canceled: number;
+  latest_failed_run_id?: string | null;
+  latest_failed_at?: string | null;
+};
+
+export type ActiveRunsResponse = {
+  generated_at: string;
+  runs: RunRecord[];
+};
+
+export type FailureRunsResponse = {
+  generated_at: string;
+  runs: RunRecord[];
+};
+
 export type ConfigSnapshot = {
   path: string;
   sha256: string;
@@ -83,6 +105,18 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 export async function listRuns(limit = 50): Promise<RunRecord[]> {
   return fetchJson<RunRecord[]>(`/api/runs?limit=${limit}`);
+}
+
+export async function getRunsSummary(): Promise<RunSummary> {
+  return fetchJson<RunSummary>("/api/runs/summary");
+}
+
+export async function listActiveRuns(limit = 12): Promise<ActiveRunsResponse> {
+  return fetchJson<ActiveRunsResponse>(`/api/runs/active?limit=${limit}`);
+}
+
+export async function listFailedRuns(limit = 12): Promise<FailureRunsResponse> {
+  return fetchJson<FailureRunsResponse>(`/api/runs/failures?limit=${limit}`);
 }
 
 export async function getRun(runId: string): Promise<RunRecord> {

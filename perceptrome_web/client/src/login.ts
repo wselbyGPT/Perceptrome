@@ -21,7 +21,7 @@ form.addEventListener("submit", async (e) => {
 
   try {
     await login(emailEl.value.trim(), passwordEl.value);
-    const next = new URLSearchParams(window.location.search).get("next") || "/";
+    const next = new URLSearchParams(window.location.search).get("next") || "/runs.html";
     window.location.href = next;
   } catch (err) {
     const message = err instanceof Error ? err.message : "Login failed";
