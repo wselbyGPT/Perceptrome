@@ -231,3 +231,63 @@ def compute_errors_with_model_and_tensor(
             recon = torch.sigmoid(logits_flat).view_as(wt)
             mse = (recon - wt).pow(2).mean(dim=(1, 2))
             return mse.cpu().numpy().astype(np.float32)
+
+
+def load_bio_ast_visualization(accession: str) -> dict:
+    """Load Bio-AST visualization artifacts for UI surfaces.
+
+    Returns a payload with tree/graph JSON and a lightweight summary of
+    node types, spans, and relationships.
+    """
+    import json
+    import os
+
+    from perceptrome.run_layout import ensure_run_layout, path_in_run
+
+    layout = ensure_run_layout()
+    base = path_in_run(layout, "artifacts", os.path.join("bio_ast", str(accession)))
+    tree_path = os.path.join(base, "tree_json.json")
+    graph_path = os.path.join(base, "graph_json.json")
+
+    with open(tree_path, "r", encoding="utf-8") as handle:
+        tree_payload = json.load(handle)
+    with open(graph_path, "r", encoding="utf-8") as handle:
+        graph_payload = json.load(handle)
+
+    node_types = {}
+    spans = []
+    for node in graph_payload.get("nodes", []):
+        ntype = str(node.get("node_type", "unknown"))
+        node_types[ntype] = int(node_types.get(ntype, 0)) + 1
+        span = node.get("span") if isinstance(node.get("span"), dict) else {}
+        spans.append(
+            {
+                "id": node.get("id"),
+                "node_type": ntype,
+                "start": span.get("start"),
+                "end": span.get("end"),
+                "strand": span.get("strand"),
+                "frame": span.get("frame"),
+            }
+        )
+
+    relationships = [
+        {
+            "source": edge.get("source"),
+            "target": edge.get("target"),
+            "relation": edge.get("relation"),
+            "relation_type": edge.get("relation_type"),
+        }
+        for edge in graph_payload.get("edges", [])
+    ]
+
+    return {
+        "accession": accession,
+        "tree": tree_payload,
+        "graph": graph_payload,
+        "summary": {
+            "node_types": node_types,
+            "spans": spans,
+            "relationships": relationships,
+        },
+    }

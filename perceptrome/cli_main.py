@@ -271,13 +271,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     e = bio_ast_sub.add_parser("export", help="Export one or all Bio-AST transforms")
     e.add_argument("accession")
-    e.add_argument("--transform", choices=["canonical_ast", "motif_features", "tree_tensors", "graph_edges", "all"], default="all")
+    e.add_argument("--transform", choices=["canonical_ast", "motif_features", "tree_tensors", "graph_edges", "tree_json", "graph_json", "all"], default="all")
     e.add_argument("--output", required=True)
     e.set_defaults(func=_lazy_cmd("cmd_bio_ast_export"))
 
     i = bio_ast_sub.add_parser("inspect", help="Inspect Bio-AST artifact counts")
     i.add_argument("accession")
     i.set_defaults(func=_lazy_cmd("cmd_bio_ast_inspect"))
+
+    v = bio_ast_sub.add_parser("visualize", help="Build tree/graph visualization artifacts for an accession")
+    v.add_argument("--accession", required=True)
+    v.add_argument("--source", choices=["fasta", "genbank"], default="genbank")
+    v.add_argument("--force", action="store_true", help="Force refetch of source record")
+    v.set_defaults(func=_lazy_cmd("cmd_bio_ast_visualize"))
 
     return p
 

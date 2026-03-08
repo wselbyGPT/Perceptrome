@@ -11,9 +11,9 @@ from tests.fixtures.bio_ast_regression_fixtures import render_fasta
 
 def test_cli_parser_accepts_bio_ast_subcommands():
     parser = build_parser()
-    args = parser.parse_args(["bio-ast", "build", "ACC1", "--source", "fasta"])
+    args = parser.parse_args(["bio-ast", "visualize", "--accession", "ACC1", "--source", "fasta"])
     assert args.command == "bio-ast"
-    assert args.bio_ast_command == "build"
+    assert args.bio_ast_command == "visualize"
     assert args.accession == "ACC1"
 
 
@@ -50,7 +50,7 @@ def test_bio_ast_workbench_emits_all_transforms_and_consistent_node_ids():
                 os.environ["PERCEPTROME_RUN_ROOT"] = old_run_root
 
         assert outputs is not None
-        expected_keys = {"canonical_ast", "motif_features", "tree_tensors", "graph_edges"}
+        expected_keys = {"canonical_ast", "motif_features", "tree_tensors", "graph_edges", "tree_json", "graph_json"}
         assert set(outputs.keys()) == expected_keys
         for out_path in outputs.values():
             assert Path(out_path).exists()
@@ -59,6 +59,8 @@ def test_bio_ast_workbench_emits_all_transforms_and_consistent_node_ids():
         motif_features = json.loads(Path(outputs["motif_features"]).read_text(encoding="utf-8"))
         tree_tensors = json.loads(Path(outputs["tree_tensors"]).read_text(encoding="utf-8"))
         graph_edges = json.loads(Path(outputs["graph_edges"]).read_text(encoding="utf-8"))
+        tree_json = json.loads(Path(outputs["tree_json"]).read_text(encoding="utf-8"))
+        graph_json = json.loads(Path(outputs["graph_json"]).read_text(encoding="utf-8"))
 
         ast_nodes = canonical["nodes"]
         ast_node_ids = [node["canonical_id"] for node in ast_nodes]
@@ -83,3 +85,43 @@ def test_bio_ast_workbench_emits_all_transforms_and_consistent_node_ids():
             assert row["node_id"] in ast_node_id_set
             if row["parent_id"] is not None:
                 assert row["parent_id"] in ast_node_id_set
+
+
+def test_visualization_payloads_include_expected_schema_fields():
+    with TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        fasta_dir = tmp_path / "cache_fasta"
+        genbank_dir = tmp_path / "cache_genbank"
+        fasta_dir.mkdir(parents=True, exist_ok=True)
+        genbank_dir.mkdir(parents=True, exist_ok=True)
+
+        accession = "ACC_BIO_AST_SCHEMA"
+        (fasta_dir / f"{accession}.fasta").write_text(render_fasta(), encoding="utf-8")
+
+        io_cfg = SimpleNamespace(cache_fasta_dir=str(fasta_dir), cache_genbank_dir=str(genbank_dir))
+
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(tmp)
+            outputs = _build_and_write_bio_ast(accession=accession, source="fasta", io_cfg=io_cfg)
+        finally:
+            os.chdir(old_cwd)
+
+        assert outputs is not None
+        tree_json = json.loads(Path(outputs["tree_json"]).read_text(encoding="utf-8"))
+        graph_json = json.loads(Path(outputs["graph_json"]).read_text(encoding="utf-8"))
+
+        assert tree_json["schema"] == "bio_ast_tree_v1"
+        assert "hierarchy" in tree_json
+        assert graph_json["schema"] == "bio_ast_graph_v1"
+        assert "nodes" in graph_json and "edges" in graph_json
+
+        if graph_json["nodes"]:
+            node = graph_json["nodes"][0]
+            assert "node_type" in node
+            assert "span" in node
+
+        if graph_json["edges"]:
+            edge = graph_json["edges"][0]
+            assert "relation" in edge
+            assert "relation_type" in edge
