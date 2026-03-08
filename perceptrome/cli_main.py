@@ -260,6 +260,25 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--disable-contrastive", action="store_true", help="Disable contrastive objective")
     s.set_defaults(func=_lazy_cmd("cmd_pretrain"))
 
+    s = sub.add_parser("bio-ast", help="Bio-AST workbench commands")
+    bio_ast_sub = s.add_subparsers(dest="bio_ast_command", required=True)
+
+    b = bio_ast_sub.add_parser("build", help="Build Bio-AST transform artifacts for an accession")
+    b.add_argument("accession")
+    b.add_argument("--source", choices=["fasta", "genbank"], default="genbank")
+    b.add_argument("--force", action="store_true", help="Force refetch of source record")
+    b.set_defaults(func=_lazy_cmd("cmd_bio_ast_build"))
+
+    e = bio_ast_sub.add_parser("export", help="Export one or all Bio-AST transforms")
+    e.add_argument("accession")
+    e.add_argument("--transform", choices=["canonical_ast", "motif_features", "tree_tensors", "graph_edges", "all"], default="all")
+    e.add_argument("--output", required=True)
+    e.set_defaults(func=_lazy_cmd("cmd_bio_ast_export"))
+
+    i = bio_ast_sub.add_parser("inspect", help="Inspect Bio-AST artifact counts")
+    i.add_argument("accession")
+    i.set_defaults(func=_lazy_cmd("cmd_bio_ast_inspect"))
+
     return p
 
 def main(argv: Any = None) -> int:

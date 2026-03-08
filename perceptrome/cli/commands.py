@@ -7,7 +7,7 @@ import random
 import subprocess
 import sys
 import uuid
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -306,46 +306,170 @@ def _infer_top_level_type(accession: str, source: str) -> str:
     return "genome"
 
 
-def _build_and_write_bio_ast(accession: str, source: str, io_cfg) -> Optional[str]:
+def _build_bio_ast(accession: str, source: str, io_cfg):
     src = source.lower()
     builder = BioASTBuilder()
-    try:
-        if src == "genbank":
-            gb_path = os.path.join(io_cfg.cache_genbank_dir, f"{accession}.gb")
-            sequence = parse_genbank_dna(gb_path)
-            cds_features = parse_cds_features_from_genbank(gb_path)
-        else:
-            fasta_path = os.path.join(io_cfg.cache_fasta_dir, f"{accession}.fasta")
-            sequence = parse_fasta_sequence(fasta_path)
-            cds_features = None
+    if src == "genbank":
+        gb_path = os.path.join(io_cfg.cache_genbank_dir, f"{accession}.gb")
+        sequence = parse_genbank_dna(gb_path)
+        cds_features = parse_cds_features_from_genbank(gb_path)
+    else:
+        fasta_path = os.path.join(io_cfg.cache_fasta_dir, f"{accession}.fasta")
+        sequence = parse_fasta_sequence(fasta_path)
+        cds_features = None
 
-        built = builder.build(
-            sequence=sequence,
-            cds_features=cds_features,
-            top_level_type=_infer_top_level_type(accession, src),
-            accession=str(accession),
+    return builder.build(
+        sequence=sequence,
+        cds_features=cds_features,
+        top_level_type=_infer_top_level_type(accession, src),
+        accession=str(accession),
+    )
+
+
+def _canonical_ast_json(built) -> Dict[str, Any]:
+    return built.ast.to_dict()
+
+
+def _motif_level_features(built) -> List[Dict[str, Any]]:
+    motif_node_types = {"region", "domain", "sme", "microfeature", "residue", "kmer"}
+    rows: List[Dict[str, Any]] = []
+    for node in built.ast.nodes:
+        if node.node_type not in motif_node_types:
+            continue
+        rows.append(
+            {
+                "node_id": node.canonical_id,
+                "node_type": node.node_type,
+                "parent_id": node.parent_id,
+                "start": node.start,
+                "end": node.end,
+                "length": (int(node.end) - int(node.start) + 1) if node.start is not None and node.end is not None else None,
+                "metadata": dict(node.metadata),
+            }
         )
+    return rows
+
+
+def _tree_tensors_with_ids(built) -> Dict[str, Any]:
+    base = built.to_tree_message_passing_tensors()
+    return {
+        "node_ids": [node.canonical_id for node in built.ast.nodes],
+        **{key: value.tolist() for key, value in base.items()},
+    }
+
+
+def _graph_edge_list(built) -> List[Dict[str, Any]]:
+    id_to_idx = {node.canonical_id: idx for idx, node in enumerate(built.ast.nodes)}
+    edges: List[Dict[str, Any]] = []
+    for node in built.ast.nodes:
+        if not node.parent_id:
+            continue
+        if node.parent_id not in id_to_idx:
+            continue
+        edges.append(
+            {
+                "parent_id": node.parent_id,
+                "child_id": node.canonical_id,
+                "parent_index": id_to_idx[node.parent_id],
+                "child_index": id_to_idx[node.canonical_id],
+            }
+        )
+    return edges
+
+
+def _collect_bio_ast_transforms(accession: str, source: str, io_cfg) -> Dict[str, Any]:
+    built = _build_bio_ast(accession=accession, source=source, io_cfg=io_cfg)
+    return {
+        "canonical_ast": _canonical_ast_json(built),
+        "motif_features": _motif_level_features(built),
+        "tree_tensors": _tree_tensors_with_ids(built),
+        "graph_edges": _graph_edge_list(built),
+    }
+
+
+def _build_and_write_bio_ast(accession: str, source: str, io_cfg) -> Optional[Dict[str, str]]:
+    try:
+        transforms = _collect_bio_ast_transforms(accession=accession, source=source, io_cfg=io_cfg)
     except Exception as exc:
         logging.warning("%s: failed to build bio AST (%s)", accession, exc)
         return None
 
     layout = ensure_run_layout()
-    ast_dir = path_in_run(layout, "artifacts", "bio_ast")
+    ast_dir = path_in_run(layout, "artifacts", os.path.join("bio_ast", str(accession)))
     os.makedirs(ast_dir, exist_ok=True)
-    out_path = os.path.join(ast_dir, f"{accession}.bio_ast.json")
-    payload = {
-        "ast": built.ast.to_dict(),
-        "serialized_paths": built.to_serialized_paths(),
-        "tree_message_passing": {
-            key: value.tolist() for key, value in built.to_tree_message_passing_tensors().items()
-        },
-        "local_windows_shape": list(built.to_local_windows().shape),
+
+    filenames = {
+        "canonical_ast": "canonical_ast.json",
+        "motif_features": "motif_features.json",
+        "tree_tensors": "tree_tensors.json",
+        "graph_edges": "graph_edges.json",
     }
-    with open(out_path, "w", encoding="utf-8") as handle:
+    output_paths: Dict[str, str] = {}
+    for key, filename in filenames.items():
+        out_path = os.path.join(ast_dir, filename)
+        with open(out_path, "w", encoding="utf-8") as handle:
+            json.dump(transforms[key], handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        output_paths[key] = out_path
+
+    update_run_manifest(layout, paths={"bio_ast": {str(accession): output_paths}})
+    return output_paths
+
+
+def cmd_bio_ast_build(args: argparse.Namespace) -> int:
+    cfg = load_full_config(args.config)
+    ncbi_cfg, _, io_cfg = extract_configs(cfg)
+    ensure_dirs(io_cfg)
+    setup_logging(io_cfg.logs_dir)
+    src = str(args.source).lower()
+    _ensure_record(str(args.accession), src, io_cfg=io_cfg, ncbi_cfg=ncbi_cfg, force=bool(getattr(args, "force", False)))
+
+    outputs = _build_and_write_bio_ast(str(args.accession), src, io_cfg)
+    if not outputs:
+        return 1
+    print(f"{args.accession}: bio-ast transforms written under {os.path.dirname(next(iter(outputs.values())))}")
+    return 0
+
+
+def cmd_bio_ast_export(args: argparse.Namespace) -> int:
+    layout = ensure_run_layout()
+    acc_dir = path_in_run(layout, "artifacts", os.path.join("bio_ast", str(args.accession)))
+    transform_to_file = {
+        "canonical_ast": "canonical_ast.json",
+        "motif_features": "motif_features.json",
+        "tree_tensors": "tree_tensors.json",
+        "graph_edges": "graph_edges.json",
+    }
+    if args.transform == "all":
+        payload = {}
+        for key, filename in transform_to_file.items():
+            path = os.path.join(acc_dir, filename)
+            with open(path, "r", encoding="utf-8") as handle:
+                payload[key] = json.load(handle)
+    else:
+        path = os.path.join(acc_dir, transform_to_file[args.transform])
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+
+    with open(args.output, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
         handle.write("\n")
-    update_run_manifest(layout, paths={"bio_ast": {str(accession): out_path}})
-    return out_path
+    print(f"Exported {args.transform} for {args.accession} -> {args.output}")
+    return 0
+
+
+def cmd_bio_ast_inspect(args: argparse.Namespace) -> int:
+    layout = ensure_run_layout()
+    acc_dir = path_in_run(layout, "artifacts", os.path.join("bio_ast", str(args.accession)))
+    with open(os.path.join(acc_dir, "canonical_ast.json"), "r", encoding="utf-8") as handle:
+        ast_payload = json.load(handle)
+    with open(os.path.join(acc_dir, "graph_edges.json"), "r", encoding="utf-8") as handle:
+        edges = json.load(handle)
+    nodes = ast_payload.get("nodes", []) if isinstance(ast_payload, dict) else []
+    print(f"accession={args.accession}")
+    print(f"nodes={len(nodes)}")
+    print(f"edges={len(edges)}")
+    return 0
 
 
 def _warn_if_encoded_manifest_incompatible(encoded_path: str, expected: Dict[str, Any]) -> None:
@@ -611,9 +735,9 @@ def cmd_encode_one(args: argparse.Namespace) -> int:
     )
     write_sidecar_run_manifest(target_path=out_path, **payload)
     update_run_manifest(layout, paths={"encoded": {str(args.accession): out_path}})
-    ast_path = _build_and_write_bio_ast(args.accession, src, io_cfg)
-    if ast_path:
-        logging.info("%s: bio AST artifact written at %s", args.accession, ast_path)
+    ast_outputs = _build_and_write_bio_ast(args.accession, src, io_cfg)
+    if ast_outputs:
+        logging.info("%s: bio AST artifacts written under %s", args.accession, os.path.dirname(next(iter(ast_outputs.values()))))
     print(f"{args.accession}: encoded tokenizer={tok} source={src} -> shape={encoded.shape} saved={out_path}")
     return 0
 
