@@ -735,6 +735,7 @@ def generate_protein_sequence(
             "scorecard_version": scorecard.get("scorecard_version"),
             "risk_flags": scorecard.get("risk_flags", []),
             "summary": scorecard.get("summary", {}),
+            "scorecard": scorecard,
         })
 
     ranked = sorted(candidates, key=lambda x: float(x["score"]), reverse=True)
@@ -750,6 +751,19 @@ def generate_protein_sequence(
     summary_json, summary_csv = _make_out_paths(output_path, summary_path)
     top_k_output = top_k_output_path if top_k_output_path else f"{output_path}.top{top_k}.fasta"
     _write_top_k_fasta(top_k_output, name, ranked, top_k)
+    scorecards = [dict(c.get("scorecard") or {}) for c in ranked]
+    aggregate = {
+        "num_candidates": len(scorecards),
+        "avg_hydrophobic_fraction": float(np.mean([float((s.get("metrics") or {}).get("hydrophobic_fraction", 0.0)) for s in scorecards])) if scorecards else 0.0,
+        "avg_instability_proxy": float(np.mean([float((s.get("metrics") or {}).get("instability_proxy", 0.0)) for s in scorecards])) if scorecards else 0.0,
+        "avg_low_complexity_fraction": float(np.mean([float((s.get("metrics") or {}).get("low_complexity_fraction", 0.0)) for s in scorecards])) if scorecards else 0.0,
+        "risk_flag_counts": {},
+    }
+    for card in scorecards:
+        for flag in card.get("risk_flags", []) or []:
+            code = str((flag or {}).get("code") or "unknown")
+            aggregate["risk_flag_counts"][code] = int(aggregate["risk_flag_counts"].get(code, 0) + 1)
+
     _write_candidate_summary(
         summary_json,
         summary_csv,
@@ -765,6 +779,8 @@ def generate_protein_sequence(
             "ast_conditioning": ast_conditioning_metadata(ast_conditioning, ast_details),
             "winner": {k: v for k, v in ranked[0].items() if k != "sequence"},
             "top_candidates": [{k: v for k, v in c.items() if k != "sequence"} for c in ranked[:top_k]],
+            "scorecards": [{k: v for k, v in c.items() if k != "sequence"} for c in ranked],
+            "scorecard_aggregate": aggregate,
             "top_k_output_path": top_k_output,
             "output_path": output_path,
         },

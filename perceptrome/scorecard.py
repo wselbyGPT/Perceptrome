@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import difflib
+import math
+import re
 from dataclasses import asdict, dataclass, field
 from statistics import mean
 from typing import Any, Dict, List, Mapping, Optional, Sequence
@@ -9,7 +11,7 @@ from .encoding.constants import START_CODON, STOP_CODONS
 from .encoding.orf import find_orfs_proteins, translate_orf
 from .encoding.parse import reverse_complement
 
-SCORECARD_VERSION = "v1"
+SCORECARD_VERSION = "v2"
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,12 @@ class PerSequenceMetrics:
     restriction_site_count: Optional[int] = None
     orf_count: Optional[int] = None
     longest_orf_aa: Optional[int] = None
+    hydrophobic_fraction: Optional[float] = None
+    charge_balance: Optional[float] = None
+    aromaticity: Optional[float] = None
+    instability_proxy: Optional[float] = None
+    low_complexity_fraction: Optional[float] = None
+    low_complexity_longest: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -207,6 +215,161 @@ def _find_pattern_positions(seq: str, pattern: str) -> List[int]:
         hits.append(i)
         i = seq.find(pattern, i + 1)
     return hits
+
+
+def _aa_composition(sequence: str) -> Dict[str, Dict[str, float]]:
+    seq = (sequence or "").upper()
+    canonical = list("ACDEFGHIKLMNPQRSTVWY")
+    non_standard = sorted({ch for ch in seq if ch not in canonical})
+    acids = canonical + non_standard
+    length = max(1, len(seq))
+    out: Dict[str, Dict[str, float]] = {}
+    for aa in acids:
+        count = int(seq.count(aa))
+        out[aa] = {"count": count, "fraction": float(count / length)}
+    return out
+
+
+def _window_entropy(window: str) -> float:
+    if not window:
+        return 0.0
+    length = len(window)
+    freqs = [window.count(ch) / float(length) for ch in set(window)]
+    return float(-sum(p * math.log2(max(p, 1e-12)) for p in freqs))
+
+
+def _low_complexity_regions(sequence: str, context: Mapping[str, Any]) -> Dict[str, Any]:
+    seq = (sequence or "").upper()
+    window = max(6, int(context.get("low_complexity_window", 12)))
+    entropy_threshold = float(context.get("low_complexity_entropy_threshold", 2.2))
+    if len(seq) < window:
+        return {
+            "window": window,
+            "entropy_threshold": entropy_threshold,
+            "windows": [],
+            "regions": [],
+            "covered_fraction": 0.0,
+            "longest_region": 0,
+            "region_count": 0,
+        }
+
+    low_windows: List[Dict[str, Any]] = []
+    for start in range(0, len(seq) - window + 1):
+        chunk = seq[start : start + window]
+        entropy = _window_entropy(chunk)
+        if entropy <= entropy_threshold:
+            low_windows.append({"start": int(start), "end": int(start + window), "entropy": float(entropy)})
+
+    if not low_windows:
+        return {
+            "window": window,
+            "entropy_threshold": entropy_threshold,
+            "windows": [],
+            "regions": [],
+            "covered_fraction": 0.0,
+            "longest_region": 0,
+            "region_count": 0,
+        }
+
+    regions: List[Dict[str, Any]] = []
+    current = dict(low_windows[0])
+    for row in low_windows[1:]:
+        if int(row["start"]) <= int(current["end"]):
+            current["end"] = max(int(current["end"]), int(row["end"]))
+            current["entropy"] = min(float(current["entropy"]), float(row["entropy"]))
+            continue
+        regions.append({
+            "start": int(current["start"]),
+            "end": int(current["end"]),
+            "length": int(current["end"] - current["start"]),
+            "min_entropy": float(current["entropy"]),
+        })
+        current = dict(row)
+    regions.append({
+        "start": int(current["start"]),
+        "end": int(current["end"]),
+        "length": int(current["end"] - current["start"]),
+        "min_entropy": float(current["entropy"]),
+    })
+
+    covered = sum(int(r["length"]) for r in regions)
+    longest = max((int(r["length"]) for r in regions), default=0)
+    return {
+        "window": window,
+        "entropy_threshold": entropy_threshold,
+        "windows": low_windows,
+        "regions": regions,
+        "covered_fraction": float(covered / float(max(1, len(seq)))),
+        "longest_region": int(longest),
+        "region_count": int(len(regions)),
+    }
+
+
+def _protein_pattern_library(context: Mapping[str, Any]) -> Dict[str, str]:
+    library = context.get("protein_pattern_library")
+    if isinstance(library, Mapping):
+        out = {str(k): str(v) for k, v in library.items() if isinstance(v, str) and str(v).strip()}
+        if out:
+            return out
+    return {
+        "n_glycosylation": r"N[^P][ST][^P]",
+        "p_loop_ntp_binding": r"[AGX]{4}GK[ST]",
+        "acidic_patch": r"[DE]{4,}",
+    }
+
+
+def _protein_pattern_hits(sequence: str, context: Mapping[str, Any]) -> Dict[str, Any]:
+    seq = (sequence or "").upper()
+    mode = str(context.get("protein_pattern_mode", "regex")).strip().lower()
+    library = _protein_pattern_library(context)
+    hits: Dict[str, Any] = {}
+    for name, pattern in library.items():
+        if mode == "literal":
+            positions = _find_pattern_positions(seq, pattern.upper())
+            hits[name] = {
+                "pattern": pattern,
+                "mode": "literal",
+                "count": len(positions),
+                "hits": [{"start": int(p), "end": int(p + len(pattern)), "match": pattern} for p in positions],
+            }
+            continue
+        rows = []
+        for m in re.finditer(pattern, seq):
+            rows.append({"start": int(m.start()), "end": int(m.end()), "match": str(m.group(0))})
+        hits[name] = {"pattern": pattern, "mode": "regex", "count": len(rows), "hits": rows}
+    return hits
+
+
+def _protein_proxies(sequence: str, composition: Mapping[str, Mapping[str, float]]) -> Dict[str, float]:
+    length = max(1, len(sequence))
+    hydrophobic = set("AVILMFWYC")
+    aromatic = set("FYW")
+    positive = set("KRH")
+    negative = set("DE")
+    instability = set("PEDSTNQG")
+    frac = lambda aa: float((composition.get(aa) or {}).get("fraction", 0.0))
+
+    hydrophobic_fraction = sum(frac(aa) for aa in hydrophobic)
+    aromaticity = sum(frac(aa) for aa in aromatic)
+    positive_frac = sum(frac(aa) for aa in positive)
+    negative_frac = sum(frac(aa) for aa in negative)
+    charge_balance = positive_frac - negative_frac
+    instability_proxy = (sum(frac(aa) for aa in instability) + max(0.0, frac("G") - 0.08)) * 100.0
+
+    penalty = 0.0
+    penalty += max(0.0, hydrophobic_fraction - 0.55) * 2.2
+    penalty += max(0.0, aromaticity - 0.12) * 2.0
+    penalty += max(0.0, 0.05 - abs(charge_balance)) * 1.5
+    penalty += max(0.0, instability_proxy - 45.0) / 35.0
+    solubility_proxy = max(0.0, 1.0 - penalty)
+    return {
+        "hydrophobic_fraction": float(hydrophobic_fraction),
+        "aromaticity": float(aromaticity),
+        "charge_balance": float(charge_balance),
+        "instability_proxy": float(instability_proxy),
+        "solubility_proxy": float(solubility_proxy),
+        "length_aa": int(length),
+    }
 
 
 def _repeat_metrics(seq: str, min_k: int = 3, max_k: int = 6) -> Dict[str, Any]:
@@ -439,7 +602,14 @@ def build_protein_scorecard(sequence: str, context: Mapping[str, Any]) -> Dict[s
     pen_x = max(0.0, x_frac - max_x_frac)
     pen_stop = max(0, stop_count - max_internal_stops)
     pen_invalid = invalid_frac * 2.0
-    score = -(pen_run + pen_x + pen_stop + pen_invalid) - (recon_weight * float(recon) if recon is not None else 0.0)
+    composition = _aa_composition(sequence)
+    low_complexity = _low_complexity_regions(sequence, context)
+    motif_hits = _protein_pattern_hits(sequence, context)
+    proxies = _protein_proxies(sequence, composition)
+    pen_lc = max(0.0, float(low_complexity.get("covered_fraction", 0.0)) - float(context.get("low_complexity_warn_fraction", 0.25))) * 1.5
+    pen_instability = max(0.0, (float(proxies["instability_proxy"]) - float(context.get("instability_warn_threshold", 45.0))) / 35.0)
+    pen_solubility = max(0.0, float(context.get("min_solubility_proxy", 0.35)) - float(proxies["solubility_proxy"]))
+    score = -(pen_run + pen_x + pen_stop + pen_invalid + pen_lc + pen_instability + pen_solubility) - (recon_weight * float(recon) if recon is not None else 0.0)
 
     risk_flags: List[RiskFlag] = []
     if run > max_homopolymer:
@@ -448,12 +618,22 @@ def build_protein_scorecard(sequence: str, context: Mapping[str, Any]) -> Dict[s
         risk_flags.append(RiskFlag(code="ambiguous_x", severity="warning", message=f"X fraction {x_frac:.3f} exceeds limit {max_x_frac:.3f}."))
     if stop_count > max_internal_stops:
         risk_flags.append(RiskFlag(code="internal_stop", severity="warning", message=f"Stop count {stop_count} exceeds limit {max_internal_stops}."))
+    if float(proxies["hydrophobic_fraction"]) > float(context.get("hydrophobic_warn_threshold", 0.58)):
+        risk_flags.append(RiskFlag(code="poor_solubility_hydrophobic", severity="warning", message=f"Hydrophobic fraction {proxies['hydrophobic_fraction']:.3f} suggests poor solubility."))
+    if float(proxies["instability_proxy"]) > float(context.get("instability_warn_threshold", 45.0)):
+        risk_flags.append(RiskFlag(code="instability_proxy", severity="warning", message=f"Instability proxy {proxies['instability_proxy']:.2f} exceeds threshold."))
+    if float(low_complexity.get("covered_fraction", 0.0)) > float(context.get("low_complexity_warn_fraction", 0.25)):
+        risk_flags.append(RiskFlag(code="low_complexity_excess", severity="warning", message=f"Low-complexity coverage {low_complexity['covered_fraction']:.3f} exceeds threshold."))
+    if int(low_complexity.get("longest_region", 0)) >= int(context.get("low_complexity_longest_warn", 40)):
+        risk_flags.append(RiskFlag(code="low_complexity_long_span", severity="warning", message=f"Longest low-complexity span {low_complexity['longest_region']} aa is high."))
 
     summary = HumanReadableSummary(
         title="Protein scorecard",
         highlights=[
             f"Length={len(sequence)} aa",
             f"Max run={run}",
+            f"Hydrophobic={proxies['hydrophobic_fraction']:.3f} Aromaticity={proxies['aromaticity']:.3f}",
+            f"Low-complexity coverage={low_complexity['covered_fraction']:.3f}",
             f"Heuristic score={score:.4f}",
         ],
     )
@@ -475,10 +655,25 @@ def build_protein_scorecard(sequence: str, context: Mapping[str, Any]) -> Dict[s
             x_fraction=float(x_frac),
             invalid_fraction=float(invalid_frac),
             stop_count=int(stop_count),
+            hydrophobic_fraction=float(proxies["hydrophobic_fraction"]),
+            charge_balance=float(proxies["charge_balance"]),
+            aromaticity=float(proxies["aromaticity"]),
+            instability_proxy=float(proxies["instability_proxy"]),
+            low_complexity_fraction=float(low_complexity.get("covered_fraction", 0.0)),
+            low_complexity_longest=int(low_complexity.get("longest_region", 0)),
             roundtrip_recon=float(recon) if recon is not None else None,
             recon_weight=float(recon_weight),
         ),
         risk_flags=risk_flags,
         summary=summary,
     )
-    return card.to_payload()
+    payload = card.to_payload()
+    payload["details"] = {
+        "protein_diagnostics": {
+            "amino_acid_composition": composition,
+            "low_complexity": low_complexity,
+            "pattern_hits": motif_hits,
+            "proxies": proxies,
+        }
+    }
+    return payload
