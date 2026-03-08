@@ -1,39 +1,18 @@
 import {
   getRun,
   getRunLineage,
+  getRunsSummary,
   listRuns,
   type LineageNode,
   type RunLineage,
   type RunRecord,
 } from "./run_api";
-import type {
-  RunConfig,
-  ServerToClientMessage,
-  ClientToServerMessage,
-} from "./protocol";
-
-type JsonRecord = Record<string, unknown>;
-
-function mustEl<T extends Element>(id: string): T {
-  const el = document.getElementById(id);
-  if (!el) throw new Error(`Missing required element #${id}`);
-  return el as unknown as T;
-}
-
-function asPrettyText(value: unknown): string {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
-function nowStamp(): string {
-  const d = new Date();
-  return d.toLocaleTimeString();
-}
-
+import type { RunConfig, ServerToClientMessage, ClientToServerMessage } from "./protocol";
+import { ActiveRunTimeline } from "./perceptrome_viz/active_run_timeline";
+import { ArtifactSummary } from "./perceptrome_viz/artifact_summary";
+import { asPrettyText, mustEl, type JsonRecord } from "./perceptrome_viz/dom";
+import { MetricsPanel } from "./perceptrome_viz/metrics_panel";
+import { RunQueueBoard } from "./perceptrome_viz/run_queue_board";
 
 function applyRunConfigFromQuery(): void {
   const params = new URLSearchParams(window.location.search);
@@ -68,20 +47,18 @@ function applyRunConfigFromQuery(): void {
 }
 
 export function setupPerceptromeViz(ws: WebSocket) {
-  const statusEl = mustEl<HTMLElement>("status");
-  const logsEl = mustEl<HTMLElement>("logs");
-  const resultsEl = mustEl<HTMLElement>("results");
-  const metricsEl = mustEl<HTMLElement>("metrics");
-  const checkpointsEl = mustEl<HTMLElement>("checkpoints");
-  const generatedEl = mustEl<HTMLElement>("generated-sequences");
-  const validationEl = mustEl<HTMLElement>("validation-results");
-  const historyEl = mustEl<HTMLElement>("run-history");
-  const runForm = mustEl<HTMLFormElement>("run-form");
   const lineageSvg = mustEl<SVGSVGElement>("lineage-graph");
   const lineageDetails = mustEl<HTMLElement>("lineage-details");
   const lineageDepthEl = mustEl<HTMLInputElement>("lineage-depth");
   const lineageArtifactTypeEl = mustEl<HTMLInputElement>("lineage-artifact-type");
   const lineageRunStateEl = mustEl<HTMLSelectElement>("lineage-run-state");
+  const historyEl = mustEl<HTMLElement>("run-history");
+  const runForm = mustEl<HTMLFormElement>("run-form");
+
+  const queueBoard = new RunQueueBoard();
+  const timeline = new ActiveRunTimeline();
+  const metricsPanel = new MetricsPanel();
+  const artifactSummary = new ArtifactSummary();
 
   const startBtn = document.getElementById("run-start-btn") as HTMLButtonElement | null;
   const stopBtn = document.getElementById("run-stop-btn") as HTMLButtonElement | null;
@@ -94,36 +71,10 @@ export function setupPerceptromeViz(ws: WebSocket) {
   let runActive = false;
   let activeRunId: string | null = null;
 
-  function setStatus(text: string, progress?: number | null) {
-    if (typeof progress === "number" && Number.isFinite(progress)) {
-      const pct = Math.max(0, Math.min(100, Math.round(progress * 100)));
-      statusEl.textContent = `${text} (${pct}%)`;
-    } else {
-      statusEl.textContent = text;
-    }
-  }
-
-  function appendLog(line: string, opts?: { kind?: "info" | "warn" | "error" | "raw"; noStamp?: boolean }) {
-    const kind = opts?.kind ?? "info";
-    const prefix = opts?.noStamp ? "" : `[${nowStamp()}] `;
-    const tag = kind === "error" ? "[ERR] " : kind === "warn" ? "[WRN] " : "";
-    const text = `${prefix}${tag}${line}`;
-    logsEl.textContent = logsEl.textContent ? `${logsEl.textContent}\n${text}` : text;
-    logsEl.scrollTop = logsEl.scrollHeight;
-  }
-
-  function renderResults(value: unknown) {
-    resultsEl.textContent = asPrettyText(value);
-    const payload = (value && typeof value === "object") ? value as JsonRecord : {};
-    generatedEl.textContent = asPrettyText(payload.generated_sequences ?? payload.generated ?? []);
-    validationEl.textContent = asPrettyText(payload.validation_results ?? payload.validation ?? {});
-  }
-
   async function inspectRun(runId: string) {
     const detail = await getRun(runId);
-    renderResults(detail.result ?? detail);
-    const links = detail.artifacts.map((a) => `<a href="${a.download_url}">${a.label ?? a.path}</a>`).join("\n");
-    checkpointsEl.innerHTML = links || "No artifacts";
+    artifactSummary.renderResults(detail.result ?? detail);
+    artifactSummary.renderArtifacts(detail);
   }
 
   function selectedRunStates(): string[] {
@@ -195,7 +146,9 @@ export function setupPerceptromeViz(ws: WebSocket) {
       const badges = [
         node.hash ? `hash:${node.hash.slice(0, 12)}` : null,
         node.config_snapshot?.sha256 ? `config:${node.config_snapshot.sha256.slice(0, 12)}` : null,
-      ].filter(Boolean).join(" | ");
+      ]
+        .filter(Boolean)
+        .join(" | ");
       title.textContent = `${node.kind} ${node.label}${badges ? `\n${badges}` : ""}`;
 
       g.appendChild(rect);
@@ -228,7 +181,7 @@ export function setupPerceptromeViz(ws: WebSocket) {
       renderLineage(graph);
       lineageDetails.textContent = `Loaded lineage for ${target}: ${graph.nodes.length} nodes / ${graph.edges.length} edges`;
     } catch (err) {
-      appendLog(`Failed to load lineage: ${String(err)}`, { kind: "warn" });
+      timeline.appendLog(`Failed to load lineage: ${String(err)}`, { kind: "warn" });
       lineageDetails.textContent = `Lineage error: ${String(err)}`;
     }
   }
@@ -237,7 +190,7 @@ export function setupPerceptromeViz(ws: WebSocket) {
     historyEl.innerHTML = "";
     for (const run of runs) {
       const item = document.createElement("div");
-      item.className = "stack";
+      item.className = "stack run-row";
       const hdr = document.createElement("div");
       hdr.innerHTML = `<strong>${run.run_id}</strong> [${run.kind}] - ${run.state}`;
       const btn = document.createElement("button");
@@ -255,6 +208,25 @@ export function setupPerceptromeViz(ws: WebSocket) {
     }
   }
 
+  async function refreshDashboardBoards() {
+    try {
+      const summary = await getRunsSummary();
+      queueBoard.renderSummary(summary);
+      const board = await queueBoard.refresh(async (runId: string) => {
+        activeRunId = runId;
+        await inspectRun(runId);
+        await refreshLineage(runId);
+        document.getElementById("run-drilldown")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+      if (!activeRunId && board.activeRuns.length > 0) {
+        activeRunId = board.activeRuns[0].run_id;
+      }
+    } catch (err) {
+      queueBoard.showBoardError(err);
+      timeline.appendLog(`Failed to load dashboard summaries: ${String(err)}`, { kind: "warn" });
+    }
+  }
+
   async function refreshHistory() {
     try {
       const runs = await listRuns(30);
@@ -263,8 +235,9 @@ export function setupPerceptromeViz(ws: WebSocket) {
         activeRunId = runs[0].run_id;
         await refreshLineage(activeRunId);
       }
+      await refreshDashboardBoards();
     } catch (err) {
-      appendLog(`Failed to load history: ${String(err)}`, { kind: "warn" });
+      timeline.appendLog(`Failed to load history: ${String(err)}`, { kind: "warn" });
     }
   }
 
@@ -312,8 +285,8 @@ export function setupPerceptromeViz(ws: WebSocket) {
 
   function sendJson(msg: unknown) {
     if (ws.readyState !== WebSocket.OPEN) {
-      setStatus("socket not connected");
-      appendLog("Cannot send message: websocket is not open", { kind: "warn" });
+      queueBoard.setStatus("socket not connected");
+      timeline.appendLog("Cannot send message: websocket is not open", { kind: "warn" });
       return;
     }
     ws.send(JSON.stringify(msg));
@@ -322,16 +295,16 @@ export function setupPerceptromeViz(ws: WebSocket) {
   function sendRunConfig(config: RunConfig) {
     const msg: ClientToServerMessage = { type: "start_run", config } as ClientToServerMessage;
     sendJson(msg);
-    setStatus("starting…");
+    queueBoard.setStatus("starting…");
     setRunUiState(true);
-    appendLog("Sent start_run request");
+    timeline.appendLog("Sent start_run request");
   }
 
   function sendStopRun() {
     const msg: ClientToServerMessage = { type: "stop_run", run_id: activeRunId ?? undefined } as ClientToServerMessage;
     sendJson(msg);
-    setStatus("stopping…");
-    appendLog("Sent stop_run request");
+    queueBoard.setStatus("stopping…");
+    timeline.appendLog("Sent stop_run request");
   }
 
   function handleServerMessage(msg: ServerToClientMessage) {
@@ -342,12 +315,9 @@ export function setupPerceptromeViz(ws: WebSocket) {
       case "status": {
         const statusText = typeof m.status === "string" ? m.status : "status";
         if (typeof m.run_id === "string") activeRunId = m.run_id;
-        const progress =
-          typeof m.progress === "number" ? m.progress :
-          typeof m.percent === "number" ? (m.percent as number) / 100 :
-          undefined;
+        const progress = typeof m.progress === "number" ? m.progress : typeof m.percent === "number" ? (m.percent as number) / 100 : undefined;
 
-        setStatus(statusText, progress);
+        queueBoard.setStatus(statusText, progress);
         if (typeof m.state === "string") {
           if (m.state === "queued" || m.state === "running") setRunUiState(true);
           if (m.state === "completed" || m.state === "failed" || m.state === "canceled") setRunUiState(false);
@@ -356,93 +326,90 @@ export function setupPerceptromeViz(ws: WebSocket) {
       }
 
       case "log":
-        appendLog(typeof m.line === "string" ? m.line : asPrettyText(m), { kind: "raw" });
+        timeline.appendLog(typeof m.line === "string" ? m.line : asPrettyText(m), { kind: "raw" });
         break;
 
       case "progress": {
         const statusText = typeof m.phase === "string" ? m.phase : "running";
         const progress = typeof m.progress === "number" ? m.progress : undefined;
         if (typeof m.run_id === "string") activeRunId = m.run_id;
-        setStatus(statusText, progress);
+        queueBoard.setStatus(statusText, progress);
         setRunUiState(true);
         break;
       }
 
       case "phase": {
         if (typeof m.run_id === "string") activeRunId = m.run_id;
-        appendLog(`[${String(m.phase ?? "phase")}] ${String(m.status ?? "")}`, { kind: "info" });
+        timeline.appendLog(`[${String(m.phase ?? "phase")}] ${String(m.status ?? "")}`, { kind: "info" });
+        timeline.pushTimelineEvent(`${String(m.phase ?? "phase")}: ${String(m.status ?? "")}`);
         break;
       }
 
-      case "metric": {
-        const line = `${String(m.name ?? "metric")}: ${String(m.value ?? "")}`;
-        metricsEl.textContent = metricsEl.textContent ? `${metricsEl.textContent}\n${line}` : line;
+      case "metric":
+        metricsPanel.pushMetric(String(m.name ?? "metric"), m.value);
         break;
-      }
 
       case "checkpoint": {
         const p = String(m.path ?? "");
-        const url = typeof m.download_url === "string" ? m.download_url : "";
-        checkpointsEl.innerHTML += `${url ? `<a href="${url}">${p}</a>` : p}<br/>`;
+        const url = typeof m.download_url === "string" ? m.download_url : undefined;
+        artifactSummary.pushArtifact(p, url);
         break;
       }
 
       case "validation-summary":
-        validationEl.textContent = asPrettyText(m.summary ?? m);
+        artifactSummary.renderResults({ validation_results: m.summary ?? m });
         break;
 
       case "artifact-available": {
         const artifact = (m.artifact ?? {}) as JsonRecord;
-        const path = typeof artifact.path === "string" ? artifact.path : undefined;
+        const path = typeof artifact.path === "string" ? artifact.path : "";
         const downloadUrl = typeof artifact.download_url === "string" ? artifact.download_url : undefined;
-        appendLog(`artifact available${path ? `: ${path}` : ""}`, { kind: "info" });
-        if (downloadUrl) {
-          checkpointsEl.innerHTML += `<a href="${downloadUrl}">${path ?? downloadUrl}</a><br/>`;
-        }
+        timeline.appendLog(`artifact available${path ? `: ${path}` : ""}`, { kind: "info" });
+        artifactSummary.pushArtifact(path, downloadUrl);
         break;
       }
 
       case "result":
       case "results": {
         const payload = m.result ?? m.results ?? m.data ?? m.payload ?? m;
-        const payloadRecord = (payload && typeof payload === "object") ? (payload as JsonRecord) : null;
+        const payloadRecord = payload && typeof payload === "object" ? (payload as JsonRecord) : null;
         if (payloadRecord && typeof payloadRecord.run_id === "string") activeRunId = String(payloadRecord.run_id);
-        renderResults(payload);
+        artifactSummary.renderResults(payload);
         setRunUiState(false);
         void refreshHistory();
         void refreshLineage(activeRunId ?? undefined);
-        appendLog(`Received ${type} payload`);
+        timeline.appendLog(`Received ${type} payload`);
         break;
       }
 
       case "error":
-        setStatus("error");
-        appendLog(String(m.detail ?? m.message ?? "unknown error"), { kind: "error" });
+        queueBoard.setStatus("error");
+        timeline.appendLog(String(m.detail ?? m.message ?? "unknown error"), { kind: "error" });
         setRunUiState(false);
         break;
 
       case "run_stopped":
-        setStatus("run stopped");
+        queueBoard.setStatus("run stopped");
         setRunUiState(false);
         void refreshHistory();
         break;
 
       default:
-        appendLog(`[${type}] ${asPrettyText(m)}`);
+        timeline.appendLog(`[${type}] ${asPrettyText(m)}`);
     }
   }
 
   ws.addEventListener("open", () => {
     setSocketUiState(true);
-    setStatus("connected");
-    appendLog("WebSocket connected");
+    queueBoard.setStatus("connected");
+    timeline.appendLog("WebSocket connected");
     void refreshHistory();
   });
 
   ws.addEventListener("close", () => {
     setSocketUiState(false);
-    setStatus("disconnected");
-    appendLog("WebSocket disconnected", { kind: "warn" });
+    queueBoard.setStatus("disconnected");
+    timeline.appendLog("WebSocket disconnected", { kind: "warn" });
   });
 
   ws.addEventListener("message", (ev) => {
@@ -450,7 +417,7 @@ export function setupPerceptromeViz(ws: WebSocket) {
       const parsed = JSON.parse(String(ev.data)) as ServerToClientMessage;
       handleServerMessage(parsed);
     } catch (err) {
-      appendLog(`Malformed server message: ${String(err)}`, { kind: "warn" });
+      timeline.appendLog(`Malformed server message: ${String(err)}`, { kind: "warn" });
     }
   });
 
@@ -459,7 +426,7 @@ export function setupPerceptromeViz(ws: WebSocket) {
     try {
       sendRunConfig(readRunConfigFromForm());
     } catch (err) {
-      appendLog(String(err), { kind: "error" });
+      timeline.appendLog(String(err), { kind: "error" });
     }
   });
 
@@ -471,5 +438,6 @@ export function setupPerceptromeViz(ws: WebSocket) {
   lineageRunStateEl.addEventListener("change", () => void refreshLineage());
 
   setSocketUiState(ws.readyState === WebSocket.OPEN);
-  setStatus("connecting…");
+  queueBoard.setStatus("connecting…");
+  void refreshDashboardBoards();
 }

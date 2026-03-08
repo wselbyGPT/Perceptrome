@@ -55,6 +55,8 @@ from .schemas import (
     DatasetDetailOut,
     DatasetPreviewOut,
     DatasetSplitOut,
+    RunSummaryOut,
+    RunsBoardOut,
 )
 from perceptrome.jobs import JobEngine, JobEvent, JobSpec
 
@@ -205,6 +207,14 @@ def _assert_run_access(run: Run, user: User):
     if user.role != "admin" and run.user_id != user.id:
         raise HTTPException(status_code=403, detail="Forbidden")
 
+
+
+
+def _scoped_runs_query(user: User):
+    q = select(Run)
+    if user.role != "admin":
+        q = q.where(Run.user_id == user.id)
+    return q
 
 def _extract_manifest_uri(data: dict[str, Any], run_id: str) -> str | None:
     manifest_path = data.get("manifest_path")
@@ -1231,12 +1241,53 @@ def replay_run(run_id: str, user: User = Depends(get_current_user_strict), db: S
 
 @app.get("/api/runs", response_model=list[RunOut])
 def list_runs(user: User = Depends(get_current_user_strict), db: Session = Depends(get_db), limit: int = 50):
-    q = select(Run).order_by(Run.submitted_at.desc()).limit(max(1, min(limit, 200)))
-    if user.role != "admin":
-        q = q.where(Run.user_id == user.id)
+    q = _scoped_runs_query(user).order_by(Run.submitted_at.desc()).limit(max(1, min(limit, 200)))
     runs = db.execute(q).scalars().all()
     return [_run_to_out(run) for run in runs]
 
+
+
+
+@app.get("/api/runs/summary", response_model=RunSummaryOut)
+def runs_summary(user: User = Depends(get_current_user_strict), db: Session = Depends(get_db)):
+    runs = db.execute(_scoped_runs_query(user).order_by(Run.submitted_at.desc()).limit(1000)).scalars().all()
+    state_counts = Counter(run.state for run in runs)
+    latest_failed = next((run for run in runs if run.state == "failed"), None)
+    return RunSummaryOut(
+        total_runs=len(runs),
+        state_counts=dict(state_counts),
+        queued=state_counts.get("queued", 0),
+        running=state_counts.get("running", 0),
+        completed=state_counts.get("completed", 0),
+        failed=state_counts.get("failed", 0),
+        canceled=state_counts.get("canceled", 0),
+        latest_failed_run_id=latest_failed.run_id if latest_failed else None,
+        latest_failed_at=latest_failed.finished_at if latest_failed else None,
+    )
+
+
+@app.get("/api/runs/active", response_model=RunsBoardOut)
+def active_runs(user: User = Depends(get_current_user_strict), db: Session = Depends(get_db), limit: int = 12):
+    q = (
+        _scoped_runs_query(user)
+        .where(Run.state.in_(["queued", "running"]))
+        .order_by(Run.submitted_at.desc())
+        .limit(max(1, min(limit, 100)))
+    )
+    runs = db.execute(q).scalars().all()
+    return RunsBoardOut(generated_at=_utcnow(), runs=[_run_to_out(run) for run in runs])
+
+
+@app.get("/api/runs/failures", response_model=RunsBoardOut)
+def failed_runs(user: User = Depends(get_current_user_strict), db: Session = Depends(get_db), limit: int = 12):
+    q = (
+        _scoped_runs_query(user)
+        .where(Run.state == "failed")
+        .order_by(Run.finished_at.desc(), Run.submitted_at.desc())
+        .limit(max(1, min(limit, 100)))
+    )
+    runs = db.execute(q).scalars().all()
+    return RunsBoardOut(generated_at=_utcnow(), runs=[_run_to_out(run) for run in runs])
 
 @app.get("/api/runs/{run_id}", response_model=RunOut)
 def get_run(run_id: str, user: User = Depends(get_current_user_strict), db: Session = Depends(get_db)):
@@ -1263,9 +1314,7 @@ def get_run_lineage(
         raise HTTPException(status_code=404, detail="Run not found")
     _assert_run_access(run, user)
 
-    q = select(Run).order_by(Run.submitted_at.desc()).limit(400)
-    if user.role != "admin":
-        q = q.where(Run.user_id == user.id)
+    q = _scoped_runs_query(user).order_by(Run.submitted_at.desc()).limit(400)
     accessible_runs = db.execute(q).scalars().all()
 
     depth_limit = max(0, min(depth, 6))
