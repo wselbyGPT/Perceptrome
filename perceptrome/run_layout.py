@@ -5,7 +5,9 @@ import json
 import os
 import uuid
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
+
+from perceptrome.jobs.artifact_index import append_artifact_entries
 
 
 CANONICAL_MANIFEST_SECTIONS = (
@@ -74,6 +76,7 @@ def ensure_run_layout(run_id: Optional[str] = None, base_dir: str = "runs") -> R
             "paths": {},
             "metrics": {},
             "provenance": {},
+            "artifacts": [],
         }
         for key in CANONICAL_MANIFEST_SECTIONS:
             payload[key] = {}
@@ -117,6 +120,7 @@ def update_run_manifest(
     pretraining_metrics: Optional[Dict[str, Any]] = None,
     checkpoints: Optional[Dict[str, Any]] = None,
     evolution_history: Optional[Dict[str, Any]] = None,
+    artifacts: Optional[Iterable[Dict[str, Any]]] = None,
 ) -> str:
     with open(layout.manifest_path, "r", encoding="utf-8") as f:
         payload = json.load(f)
@@ -139,6 +143,8 @@ def update_run_manifest(
         _deep_merge(payload.setdefault("checkpoints", {}), checkpoints)
     if evolution_history:
         _deep_merge(payload.setdefault("evolution_history", {}), evolution_history)
+    if artifacts:
+        append_artifact_entries(payload, artifacts)
     payload["updated_at"] = _utc_now()
 
     with open(layout.manifest_path, "w", encoding="utf-8") as f:

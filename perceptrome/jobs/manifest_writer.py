@@ -6,8 +6,9 @@ import json
 import os
 import subprocess
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
+from perceptrome.jobs.artifact_index import append_artifact_entries
 from perceptrome.jobs.manifest_schema import empty_run_manifest
 
 
@@ -64,6 +65,7 @@ def build_run_manifest(
     validation_results: Optional[Dict[str, Any]] = None,
     evolution_history: Optional[Dict[str, Any]] = None,
     provenance_metadata: Optional[Dict[str, Any]] = None,
+    artifacts: Optional[Iterable[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     manifest = empty_run_manifest(
         run_kind=run_kind,
@@ -87,6 +89,8 @@ def build_run_manifest(
         merged = dict(manifest.get("provenance_metadata") or {})
         merged.update(provenance_metadata)
         manifest["provenance_metadata"] = merged
+    if artifacts:
+        append_artifact_entries(manifest, artifacts)
     return manifest
 
 

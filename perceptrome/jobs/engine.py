@@ -36,6 +36,7 @@ from perceptrome.generate import (
     generate_protein_sequence,
     parse_ast_conditioning_config,
 )
+from perceptrome.jobs.artifact_index import build_artifact_entry
 from perceptrome.jobs.manifest_writer import config_hash, write_experiment_run_manifest
 from perceptrome.pretrain import PretrainPipelineConfig, run_pretraining
 from perceptrome.run_layout import ensure_run_layout, path_in_run, update_run_manifest
@@ -88,6 +89,17 @@ class JobEngine:
         self._events.append(event)
         if self._event_sink:
             self._event_sink(event)
+
+    @staticmethod
+    def _artifact_entry(*, artifact_id: str, role: str, path: str, artifact_type: str | None = None, mime_type: str | None = None, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        return build_artifact_entry(artifact_id=artifact_id, role=role, path=path, artifact_type=artifact_type, mime_type=mime_type, metadata=metadata)
+
+    @classmethod
+    def _artifacts_for_paths(cls, mappings: Dict[str, str], role_prefix: str, artifact_type: str | None = None) -> list[Dict[str, Any]]:
+        rows: list[Dict[str, Any]] = []
+        for key, path in mappings.items():
+            rows.append(cls._artifact_entry(artifact_id=key, role=f"{role_prefix}.{key}", path=path, artifact_type=artifact_type))
+        return rows
 
     def _write_run_manifest(self, *, io_cfg: Any, spec: JobSpec, run_id: str, **sections: Any) -> str:
         path = write_experiment_run_manifest(
@@ -240,6 +252,9 @@ class JobEngine:
             },
             metrics={"last_total_loss": float(last_total), "encoded_shape": list(getattr(encoded, "shape", []))},
             provenance_metadata={"state_file": io_cfg.state_file},
+            artifacts=[
+                self._artifact_entry(artifact_id="encoded_windows", role="dataset.encoded", path=enc_path, artifact_type="npy"),
+            ],
         )
         return {"accession": accession, "last_total_loss": float(last_total), "manifest_path": manifest_path}
 
@@ -309,6 +324,7 @@ class JobEngine:
             model_objective_config={"model_type": getattr(train_cfg, "model_type", None), "loss_type": params.get("loss_type")},
             metrics={"processed_accessions": processed, "last_total_loss": float(last_total), "losses": for_epoch_losses},
             provenance_metadata={"state_file": io_cfg.state_file, "max_epochs": max_epochs},
+            artifacts=[self._artifact_entry(artifact_id="stream_state", role="provenance.state", path=io_cfg.state_file, artifact_type="json")],
         )
         return {"processed_accessions": processed, "manifest_path": manifest_path}
 
@@ -355,8 +371,9 @@ class JobEngine:
             },
             training_metrics={"generate_plasmid": {"length_bp": len(seq)}},
             metrics={"length_bp": len(seq)},
+            artifacts=[self._artifact_entry(artifact_id="generated_plasmid", role="generated.sequence", path=output, artifact_type="fasta")],
         )
-        update_run_manifest(layout, paths={"generated": {"plasmid_fasta": output, "manifest": manifest_path}})
+        update_run_manifest(layout, paths={"generated": {"plasmid_fasta": output, "manifest": manifest_path}}, artifacts=[self._artifact_entry(artifact_id="generated_plasmid", role="generated.sequence", path=output, artifact_type="fasta")])
         return {"output": output, "length": len(seq), "manifest_path": manifest_path}
 
     def _run_generate_protein(self, spec: JobSpec) -> Dict[str, Any]:
@@ -401,8 +418,9 @@ class JobEngine:
             },
             training_metrics={"generate_protein": {"length_aa": len(seq)}},
             metrics={"length_aa": len(seq)},
+            artifacts=[self._artifact_entry(artifact_id="generated_protein", role="generated.sequence", path=output, artifact_type="fasta")],
         )
-        update_run_manifest(layout, paths={"generated": {"protein_faa": output, "manifest": manifest_path}})
+        update_run_manifest(layout, paths={"generated": {"protein_faa": output, "manifest": manifest_path}}, artifacts=[self._artifact_entry(artifact_id="generated_protein", role="generated.sequence", path=output, artifact_type="fasta")])
         return {"output": output, "length": len(seq), "manifest_path": manifest_path}
 
     def _run_validate_plasmid(self, spec: JobSpec) -> Dict[str, Any]:
@@ -461,11 +479,13 @@ class JobEngine:
             },
             training_metrics={"validate_plasmid": {"evaluated": len(rows), "top_score": float(top_rows[0]["score"]) if top_rows else None}},
             metrics={"evaluated": len(rows), "top_score": float(top_rows[0]["score"]) if top_rows else None},
+            artifacts=self._artifacts_for_paths({"report_json": out_path, "machine_report_json": machine_json}, "validation", artifact_type="json") + ([self._artifact_entry(artifact_id="user_report_json", role="validation.user_report", path=str(output_json), artifact_type="json")] if output_json else []),
         )
         update_run_manifest(
             layout,
             paths={"validation": {"report_json": out_path, "machine_report_json": machine_json, "manifest": manifest_path}},
             validation_results={"validate_plasmid": {"top_n": top_n, "output_json": out_path, "machine_artifact_json": machine_json}},
+            artifacts=self._artifacts_for_paths({"report_json": out_path, "machine_report_json": machine_json}, "validation", artifact_type="json") + ([self._artifact_entry(artifact_id="user_report_json", role="validation.user_report", path=str(output_json), artifact_type="json")] if output_json else []),
         )
         return {"results": top_rows, "top_n": top_n, "manifest_path": manifest_path, "output_json": out_path, "machine_artifact_json": machine_json}
 
@@ -514,6 +534,7 @@ class JobEngine:
             checkpoints={"output_dir": str(pipeline_cfg.output_dir), "index_json": str(metrics.get("checkpoint_index_json", ""))},
             pretraining_metrics=dict(metrics),
             metrics=dict(metrics),
+            artifacts=self._artifacts_for_paths({"checkpoint_index_json": str(metrics.get("checkpoint_index_json", "")), "final_metrics_json": str(metrics.get("final_metrics_json", ""))}, "pretrain", artifact_type="json"),
         )
         return {"metrics": metrics, "completed_at": datetime.now(timezone.utc).isoformat(), "manifest_path": manifest_path}
 
@@ -626,6 +647,7 @@ class JobEngine:
             training_metrics={"design_loop": {"rounds_completed": result.get("rounds_completed"), "best_score": float(best.get("score", 0.0))}},
             metrics={"rounds_completed": result.get("rounds_completed"), "best_score": float(best.get("score", 0.0))},
             provenance_metadata={"summary_json": summary_json},
+            artifacts=self._artifacts_for_paths({"best_fasta": best_fasta, "summary_json": summary_json, "evolution_lineage": lineage_path}, "design_loop"),
         )
         update_run_manifest(
             layout,
@@ -641,6 +663,7 @@ class JobEngine:
             generated_sequences={"design_loop": {"best_fasta": best_fasta, "evolution_lineage": lineage_path}},
             validation_results={"design_loop": {"summary_json": summary_json, "evolution_lineage": lineage_path}},
             evolution_history={"generations": lineage_generations},
+            artifacts=self._artifacts_for_paths({"best_fasta": best_fasta, "summary_json": summary_json, "evolution_lineage": lineage_path}, "design_loop"),
         )
         return {
             "best_candidate": best,
