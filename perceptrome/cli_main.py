@@ -279,6 +279,18 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("accession")
     i.set_defaults(func=_lazy_cmd("cmd_bio_ast_inspect"))
 
+
+    m = bio_ast_sub.add_parser("embed-export", help="Export Bio-AST embeddings (.npy + metadata) for accession(s)")
+    m.add_argument("--accession", action="append", default=[], help="Accession to embed (repeatable)")
+    m.add_argument("--catalog", default=None, help="Optional catalog file with accession list")
+    m.add_argument("--source", choices=["fasta", "genbank"], default="genbank")
+    m.add_argument("--force", action="store_true", help="Force refetch of source record")
+    m.add_argument("--hidden-dim", type=int, default=None, help="Embedding hidden dimension (default from training config)")
+    m.add_argument("--ast-tree-layers", type=int, default=4)
+    m.add_argument("--ast-motif-kernel-size", type=int, default=7)
+    m.add_argument("--ast-motif-channels", type=int, default=64)
+    m.set_defaults(func=_lazy_cmd("cmd_bio_ast_embed_export"))
+
     v = bio_ast_sub.add_parser("visualize", help="Build tree/graph visualization artifacts for an accession")
     v.add_argument("--accession", required=True)
     v.add_argument("--source", choices=["fasta", "genbank"], default="genbank")
