@@ -5,7 +5,13 @@ import random
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from perceptrome.evolution_adapters import (
+    default_registry_and_spec,
+    genome_to_candidate_metadata,
+    seed_metadata_from_defaults,
+)
 from perceptrome.generate import generate_plasmid_sequence
+from perceptrome.genome_evolution import crossover_genomes, initialize_genome, mutate_genome, repair, validate
 
 
 @dataclass(slots=True)
@@ -13,6 +19,8 @@ class Candidate:
     sequence: str
     source: str
     parent_ids: list[int]
+    genome: Dict[str, Any] | None = None
+    metadata: Dict[str, Any] | None = None
     score: float = 0.0
     metrics: Dict[str, float] | None = None
 
@@ -112,14 +120,33 @@ def run_design_loop(
     length_bp: int,
     references: Sequence[str],
     seed: Optional[int],
+    enable_sequence_operators: bool = False,
+    sequence_operator_top_k: int = 3,
     emit: Optional[Callable[[str, str], None]] = None,
 ) -> Dict[str, Any]:
     rng = random.Random(seed)
     population_size = max(2, int(population_size))
     survivor_count = max(1, min(int(survivor_count), population_size))
 
-    population: List[Candidate] = []
-    for idx in range(population_size):
+    registry, spec = default_registry_and_spec()
+    base_metadata = seed_metadata_from_defaults(target_gc=target_gc, max_homopolymer=max_homopolymer)
+
+    def _normalize_genome(genome: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        pre_validation = validate(genome, registry, spec)
+        repaired_genome = genome
+        repair_actions: list[Dict[str, Any]] = []
+        if not pre_validation["valid"]:
+            repaired_genome, repair_actions = repair(genome, pre_validation["violations"], registry, spec)
+        post_validation = validate(repaired_genome, registry, spec)
+        return repaired_genome, {
+            "pre_repair_validation": pre_validation,
+            "repair_actions": repair_actions,
+            "post_repair_validation": post_validation,
+        }
+
+    def _generate_candidate(genome: Dict[str, Any], source: str, parent_ids: list[int], sequence_overrides: Sequence[str] | None = None) -> Candidate:
+        normalized_genome, validation_info = _normalize_genome(genome)
+        metadata = genome_to_candidate_metadata(normalized_genome, base_metadata=base_metadata)
         seq = generate_plasmid_sequence(
             train_cfg=train_cfg,
             io_cfg=io_cfg,
@@ -127,18 +154,36 @@ def run_design_loop(
             num_windows=None,
             window_size_bp=int(getattr(train_cfg, "window_size", 256)),
             seed=rng.randint(0, 2**31 - 1),
-            latent_scale=1.0,
-            temperature=1.0,
-            gc_bias=1.0,
-            name=f"design_seed_{idx}",
-            output_path=f"design_seed_{idx}.fasta",
+            latent_scale=float(metadata["latent_scale"]),
+            temperature=float(metadata["temperature"]),
+            gc_bias=float(metadata["gc_bias"]),
+            name=f"design_{source}_{len(parent_ids)}",
+            output_path=f"design_{source}_{rng.randint(0, 2**31 - 1)}.fasta",
             tokenizer="base",
-            num_candidates=1,
-            top_k=1,
-            target_gc=target_gc,
-            max_homopolymer=max_homopolymer,
+            num_candidates=max(1, int(metadata.get("top_k", 1))),
+            top_k=max(1, int(metadata.get("top_k", 1))),
+            target_gc=float(metadata["target_gc"]),
+            max_homopolymer=int(metadata["max_homopolymer"]),
         )
-        population.append(Candidate(sequence=seq, source="initial", parent_ids=[]))
+
+        if enable_sequence_operators and sequence_overrides:
+            donor = rng.choice(list(sequence_overrides))
+            if rng.random() < float(crossover_rate):
+                seq = _crossover(seq, donor, rng)
+            seq = _mutate_sequence(seq, mutation_rate=float(mutation_rate), mutation_scale=float(mutation_scale), rng=rng)
+
+        return Candidate(
+            sequence=seq,
+            source=source,
+            parent_ids=parent_ids,
+            genome=normalized_genome,
+            metadata={**metadata, "validation": validation_info},
+        )
+
+    population: List[Candidate] = []
+    for _ in range(population_size):
+        seeded = initialize_genome(registry, rng=rng)
+        population.append(_generate_candidate(seeded, source="initial", parent_ids=[]))
     if emit:
         emit("design_loop", f"initialized population={len(population)}")
 
@@ -183,23 +228,47 @@ def run_design_loop(
             break
 
         next_population: List[Candidate] = [
-            Candidate(sequence=s.sequence, source="elite", parent_ids=[]) for s in survivors
+            Candidate(sequence=s.sequence, source="elite", parent_ids=[], genome=dict(s.genome or {}), metadata=dict(s.metadata or {}))
+            for s in survivors
         ]
+
+        top_k_sequences: List[str] = []
+        if enable_sequence_operators:
+            top_cap = max(1, int(sequence_operator_top_k))
+            top_k_sequences = [str(item["sequence"]) for item in round_summary["survivors"][:top_cap] if item.get("sequence")]
 
         while len(next_population) < population_size:
             p1_idx = rng.randrange(0, len(survivors))
             p2_idx = rng.randrange(0, len(survivors))
             p1 = survivors[p1_idx]
             p2 = survivors[p2_idx]
-            child_seq = p1.sequence
+
+            p1_genome = dict(p1.genome or {})
+            p2_genome = dict(p2.genome or {})
+            child_genome = dict(p1_genome)
             source = "mutate"
             parent_ids = [p1_idx]
             if rng.random() < float(crossover_rate):
-                child_seq = _crossover(p1.sequence, p2.sequence, rng)
+                child_genome = crossover_genomes(p1_genome, p2_genome, registry, rng=rng)
                 source = "crossover"
                 parent_ids = [p1_idx, p2_idx]
-            child_seq = _mutate_sequence(child_seq, mutation_rate=float(mutation_rate), mutation_scale=float(mutation_scale), rng=rng)
-            next_population.append(Candidate(sequence=child_seq, source=source, parent_ids=parent_ids))
+
+            child_genome = mutate_genome(
+                child_genome,
+                registry,
+                mutation_rate=float(mutation_rate),
+                mutation_scale=float(mutation_scale),
+                rng=rng,
+            )
+
+            next_population.append(
+                _generate_candidate(
+                    child_genome,
+                    source=source,
+                    parent_ids=parent_ids,
+                    sequence_overrides=top_k_sequences,
+                )
+            )
 
         population = next_population
 
