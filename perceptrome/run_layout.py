@@ -14,6 +14,7 @@ CANONICAL_MANIFEST_SECTIONS = (
     "training_metrics",
     "pretraining_metrics",
     "checkpoints",
+    "evolution_history",
 )
 
 
@@ -115,6 +116,7 @@ def update_run_manifest(
     training_metrics: Optional[Dict[str, Any]] = None,
     pretraining_metrics: Optional[Dict[str, Any]] = None,
     checkpoints: Optional[Dict[str, Any]] = None,
+    evolution_history: Optional[Dict[str, Any]] = None,
 ) -> str:
     with open(layout.manifest_path, "r", encoding="utf-8") as f:
         payload = json.load(f)
@@ -135,6 +137,8 @@ def update_run_manifest(
         _deep_merge(payload.setdefault("pretraining_metrics", {}), pretraining_metrics)
     if checkpoints:
         _deep_merge(payload.setdefault("checkpoints", {}), checkpoints)
+    if evolution_history:
+        _deep_merge(payload.setdefault("evolution_history", {}), evolution_history)
     payload["updated_at"] = _utc_now()
 
     with open(layout.manifest_path, "w", encoding="utf-8") as f:
