@@ -79,7 +79,46 @@ class LoginAttempt(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), server_default=func.now(), index=True)
 
 
+class Run(Base):
+    __tablename__ = "runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+
+    config_json: Mapped[str] = mapped_column(String, default="{}")
+    result_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    message: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), server_default=func.now(), index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+
+    user: Mapped[User] = relationship()
+    artifacts: Mapped[list["RunArtifact"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
+
+
+class RunArtifact(Base):
+    __tablename__ = "run_artifacts"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), index=True)
+    phase: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    path: Mapped[str] = mapped_column(String(1024))
+    label: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), server_default=func.now(), index=True)
+
+    run: Mapped[Run] = relationship(back_populates="artifacts")
+
+
 Index("ix_user_sessions_valid_lookup", UserSession.token_hash, UserSession.expires_at, UserSession.revoked_at)
 Index("ix_auth_tokens_lookup", AuthToken.purpose, AuthToken.token_hash, AuthToken.expires_at, AuthToken.used_at)
 Index("ix_login_attempts_ip_email_created", LoginAttempt.ip_address, LoginAttempt.email, LoginAttempt.created_at)
 Index("ix_login_attempts_ip_created", LoginAttempt.ip_address, LoginAttempt.created_at)
+Index("ix_runs_user_submitted", Run.user_id, Run.submitted_at)
+Index("ix_run_artifacts_run_created", RunArtifact.run_id, RunArtifact.created_at)

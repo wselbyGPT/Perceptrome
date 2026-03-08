@@ -1,3 +1,4 @@
+import { getRun, listRuns, type RunRecord } from "./run_api";
 import type {
   RunConfig,
   ServerToClientMessage,
@@ -30,18 +31,21 @@ export function setupPerceptromeViz(ws: WebSocket) {
   const statusEl = mustEl<HTMLElement>("status");
   const logsEl = mustEl<HTMLElement>("logs");
   const resultsEl = mustEl<HTMLElement>("results");
+  const metricsEl = mustEl<HTMLElement>("metrics");
+  const checkpointsEl = mustEl<HTMLElement>("checkpoints");
+  const generatedEl = mustEl<HTMLElement>("generated-sequences");
+  const validationEl = mustEl<HTMLElement>("validation-results");
+  const historyEl = mustEl<HTMLElement>("run-history");
+  const runForm = mustEl<HTMLFormElement>("run-form");
 
   const startBtn = document.getElementById("run-start-btn") as HTMLButtonElement | null;
   const stopBtn = document.getElementById("run-stop-btn") as HTMLButtonElement | null;
-  const clearLogsBtn = document.getElementById("clear-logs-btn") as HTMLButtonElement | null;
+  const refreshHistoryBtn = document.getElementById("refresh-history-btn") as HTMLButtonElement | null;
 
   let socketOpen = false;
   let runActive = false;
   let activeRunId: string | null = null;
 
-  // -----------------------------
-  // UI helpers
-  // -----------------------------
   function setStatus(text: string, progress?: number | null) {
     if (typeof progress === "number" && Number.isFinite(progress)) {
       const pct = Math.max(0, Math.min(100, Math.round(progress * 100)));
@@ -54,23 +58,49 @@ export function setupPerceptromeViz(ws: WebSocket) {
   function appendLog(line: string, opts?: { kind?: "info" | "warn" | "error" | "raw"; noStamp?: boolean }) {
     const kind = opts?.kind ?? "info";
     const prefix = opts?.noStamp ? "" : `[${nowStamp()}] `;
-    const tag =
-      kind === "error" ? "[ERR] " :
-      kind === "warn" ? "[WRN] " :
-      kind === "raw" ? "" :
-      "";
-
+    const tag = kind === "error" ? "[ERR] " : kind === "warn" ? "[WRN] " : "";
     const text = `${prefix}${tag}${line}`;
-    logsEl.textContent = logsEl.textContent
-      ? `${logsEl.textContent}\n${text}`
-      : text;
-
+    logsEl.textContent = logsEl.textContent ? `${logsEl.textContent}\n${text}` : text;
     logsEl.scrollTop = logsEl.scrollHeight;
   }
 
   function renderResults(value: unknown) {
-    // Keep it simple and robust for now: pretty JSON/text
     resultsEl.textContent = asPrettyText(value);
+    const payload = (value && typeof value === "object") ? value as JsonRecord : {};
+    generatedEl.textContent = asPrettyText(payload.generated_sequences ?? payload.generated ?? []);
+    validationEl.textContent = asPrettyText(payload.validation_results ?? payload.validation ?? {});
+  }
+
+  function renderHistory(runs: RunRecord[]) {
+    historyEl.innerHTML = "";
+    for (const run of runs) {
+      const item = document.createElement("div");
+      item.className = "stack";
+      const hdr = document.createElement("div");
+      hdr.innerHTML = `<strong>${run.run_id}</strong> [${run.kind}] - ${run.state}`;
+      const btn = document.createElement("button");
+      btn.className = "btn btn--secondary btn--sm";
+      btn.type = "button";
+      btn.textContent = "Inspect";
+      btn.addEventListener("click", async () => {
+        const detail = await getRun(run.run_id);
+        renderResults(detail.result ?? detail);
+        const links = detail.artifacts.map((a) => `<a href="${a.download_url}">${a.label ?? a.path}</a>`).join("\n");
+        checkpointsEl.innerHTML = links || "No artifacts";
+      });
+      item.appendChild(hdr);
+      item.appendChild(btn);
+      historyEl.appendChild(item);
+    }
+  }
+
+  async function refreshHistory() {
+    try {
+      const runs = await listRuns(30);
+      renderHistory(runs);
+    } catch (err) {
+      appendLog(`Failed to load history: ${String(err)}`, { kind: "warn" });
+    }
   }
 
   function setRunUiState(active: boolean) {
@@ -88,50 +118,33 @@ export function setupPerceptromeViz(ws: WebSocket) {
     }
   }
 
-  // -----------------------------
-  // Config extraction (customize as you add run controls)
-  // -----------------------------
-  function tryReadRunConfigFromPage(): RunConfig {
-    // Option A: hidden JSON textarea/input if you add one later
-    const rawCfgEl =
-      (document.getElementById("run-config-json") as HTMLTextAreaElement | null) ||
-      (document.getElementById("run-config-json") as HTMLInputElement | null);
+  function readNumericInput(id: string, fallback: number): number {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    const value = Number(el?.value);
+    return Number.isFinite(value) ? value : fallback;
+  }
 
-    if (rawCfgEl && rawCfgEl.value.trim()) {
-      try {
-        const parsed = JSON.parse(rawCfgEl.value.trim()) as RunConfig;
-        return parsed;
-      } catch (err) {
-        appendLog(`Invalid JSON in #run-config-json: ${err instanceof Error ? err.message : String(err)}`, {
-          kind: "error",
-        });
-        throw err;
-      }
-    }
+  function readRunConfigFromForm(): RunConfig {
+    const kind = (document.getElementById("run-kind") as HTMLSelectElement).value;
+    const configPath = (document.getElementById("config-path") as HTMLInputElement).value.trim();
+    const dataset = (document.getElementById("dataset") as HTMLSelectElement).value;
+    const modelFamily = (document.getElementById("model-family") as HTMLSelectElement).value;
+    if (!configPath) throw new Error("Config path is required");
 
-    // Option B: button data attribute (data-run-config='{"...": "..."}')
-    if (startBtn?.dataset.runConfig) {
-      try {
-        return JSON.parse(startBtn.dataset.runConfig) as RunConfig;
-      } catch (err) {
-        appendLog(`Invalid JSON in run-start-btn[data-run-config]: ${err instanceof Error ? err.message : String(err)}`, {
-          kind: "error",
-        });
-        throw err;
-      }
-    }
-
-    // Option C: fallback MVP config
-    // NOTE: Replace with your real protocol fields as needed.
     return {
-      // placeholder defaults; adapt to your protocol schema
-      // e.g. model: "baseline", dataset: "demo"
+      kind,
+      config_path: configPath,
+      dataset,
+      model_family: modelFamily,
+      temperature: readNumericInput("temperature", 1.0),
+      length_bp: readNumericInput("length-bp", 10000),
+      params: {
+        dataset,
+        model_family: modelFamily,
+      },
     } as RunConfig;
   }
 
-  // -----------------------------
-  // Socket send helpers
-  // -----------------------------
   function sendJson(msg: unknown) {
     if (ws.readyState !== WebSocket.OPEN) {
       setStatus("socket not connected");
@@ -156,9 +169,6 @@ export function setupPerceptromeViz(ws: WebSocket) {
     appendLog("Sent stop_run request");
   }
 
-  // -----------------------------
-  // Server message handling (lenient / protocol-friendly)
-  // -----------------------------
   function handleServerMessage(msg: ServerToClientMessage) {
     const m = msg as unknown as JsonRecord;
     const type = String(m.type ?? "unknown");
@@ -173,54 +183,16 @@ export function setupPerceptromeViz(ws: WebSocket) {
           undefined;
 
         setStatus(statusText, progress);
-
         if (typeof m.state === "string") {
           if (m.state === "queued" || m.state === "running") setRunUiState(true);
           if (m.state === "completed" || m.state === "failed" || m.state === "canceled") setRunUiState(false);
-        } else {
-          const lower = statusText.toLowerCase();
-          if (lower.includes("completed") || lower.includes("finished") || lower.includes("done")) {
-            setRunUiState(false);
-            activeRunId = null;
-          } else if (lower.includes("starting") || lower.includes("running") || lower.includes("accepted") || lower.includes("queued")) {
-            setRunUiState(true);
-          }
-        }
-
-        // Useful extras from backend auth/status bootstrap
-        if (typeof m.user_id === "string" || typeof m.role === "string") {
-          appendLog(
-            `status: ${statusText}` +
-              (typeof m.role === "string" ? ` | role=${m.role}` : "") +
-              (typeof m.user_id === "string" ? ` | user=${m.user_id}` : ""),
-            { kind: "info" }
-          );
-        }
-
-        break;
-      }
-
-      case "log": {
-        const line =
-          typeof m.line === "string" ? m.line :
-          typeof m.log === "string" ? m.log :
-          typeof m.message === "string" ? m.message :
-          asPrettyText(m);
-        appendLog(line, { kind: "raw" });
-        break;
-      }
-
-      case "logs": {
-        if (Array.isArray(m.lines)) {
-          for (const line of m.lines) appendLog(String(line), { kind: "raw" });
-        } else if (Array.isArray(m.logs)) {
-          for (const line of m.logs) appendLog(String(line), { kind: "raw" });
-        } else {
-          appendLog(asPrettyText(m), { kind: "raw" });
         }
         break;
       }
 
+      case "log":
+        appendLog(typeof m.line === "string" ? m.line : asPrettyText(m), { kind: "raw" });
+        break;
 
       case "progress": {
         const statusText = typeof m.phase === "string" ? m.phase : "running";
@@ -233,169 +205,101 @@ export function setupPerceptromeViz(ws: WebSocket) {
 
       case "phase": {
         if (typeof m.run_id === "string") activeRunId = m.run_id;
-        const phase = typeof m.phase === "string" ? m.phase : "phase";
-        const status = typeof m.status === "string" ? m.status : phase;
-        appendLog(`[${phase}] ${status}`, { kind: "info" });
+        appendLog(`[${String(m.phase ?? "phase")}] ${String(m.status ?? "")}`, { kind: "info" });
         break;
       }
+
+      case "metric": {
+        const line = `${String(m.name ?? "metric")}: ${String(m.value ?? "")}`;
+        metricsEl.textContent = metricsEl.textContent ? `${metricsEl.textContent}\n${line}` : line;
+        break;
+      }
+
+      case "checkpoint": {
+        const p = String(m.path ?? "");
+        const url = typeof m.download_url === "string" ? m.download_url : "";
+        checkpointsEl.innerHTML += `${url ? `<a href="${url}">${p}</a>` : p}<br/>`;
+        break;
+      }
+
+      case "validation-summary":
+        validationEl.textContent = asPrettyText(m.summary ?? m);
+        break;
 
       case "artifact-available": {
         const artifact = (m.artifact ?? {}) as JsonRecord;
         const path = typeof artifact.path === "string" ? artifact.path : undefined;
-        const uri = typeof artifact.uri === "string" ? artifact.uri : undefined;
-        appendLog(`artifact available${path ? `: ${path}` : ""}${uri ? ` (${uri})` : ""}`, { kind: "info" });
+        const downloadUrl = typeof artifact.download_url === "string" ? artifact.download_url : undefined;
+        appendLog(`artifact available${path ? `: ${path}` : ""}`, { kind: "info" });
+        if (downloadUrl) {
+          checkpointsEl.innerHTML += `<a href="${downloadUrl}">${path ?? downloadUrl}</a><br/>`;
+        }
         break;
       }
 
       case "result":
       case "results": {
-        // Common payload field variants
-        const payload =
-          m.result ??
-          m.results ??
-          m.data ??
-          m.payload ??
-          m;
+        const payload = m.result ?? m.results ?? m.data ?? m.payload ?? m;
         const payloadRecord = (payload && typeof payload === "object") ? (payload as JsonRecord) : null;
         if (payloadRecord && typeof payloadRecord.run_id === "string") activeRunId = String(payloadRecord.run_id);
         renderResults(payload);
-        if (payloadRecord && (typeof payloadRecord.manifest_path === "string" || typeof payloadRecord.manifest_uri === "string")) {
-          appendLog(`manifest: ${String(payloadRecord.manifest_path ?? payloadRecord.manifest_uri)}`, { kind: "info" });
-        }
+        setRunUiState(false);
+        void refreshHistory();
         appendLog(`Received ${type} payload`);
         break;
       }
 
-      case "error": {
-        const detail =
-          typeof m.detail === "string" ? m.detail :
-          typeof m.error === "string" ? m.error :
-          typeof m.message === "string" ? m.message :
-          asPrettyText(m);
-
+      case "error":
         setStatus("error");
-        appendLog(detail, { kind: "error" });
+        appendLog(String(m.detail ?? m.message ?? "unknown error"), { kind: "error" });
         setRunUiState(false);
-        activeRunId = null;
         break;
-      }
 
-      case "run_started": {
-        setStatus("run started");
-        setRunUiState(true);
-        appendLog("Run started");
-        break;
-      }
-
-      case "run_stopped": {
+      case "run_stopped":
         setStatus("run stopped");
         setRunUiState(false);
-        activeRunId = null;
-        appendLog("Run stopped");
+        void refreshHistory();
         break;
-      }
 
-      case "run_completed":
-      case "complete":
-      case "done": {
-        setStatus("run completed");
-        setRunUiState(false);
-        activeRunId = null;
-        renderResults(m.result ?? m.data ?? m);
-        appendLog("Run completed");
-        break;
-      }
-
-      default: {
-        // Fallback: try to be useful without crashing on protocol evolution
-        if (typeof m.status === "string") {
-          const progress = typeof m.progress === "number" ? m.progress : undefined;
-          setStatus(m.status, progress);
-        }
-
-        if (typeof m.message === "string") {
-          appendLog(`[${type}] ${m.message}`);
-        } else {
-          appendLog(`[${type}] ${asPrettyText(m)}`);
-        }
-        break;
-      }
+      default:
+        appendLog(`[${type}] ${asPrettyText(m)}`);
     }
   }
 
-  // -----------------------------
-  // WebSocket lifecycle
-  // -----------------------------
   ws.addEventListener("open", () => {
     setSocketUiState(true);
     setStatus("connected");
     appendLog("WebSocket connected");
+    void refreshHistory();
   });
 
-  ws.addEventListener("message", (ev: MessageEvent) => {
-    if (typeof ev.data !== "string") {
-      appendLog("Received non-text websocket frame", { kind: "warn" });
-      return;
-    }
-
-    try {
-      const parsed = JSON.parse(ev.data) as ServerToClientMessage;
-      handleServerMessage(parsed);
-    } catch {
-      // If backend occasionally emits plain text logs, still show them.
-      appendLog(ev.data, { kind: "raw" });
-    }
-  });
-
-  ws.addEventListener("error", () => {
-    setStatus("socket error");
-    appendLog("WebSocket error", { kind: "error" });
-  });
-
-  ws.addEventListener("close", (ev) => {
+  ws.addEventListener("close", () => {
     setSocketUiState(false);
-
-    if (ev.code === 4401) {
-      setStatus("unauthorized (session expired?)");
-      appendLog("WebSocket unauthorized (4401) — redirecting to login…", { kind: "warn" });
-      return;
-    }
-
-    setStatus(`disconnected (code ${ev.code})`);
-    appendLog(`WebSocket disconnected (code=${ev.code}, reason=${ev.reason || "none"})`, {
-      kind: "warn",
-    });
+    setStatus("disconnected");
+    appendLog("WebSocket disconnected", { kind: "warn" });
   });
 
-  // -----------------------------
-  // Button wiring (optional UI elements)
-  // -----------------------------
-  if (startBtn) {
-    startBtn.addEventListener("click", () => {
-      try {
-        const config = tryReadRunConfigFromPage();
-        sendRunConfig(config);
-      } catch {
-        // Error already logged by config parser
-      }
-    });
-  }
+  ws.addEventListener("message", (ev) => {
+    try {
+      const parsed = JSON.parse(String(ev.data)) as ServerToClientMessage;
+      handleServerMessage(parsed);
+    } catch (err) {
+      appendLog(`Malformed server message: ${String(err)}`, { kind: "warn" });
+    }
+  });
 
-  if (stopBtn) {
-    stopBtn.addEventListener("click", () => {
-      sendStopRun();
-    });
-  }
+  runForm.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    try {
+      sendRunConfig(readRunConfigFromForm());
+    } catch (err) {
+      appendLog(String(err), { kind: "error" });
+    }
+  });
 
-  if (clearLogsBtn) {
-    clearLogsBtn.addEventListener("click", () => {
-      logsEl.textContent = "";
-      appendLog("Logs cleared", { kind: "info" });
-    });
-  }
+  stopBtn?.addEventListener("click", () => sendStopRun());
+  refreshHistoryBtn?.addEventListener("click", () => void refreshHistory());
 
-  // Initial UI state
   setSocketUiState(ws.readyState === WebSocket.OPEN);
-  setStatus(ws.readyState === WebSocket.OPEN ? "connected" : "connecting…");
-  setRunUiState(false);
+  setStatus("connecting…");
 }
