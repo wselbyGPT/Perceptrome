@@ -20,8 +20,9 @@ def _default_genes(
     transformer_dropout: float,
     learning_rate: float,
     beta_kl: float,
+    **extra_genes: Any,
 ) -> Dict[str, Any]:
-    return {
+    genes = {
         "tokenizer": str(tokenizer).lower(),
         "seq_len": int(seq_len),
         "vocab_size": int(vocab_size),
@@ -35,6 +36,8 @@ def _default_genes(
         "learning_rate": float(learning_rate),
         "beta_kl": float(beta_kl),
     }
+    genes.update(extra_genes)
+    return genes
 
 
 def _normalize_gene_id(gene_id: str) -> str:
@@ -78,6 +81,7 @@ def migrate_genome_payload(
     transformer_dropout: float,
     learning_rate: float,
     beta_kl: float,
+    **extra_genes: Any,
 ) -> Dict[str, Any]:
     defaults = _default_genes(
         tokenizer=tokenizer,
@@ -92,6 +96,7 @@ def migrate_genome_payload(
         transformer_dropout=transformer_dropout,
         learning_rate=learning_rate,
         beta_kl=beta_kl,
+        **extra_genes,
     )
 
     # Legacy checkpoints stored genes directly in meta without a genome object.

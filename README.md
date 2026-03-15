@@ -170,6 +170,25 @@ The config includes:
 
 You can override many `training` values at the command line (for example model type, tokenizer, window/stride, batch size, and training steps).
 
+### Hierarchical dual-path model
+
+A new `training.model_type: hierarchical` path is available. It keeps two late-fused branches alive:
+
+- sequence branch: local 1D CNN encoder
+- Bio-AST branch: node encoder + tree RvNN encoder
+
+Then the model applies late fusion, predicts latent `mu/logvar`, decodes sequence reconstruction, and exposes critic heads (`validity`, `novelty`, `gc_fraction`).
+
+Useful config keys under `training`:
+
+- `hierarchical_latent_dim`
+- `ast_tree_layers`, `ast_node_type_vocab_size`
+- `hierarchical_ablation_mode` (`hierarchical`, `cnn_only`, `ast_only`)
+- staged schedule knobs: `stage_a_steps`, `stage_b_steps`, `stage_c_steps`, `stage_d_steps`
+- `critic_loss_weight`
+
+The existing model types remain unchanged (`mlp`, `transformer`, `ssm`, `tree`, `hybrid`).
+
 ## Running tests
 
 ```bash

@@ -14,6 +14,7 @@ except ImportError:
 
 from .config import IOConfig
 from .genome_schema import CURRENT_GENOME_SCHEMA_VERSION, migrate_genome_payload
+from .models.factory import build_hierarchical_model
 
 
 @dataclass(frozen=True)
@@ -116,6 +117,7 @@ def _normalize_model_type(model_type: str) -> str:
         "moe": "mlp",
         "gnn": "mlp",
         "tcn": "mlp",
+        "hier": "hierarchical",
     }.get(mt, mt)
 
 
@@ -527,6 +529,9 @@ def load_or_init_model(
     ast_motif_kernel_size: int = 7,
     ast_motif_channels: int = 64,
     beta_kl: float = 1e-3,
+    hierarchical_latent_dim: Optional[int] = None,
+    ast_node_type_vocab_size: int = 64,
+    hierarchical_ablation_mode: str = "hierarchical",
 ) -> Tuple[nn.Module, "optim.Optimizer", int, str]:
     """
     seq_len: number of positions (bp or codons)
@@ -575,6 +580,17 @@ def load_or_init_model(
             motif_channels=ast_motif_channels,
             dropout=transformer_dropout,
         ).to(device)
+    elif mt == "hierarchical":
+        model = build_hierarchical_model(
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            latent_dim=int(hierarchical_latent_dim or hidden_dim),
+            ast_tree_layers=ast_tree_layers,
+            ast_node_type_vocab_size=ast_node_type_vocab_size,
+            dropout=transformer_dropout,
+            ablation_mode=hierarchical_ablation_mode,
+        ).to(device)
     else:
         model = PlasmidVAE(input_dim=input_dim, hidden_dim=hidden_dim).to(device)
     optimizer: optim.Optimizer = optim.Adam(model.parameters(), lr=learning_rate)
@@ -597,6 +613,9 @@ def load_or_init_model(
             transformer_dropout=transformer_dropout,
             learning_rate=learning_rate,
             beta_kl=beta_kl,
+            hierarchical_latent_dim=int(hierarchical_latent_dim or hidden_dim),
+            ast_node_type_vocab_size=int(ast_node_type_vocab_size),
+            hierarchical_ablation_mode=str(hierarchical_ablation_mode),
         )
         migrated_genes: Dict[str, object] = genome_payload["genes"]
         meta["genome"] = genome_payload
@@ -614,6 +633,9 @@ def load_or_init_model(
         ck_ast_tree_layers = int(migrated_genes.get("ast_tree_layers", ast_tree_layers))
         ck_ast_motif_kernel_size = int(migrated_genes.get("ast_motif_kernel_size", ast_motif_kernel_size))
         ck_ast_motif_channels = int(migrated_genes.get("ast_motif_channels", ast_motif_channels))
+        ck_hier_latent = int(migrated_genes.get("hierarchical_latent_dim", int(hierarchical_latent_dim or hidden_dim)))
+        ck_ast_vocab = int(migrated_genes.get("ast_node_type_vocab_size", ast_node_type_vocab_size))
+        ck_hier_ablation = str(migrated_genes.get("hierarchical_ablation_mode", hierarchical_ablation_mode)).lower()
         
         if ck_tok != tokenizer.lower():
             raise ValueError(f"Checkpoint tokenizer={ck_tok} but requested tokenizer={tokenizer}. Delete {ckpt_path} or match settings.")
@@ -662,6 +684,22 @@ def load_or_init_model(
             if ck_ast_motif_channels != ast_motif_channels:
                 raise ValueError(
                     f"Checkpoint ast_motif_channels={ck_ast_motif_channels} but requested {ast_motif_channels}. "
+                    f"Delete {ckpt_path} or match settings."
+                )
+        if mt == "hierarchical":
+            if ck_hier_latent != int(hierarchical_latent_dim or hidden_dim):
+                raise ValueError(
+                    f"Checkpoint hierarchical_latent_dim={ck_hier_latent} but requested {int(hierarchical_latent_dim or hidden_dim)}. "
+                    f"Delete {ckpt_path} or match settings."
+                )
+            if ck_ast_vocab != int(ast_node_type_vocab_size):
+                raise ValueError(
+                    f"Checkpoint ast_node_type_vocab_size={ck_ast_vocab} but requested {int(ast_node_type_vocab_size)}. "
+                    f"Delete {ckpt_path} or match settings."
+                )
+            if ck_hier_ablation != str(hierarchical_ablation_mode).lower():
+                raise ValueError(
+                    f"Checkpoint hierarchical_ablation_mode={ck_hier_ablation} but requested {str(hierarchical_ablation_mode).lower()}. "
                     f"Delete {ckpt_path} or match settings."
                 )
 
@@ -713,6 +751,9 @@ def save_checkpoint(
     ast_tree_layers: int = 4,
     ast_motif_kernel_size: int = 7,
     ast_motif_channels: int = 64,
+    hierarchical_latent_dim: Optional[int] = None,
+    ast_node_type_vocab_size: int = 64,
+    hierarchical_ablation_mode: str = "hierarchical",
 ) -> None:
     if torch is None:
         return
@@ -734,6 +775,9 @@ def save_checkpoint(
             "ast_tree_layers": int(ast_tree_layers),
             "ast_motif_kernel_size": int(ast_motif_kernel_size),
             "ast_motif_channels": int(ast_motif_channels),
+            "hierarchical_latent_dim": int(hierarchical_latent_dim or hidden_dim),
+            "ast_node_type_vocab_size": int(ast_node_type_vocab_size),
+            "hierarchical_ablation_mode": str(hierarchical_ablation_mode).lower(),
             "genome": migrate_genome_payload(
                 {
                     "schema_version": CURRENT_GENOME_SCHEMA_VERSION,
@@ -751,6 +795,9 @@ def save_checkpoint(
                         "ast_tree_layers": int(ast_tree_layers),
                         "ast_motif_kernel_size": int(ast_motif_kernel_size),
                         "ast_motif_channels": int(ast_motif_channels),
+                        "hierarchical_latent_dim": int(hierarchical_latent_dim or hidden_dim),
+                        "ast_node_type_vocab_size": int(ast_node_type_vocab_size),
+                        "hierarchical_ablation_mode": str(hierarchical_ablation_mode).lower(),
                         "learning_rate": float(learning_rate),
                         "beta_kl": float(beta_kl),
                     },
@@ -767,6 +814,9 @@ def save_checkpoint(
                 transformer_dropout=transformer_dropout,
                 learning_rate=learning_rate,
                 beta_kl=beta_kl,
+                hierarchical_latent_dim=int(hierarchical_latent_dim or hidden_dim),
+                ast_node_type_vocab_size=int(ast_node_type_vocab_size),
+                hierarchical_ablation_mode=str(hierarchical_ablation_mode).lower(),
             ),
         },
     }
