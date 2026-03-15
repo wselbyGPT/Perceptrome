@@ -25,11 +25,22 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_stream_epochs": 100,
         "shuffle_catalog": True,
         "hidden_dim": 512,
-        "model_type": "mlp",  # "mlp" | "transformer" | "ssm" | "rnn" | "hybrid" | "moe" | "gnn" | "tcn" | "tree"
+        "model_type": "mlp",  # "mlp" | "transformer" | "ssm" | "rnn" | "hybrid" | "moe" | "gnn" | "tcn" | "tree" | "hierarchical"
         "transformer_d_model": 256,
         "transformer_nhead": 8,
         "transformer_layers": 4,
         "transformer_dropout": 0.1,
+        "ast_tree_layers": 4,
+        "ast_motif_kernel_size": 7,
+        "ast_motif_channels": 64,
+        "hierarchical_latent_dim": 256,
+        "ast_node_type_vocab_size": 64,
+        "hierarchical_ablation_mode": "hierarchical",  # "hierarchical" | "cnn_only" | "ast_only"
+        "stage_a_steps": 0,
+        "stage_b_steps": 0,
+        "stage_c_steps": 0,
+        "stage_d_steps": 0,
+        "critic_loss_weight": 0.2,
         "learning_rate": 1e-3,
         "beta_kl": 1e-3,
         "kl_warmup_steps": 10000,
@@ -132,6 +143,17 @@ class TrainingConfig:
     transformer_nhead: int
     transformer_layers: int
     transformer_dropout: float
+    ast_tree_layers: int
+    ast_motif_kernel_size: int
+    ast_motif_channels: int
+    hierarchical_latent_dim: int
+    ast_node_type_vocab_size: int
+    hierarchical_ablation_mode: str
+    stage_a_steps: int
+    stage_b_steps: int
+    stage_c_steps: int
+    stage_d_steps: int
+    critic_loss_weight: float
     learning_rate: float
     beta_kl: float
     kl_warmup_steps: int
@@ -270,6 +292,17 @@ def extract_configs(cfg: Dict[str, Any]) -> Tuple[NCBIConfig, TrainingConfig, IO
         transformer_nhead=int(t.get("transformer_nhead", 8)),
         transformer_layers=int(t.get("transformer_layers", 4)),
         transformer_dropout=float(t.get("transformer_dropout", 0.1)),
+        ast_tree_layers=int(t.get("ast_tree_layers", 4)),
+        ast_motif_kernel_size=int(t.get("ast_motif_kernel_size", 7)),
+        ast_motif_channels=int(t.get("ast_motif_channels", 64)),
+        hierarchical_latent_dim=int(t.get("hierarchical_latent_dim", t.get("hidden_dim", 512))),
+        ast_node_type_vocab_size=int(t.get("ast_node_type_vocab_size", 64)),
+        hierarchical_ablation_mode=str(t.get("hierarchical_ablation_mode", "hierarchical")),
+        stage_a_steps=int(t.get("stage_a_steps", 0)),
+        stage_b_steps=int(t.get("stage_b_steps", 0)),
+        stage_c_steps=int(t.get("stage_c_steps", 0)),
+        stage_d_steps=int(t.get("stage_d_steps", 0)),
+        critic_loss_weight=float(t.get("critic_loss_weight", 0.2)),
         learning_rate=float(t.get("learning_rate", 1e-3)),
         beta_kl=float(t.get("beta_kl", 1e-3)),
         kl_warmup_steps=int(t.get("kl_warmup_steps", 10000)),

@@ -18,6 +18,7 @@ except ImportError:
 
 from .config import IOConfig, TrainingConfig
 from .model import get_device, load_or_init_model, save_checkpoint, vae_loss
+from .models.losses import hierarchical_loss_bundle
 from .encoding_main import tokenizer_meta
 from .run_layout import ensure_run_layout, path_in_run
 
@@ -131,6 +132,13 @@ def train_on_encoded(
     mp = float(mask_prob) if mask_prob is not None else float(getattr(train_cfg, 'aa_mask_prob', 0.05 if str(tokenizer).lower() == 'aa' else 0.0))
     sp = float(span_mask_prob) if span_mask_prob is not None else float(getattr(train_cfg, 'aa_span_mask_prob', 0.0))
     sl = int(span_mask_len) if span_mask_len is not None else int(getattr(train_cfg, 'aa_span_mask_len', 0))
+    stage_plan = (
+        ("A", int(getattr(train_cfg, "stage_a_steps", 0))),
+        ("B", int(getattr(train_cfg, "stage_b_steps", 0))),
+        ("C", int(getattr(train_cfg, "stage_c_steps", 0))),
+        ("D", int(getattr(train_cfg, "stage_d_steps", 0))),
+    )
+    staged_total = sum(max(0, count) for _, count in stage_plan)
 
     model, optimizer, global_step, ckpt_path = load_or_init_model(
         io_cfg=io_cfg,
@@ -147,6 +155,12 @@ def train_on_encoded(
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
         beta_kl=train_cfg.beta_kl,
+        ast_tree_layers=train_cfg.ast_tree_layers,
+        ast_motif_kernel_size=train_cfg.ast_motif_kernel_size,
+        ast_motif_channels=train_cfg.ast_motif_channels,
+        hierarchical_latent_dim=train_cfg.hierarchical_latent_dim,
+        ast_node_type_vocab_size=train_cfg.ast_node_type_vocab_size,
+        hierarchical_ablation_mode=train_cfg.hierarchical_ablation_mode,
     )
 
     windows_tensor = torch.from_numpy(encoded)  # (N, L, V)
@@ -208,8 +222,41 @@ def train_on_encoded(
                 beta = train_cfg.beta_kl
 
             optimizer.zero_grad(set_to_none=True)
-            recon_logits, mu, logvar = model(x_flat)
+            train_stage = "joint"
+            if staged_total > 0:
+                stage_cursor = step_count
+                acc = 0
+                for stage_name, stage_steps in stage_plan:
+                    acc += max(0, stage_steps)
+                    if stage_cursor < acc:
+                        train_stage = stage_name
+                        break
+
+            critic_outputs = None
+            if str(model_type).lower() == "hierarchical" and hasattr(model, "forward_with_aux"):
+                aux = model.forward_with_aux(x_flat)
+                recon_logits, mu, logvar = aux.recon_logits, aux.mu, aux.logvar
+                critic_outputs = aux.critics if train_stage in {"D", "joint"} else None
+            else:
+                recon_logits, mu, logvar = model(x_flat)
+
             total, recon, kl = vae_loss(recon_logits, x_target_flat, mu, logvar, beta, lt, seq_len, vocab_size)
+            if critic_outputs is not None:
+                x3 = batch
+                gc_target = x3[:, :, 1:3].sum(dim=(1, 2)) / float(max(1, x3.size(1)))
+                property_targets = {
+                    "gc_fraction": gc_target,
+                    "validity": torch.ones_like(gc_target),
+                    "novelty": torch.zeros_like(gc_target),
+                }
+                total, _metrics = hierarchical_loss_bundle(
+                    total,
+                    recon,
+                    kl,
+                    critic_outputs=critic_outputs,
+                    property_targets=property_targets,
+                    property_weight=float(getattr(train_cfg, "critic_loss_weight", 0.2)),
+                )
             total.backward()
 
             grad_norm = None
@@ -259,6 +306,12 @@ def train_on_encoded(
         transformer_dropout=transformer_dropout,
         learning_rate=train_cfg.learning_rate,
         beta_kl=train_cfg.beta_kl,
+        ast_tree_layers=train_cfg.ast_tree_layers,
+        ast_motif_kernel_size=train_cfg.ast_motif_kernel_size,
+        ast_motif_channels=train_cfg.ast_motif_channels,
+        hierarchical_latent_dim=train_cfg.hierarchical_latent_dim,
+        ast_node_type_vocab_size=train_cfg.ast_node_type_vocab_size,
+        hierarchical_ablation_mode=train_cfg.hierarchical_ablation_mode,
     )
 
     return last_total
@@ -313,6 +366,12 @@ def compute_window_errors(
         transformer_layers=transformer_layers,
         transformer_dropout=transformer_dropout,
         beta_kl=train_cfg.beta_kl,
+        ast_tree_layers=train_cfg.ast_tree_layers,
+        ast_motif_kernel_size=train_cfg.ast_motif_kernel_size,
+        ast_motif_channels=train_cfg.ast_motif_channels,
+        hierarchical_latent_dim=train_cfg.hierarchical_latent_dim,
+        ast_node_type_vocab_size=train_cfg.ast_node_type_vocab_size,
+        hierarchical_ablation_mode=train_cfg.hierarchical_ablation_mode,
     )
 
     model.eval()
