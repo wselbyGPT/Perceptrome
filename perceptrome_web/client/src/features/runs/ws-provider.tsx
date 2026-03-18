@@ -36,7 +36,7 @@ export function RunsWebSocketProvider({ children }: PropsWithChildren) {
         return;
       }
       if (event.code === 4403) {
-        window.location.replace(`/profile/change-password?next=${buildNextUrl()}`);
+        window.location.replace(`/security?next=${buildNextUrl()}`);
       }
     });
     setSocket(ws);

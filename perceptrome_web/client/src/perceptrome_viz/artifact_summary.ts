@@ -2,10 +2,17 @@ import { type RunRecord } from "../run_api";
 import { asPrettyText, mustEl } from "./dom";
 
 export class ArtifactSummary {
-  private resultsEl = mustEl<HTMLElement>("results");
-  private generatedEl = mustEl<HTMLElement>("generated-sequences");
-  private validationEl = mustEl<HTMLElement>("validation-results");
-  private checkpointsEl = mustEl<HTMLElement>("checkpoints");
+  private resultsEl: HTMLElement;
+  private generatedEl: HTMLElement;
+  private validationEl: HTMLElement;
+  private checkpointsEl: HTMLElement;
+
+  constructor(root: ParentNode) {
+    this.resultsEl = mustEl<HTMLElement>(root, "results");
+    this.generatedEl = mustEl<HTMLElement>(root, "generated-sequences");
+    this.validationEl = mustEl<HTMLElement>(root, "validation-results");
+    this.checkpointsEl = mustEl<HTMLElement>(root, "checkpoints");
+  }
 
   renderResults(value: unknown): void {
     this.resultsEl.textContent = asPrettyText(value);

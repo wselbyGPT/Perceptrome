@@ -1,8 +1,13 @@
 import { mustEl, nowStamp } from "./dom";
 
 export class ActiveRunTimeline {
-  private logsEl = mustEl<HTMLElement>("logs");
-  private timelineEl = mustEl<HTMLElement>("active-run-timeline");
+  private logsEl: HTMLElement;
+  private timelineEl: HTMLElement;
+
+  constructor(root: ParentNode) {
+    this.logsEl = mustEl<HTMLElement>(root, "logs");
+    this.timelineEl = mustEl<HTMLElement>(root, "active-run-timeline");
+  }
 
   appendLog(line: string, opts?: { kind?: "info" | "warn" | "error" | "raw"; noStamp?: boolean }): void {
     const kind = opts?.kind ?? "info";
