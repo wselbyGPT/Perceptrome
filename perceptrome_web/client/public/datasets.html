@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Perceptrome</title>
+    <script>
+      (function () {
+        var target = '/';
+        var map = {
+          runs: '/runs',
+          login: '/login',
+          admin_users: '/admin/users',
+          datasets: '/datasets',
+          change_password: '/profile/change-password',
+          verify_email: '/verify-email',
+          forgot_password: '/forgot-password',
+          reset_password: '/reset-password'
+        };
+        var page = 'datasets';
+        var next = map[page] || target;
+        window.location.replace(next + window.location.search + window.location.hash);
+      })();
+    </script>
+  </head>
+  <body>
+    <p>Redirecting…</p>
+  </body>
+</html>
