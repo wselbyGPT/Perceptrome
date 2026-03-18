@@ -1,4 +1,5 @@
-// client/src/auth_api.ts
+import { apiRequest } from "./lib/api-client";
+
 export type Me = {
   id: string;
   email: string;
@@ -28,108 +29,84 @@ export type AdminCreateUserInput = {
   must_change_password?: boolean;
 };
 
-type ApiErrorShape = {
-  detail?: string;
+export type LoginInput = {
+  email: string;
+  password: string;
 };
 
-async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const res = await fetch(path, {
-    ...init,
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...(init.headers ?? {}),
-    },
-  });
-
-  if (!res.ok) {
-    let message = `HTTP ${res.status}`;
-    try {
-      const data = (await res.json()) as ApiErrorShape;
-      if (data?.detail) message = data.detail;
-    } catch {
-      // ignore JSON parse errors
-    }
-    throw new Error(message);
-  }
-
-  const text = await res.text();
-  return (text ? JSON.parse(text) : {}) as T;
-}
-
 export async function getMe(): Promise<Me> {
-  return apiFetch<Me>("/api/auth/me", { method: "GET" });
+  return apiRequest<Me>("/api/auth/me", { method: "GET" });
 }
 
 export async function login(email: string, password: string): Promise<Me> {
-  return apiFetch<Me>("/api/auth/login", {
+  return apiRequest<Me>("/api/auth/login", {
     method: "POST",
-    body: JSON.stringify({ email, password }),
+    body: { email, password },
   });
 }
 
 export async function verifyEmail(token: string): Promise<string> {
-  const out = await apiFetch<{ message: string }>("/api/auth/verify-email", {
+  const out = await apiRequest<{ message: string }>("/api/auth/verify-email", {
     method: "POST",
-    body: JSON.stringify({ token }),
+    body: { token },
   });
   return out.message;
 }
 
 export async function resendVerification(email: string): Promise<string> {
-  const out = await apiFetch<{ message: string }>("/api/auth/resend-verification", {
+  const out = await apiRequest<{ message: string }>("/api/auth/resend-verification", {
     method: "POST",
-    body: JSON.stringify({ email }),
+    body: { email },
   });
   return out.message;
 }
 
 export async function forgotPassword(email: string): Promise<string> {
-  const out = await apiFetch<{ message: string }>("/api/auth/forgot-password", {
+  const out = await apiRequest<{ message: string }>("/api/auth/forgot-password", {
     method: "POST",
-    body: JSON.stringify({ email }),
+    body: { email },
   });
   return out.message;
 }
 
 export async function resetPassword(token: string, newPassword: string): Promise<string> {
-  const out = await apiFetch<{ message: string }>("/api/auth/reset-password", {
+  const out = await apiRequest<{ message: string }>("/api/auth/reset-password", {
     method: "POST",
-    body: JSON.stringify({ token, new_password: newPassword }),
+    body: { token, new_password: newPassword },
   });
   return out.message;
 }
 
 export async function logout(): Promise<void> {
-  await apiFetch<{ message: string }>("/api/auth/logout", {
+  await apiRequest<{ message: string }>("/api/auth/logout", {
     method: "POST",
   });
 }
 
 export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
-  await apiFetch<{ message: string }>("/api/auth/change-password", {
+  await apiRequest<{ message: string }>("/api/auth/change-password", {
     method: "POST",
-    body: JSON.stringify({
+    body: {
       current_password: currentPassword,
       new_password: newPassword,
-    }),
+    },
   });
 }
 
 export async function adminListUsers(): Promise<AdminUser[]> {
-  return apiFetch<AdminUser[]>("/api/admin/users", { method: "GET" });
+  return apiRequest<AdminUser[]>("/api/admin/users", { method: "GET" });
 }
 
 export async function adminCreateUser(input: AdminCreateUserInput): Promise<AdminUser> {
-  return apiFetch<AdminUser>("/api/admin/users", {
+  return apiRequest<AdminUser>("/api/admin/users", {
     method: "POST",
-    body: JSON.stringify({
+    body: {
       email: input.email,
       password: input.password,
       username: input.username || null,
       role: input.role ?? "user",
       is_active: input.is_active ?? true,
       must_change_password: input.must_change_password ?? true,
-    }),
+    },
   });
 }

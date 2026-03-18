@@ -1,3 +1,5 @@
+import { apiRequest } from "./lib/api-client";
+
 export type DatasetSplit = {
   name: string;
   count: number;
@@ -23,29 +25,14 @@ export type DatasetPreview = {
   total_rows: number;
 };
 
-async function fetchJson<T>(url: string): Promise<T> {
-  const resp = await fetch(url, { credentials: "include" });
-  if (!resp.ok) {
-    let detail = `${resp.status} ${resp.statusText}`;
-    try {
-      const body = await resp.json();
-      detail = body?.detail ?? body?.message ?? detail;
-    } catch {
-      // noop
-    }
-    throw new Error(String(detail));
-  }
-  return (await resp.json()) as T;
-}
-
 export async function listDatasets(): Promise<DatasetCatalogItem[]> {
-  return fetchJson<DatasetCatalogItem[]>("/api/datasets");
+  return apiRequest<DatasetCatalogItem[]>("/api/datasets");
 }
 
 export async function getDataset(datasetId: string): Promise<DatasetDetail> {
-  return fetchJson<DatasetDetail>(`/api/datasets/${encodeURIComponent(datasetId)}`);
+  return apiRequest<DatasetDetail>(`/api/datasets/${encodeURIComponent(datasetId)}`);
 }
 
 export async function getDatasetPreview(datasetId: string, limit = 25): Promise<DatasetPreview> {
-  return fetchJson<DatasetPreview>(`/api/datasets/${encodeURIComponent(datasetId)}/preview?limit=${limit}`);
+  return apiRequest<DatasetPreview>(`/api/datasets/${encodeURIComponent(datasetId)}/preview?limit=${limit}`);
 }

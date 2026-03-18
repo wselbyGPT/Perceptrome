@@ -1,3 +1,5 @@
+import { apiRequest } from "./lib/api-client";
+
 export type RunArtifact = {
   id: number;
   phase?: string | null;
@@ -80,47 +82,24 @@ export type RunLineage = {
   edges: LineageEdge[];
 };
 
-async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(url, {
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers || {}),
-    },
-    ...init,
-  });
-
-  if (!resp.ok) {
-    let detail = `${resp.status} ${resp.statusText}`;
-    try {
-      const body = await resp.json();
-      detail = body?.detail ?? body?.message ?? detail;
-    } catch {
-      // noop
-    }
-    throw new Error(String(detail));
-  }
-  return (await resp.json()) as T;
-}
-
 export async function listRuns(limit = 50): Promise<RunRecord[]> {
-  return fetchJson<RunRecord[]>(`/api/runs?limit=${limit}`);
+  return apiRequest<RunRecord[]>(`/api/runs?limit=${limit}`);
 }
 
 export async function getRunsSummary(): Promise<RunSummary> {
-  return fetchJson<RunSummary>("/api/runs/summary");
+  return apiRequest<RunSummary>("/api/runs/summary");
 }
 
 export async function listActiveRuns(limit = 12): Promise<ActiveRunsResponse> {
-  return fetchJson<ActiveRunsResponse>(`/api/runs/active?limit=${limit}`);
+  return apiRequest<ActiveRunsResponse>(`/api/runs/active?limit=${limit}`);
 }
 
 export async function listFailedRuns(limit = 12): Promise<FailureRunsResponse> {
-  return fetchJson<FailureRunsResponse>(`/api/runs/failures?limit=${limit}`);
+  return apiRequest<FailureRunsResponse>(`/api/runs/failures?limit=${limit}`);
 }
 
 export async function getRun(runId: string): Promise<RunRecord> {
-  return fetchJson<RunRecord>(`/api/runs/${encodeURIComponent(runId)}`);
+  return apiRequest<RunRecord>(`/api/runs/${encodeURIComponent(runId)}`);
 }
 
 export async function getRunLineage(
@@ -132,5 +111,5 @@ export async function getRunLineage(
   if (options?.artifactType) params.set("artifact_type", options.artifactType);
   if (options?.runStates?.length) params.set("run_state", options.runStates.join(","));
   const suffix = params.toString() ? `?${params.toString()}` : "";
-  return fetchJson<RunLineage>(`/api/runs/${encodeURIComponent(runId)}/lineage${suffix}`);
+  return apiRequest<RunLineage>(`/api/runs/${encodeURIComponent(runId)}/lineage${suffix}`);
 }
