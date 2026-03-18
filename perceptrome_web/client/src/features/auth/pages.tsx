@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { login, forgotPassword, resendVerification, resetPassword, verifyEmail, changePassword } from "../../auth_api";
+import { forgotPassword, resendVerification, resetPassword, verifyEmail } from "../../auth_api";
 import { useAuth } from "./auth-context";
 import { FormField } from "../../components/FormField";
 import { MessageBanner } from "../../components/MessageBanner";
@@ -24,7 +24,7 @@ function parseErrors<T extends Record<string, unknown>>(schema: { safeParse: (in
 export function LoginPage() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const { setMe } = useAuth();
+  const { loginWithPassword } = useAuth();
   const [message, setMessage] = useState<string>();
   const [verifyEmailAddress, setVerifyEmailAddress] = useState<string>();
   const { register, handleSubmit, formState: { isSubmitting }, getValues } = useForm<{ email: string; password: string }>({ defaultValues: { email: "", password: "" } });
@@ -46,8 +46,7 @@ export function LoginPage() {
               return;
             }
             try {
-              const me = await login(values.email.trim(), values.password);
-              setMe(me);
+              await loginWithPassword({ email: values.email.trim(), password: values.password });
               navigate(params.get("next") || "/runs", { replace: true });
             } catch (error) {
               const nextMessage = error instanceof Error ? error.message : "Login failed";
@@ -128,7 +127,7 @@ function scorePasswordStrength(password: string): { score: number; label: string
 export function ChangePasswordPage() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const { me, logoutAndClear, refresh } = useAuth();
+  const { me, logoutAndClear, changePasswordAndRefresh } = useAuth();
   const [message, setMessage] = useState<string>();
   const [visible, setVisible] = useState(false);
   const { register, handleSubmit, watch, formState: { isSubmitting }, getValues } = useForm<{ currentPassword: string; newPassword: string; confirmPassword: string }>({ defaultValues: { currentPassword: "", newPassword: "", confirmPassword: "" } });
@@ -142,7 +141,7 @@ export function ChangePasswordPage() {
         <h1 id="page-title">{me?.must_change_password ? "Password Change Required" : "Update Your Password"}</h1>
         <p className="auth-sub" id="page-subtitle">{me?.must_change_password ? "You must update your password before continuing." : "Choose a new password to keep your account secure."}</p>
         <div className="who">{me ? `${me.email} (${me.role})` : ""}</div>
-        <form className="stack" onSubmit={handleSubmit(async (values) => { const parsed = changePasswordSchema.safeParse(values); if (!parsed.success) { setMessage("Please fix the highlighted password issues."); return; } try { await changePassword(values.currentPassword, values.newPassword); await refresh(); setMessage("Password updated. Redirecting…"); window.setTimeout(() => { navigate(params.get("next") || "/runs", { replace: true }); }, 700); } catch (error) { setMessage(error instanceof Error ? error.message : "Failed to update password"); } })}>
+        <form className="stack" onSubmit={handleSubmit(async (values) => { const parsed = changePasswordSchema.safeParse(values); if (!parsed.success) { setMessage("Please fix the highlighted password issues."); return; } try { await changePasswordAndRefresh(values.currentPassword, values.newPassword); setMessage("Password updated. Redirecting…"); window.setTimeout(() => { navigate(params.get("next") || "/runs", { replace: true }); }, 700); } catch (error) { setMessage(error instanceof Error ? error.message : "Failed to update password"); } })}>
           <FormField label="Current Password" htmlFor="current-password" error={errors.currentPassword}><input id="current-password" className="input" type={visible ? "text" : "password"} autoComplete="current-password" {...register("currentPassword")} /></FormField>
           <FormField label="New Password" htmlFor="change-new-password" error={errors.newPassword}><input id="change-new-password" className="input" type={visible ? "text" : "password"} autoComplete="new-password" {...register("newPassword")} /></FormField>
           <div className="strength" aria-live="polite"><progress max={5} value={strength.score}></progress><div className="muted">Strength: {strength.label}</div></div>
