@@ -34,3 +34,6 @@ model/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Perceptrome web database files
+perceptrome_web/server/*.db

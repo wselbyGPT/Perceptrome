@@ -33,3 +33,5 @@ typing_extensions==4.15.0
 urllib3==2.6.2
 PyYAML==6.0.3
 PySide6>=6.6
+alembic==1.16.5
+psycopg[binary]==3.2.12

@@ -6,9 +6,9 @@ from sqlalchemy.orm import sessionmaker
 
 from app import main as main_module
 from app.auth_rate_limit import LoginAttemptStore
-from app.db import Base
 from app.deps import get_db
 from app.main import app
+from tests.db_utils import apply_migrations
 
 
 class FakeClock:
@@ -26,7 +26,7 @@ def setup_client(monkeypatch, tmp_path):
     db_path = tmp_path / "test.db"
     engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False}, future=True)
     TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False, future=True)
-    Base.metadata.create_all(bind=engine)
+    apply_migrations(f"sqlite:///{db_path}")
 
     def override_get_db():
         db = TestingSessionLocal()
@@ -81,7 +81,7 @@ def test_db_store_is_visible_across_instances(tmp_path):
     db_path = tmp_path / "shared.db"
     engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False}, future=True)
     TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False, future=True)
-    Base.metadata.create_all(bind=engine)
+    apply_migrations(f"sqlite:///{db_path}")
 
     now = datetime(2024, 1, 1, 0, 0, 0)
     store_a = LoginAttemptStore()

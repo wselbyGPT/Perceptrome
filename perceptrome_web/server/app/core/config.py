@@ -14,7 +14,8 @@ class Settings(BaseSettings):
 
     app_name: str = "Perceptrome API"
     app_env: str = "dev"
-    database_url: str = "sqlite:///./server/perceptrome_dev.db"
+    database_url: str = "postgresql+psycopg://perceptrome:perceptrome@localhost:5432/perceptrome"
+    local_sqlite_database_url: str = "sqlite:///./perceptrome_dev.db"
     session_cookie_name: str = "perceptrome_session"
     session_ttl_hours: int = 24 * 7
     cookie_secure: bool = False

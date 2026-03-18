@@ -2,9 +2,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from app.db import Base
 from app.deps import get_db
 from app.main import app
+from tests.db_utils import apply_migrations
 from app.models import AuthToken, User
 from app import main as main_module
 
@@ -13,7 +13,7 @@ def setup_client(monkeypatch, tmp_path):
     db_path = tmp_path / "test.db"
     engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False}, future=True)
     TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False, future=True)
-    Base.metadata.create_all(bind=engine)
+    apply_migrations(f"sqlite:///{db_path}")
 
     def override_get_db():
         db = TestingSessionLocal()
