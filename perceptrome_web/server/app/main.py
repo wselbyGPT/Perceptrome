@@ -35,28 +35,29 @@ from .db import Base, engine, SessionLocal
 from .deps import get_db, get_current_user, get_current_user_strict, require_role
 from .models import AuthToken, Run, RunArtifact, User, UserSession
 from .schemas import (
-    RegisterRequest,
-    LoginRequest,
-    VerifyEmailRequest,
-    ResendVerificationRequest,
-    ForgotPasswordRequest,
-    ResetPasswordRequest,
-    ChangePasswordRequest,
     AdminCreateUserRequest,
-    UserOut,
-    MessageOut,
-    RunArtifactOut,
-    RunOut,
-    RunStartRequest,
-    LineageNodeOut,
-    LineageEdgeOut,
-    RunLineageOut,
+    AdminUserOut,
+    ChangePasswordRequest,
     DatasetCatalogItemOut,
     DatasetDetailOut,
     DatasetPreviewOut,
     DatasetSplitOut,
-    RunSummaryOut,
+    ForgotPasswordRequest,
+    LineageEdgeOut,
+    LineageNodeOut,
+    LoginRequest,
+    MessageOut,
+    RegisterRequest,
+    ResendVerificationRequest,
+    ResetPasswordRequest,
+    RunArtifactOut,
+    RunLineageOut,
+    RunOut,
     RunsBoardOut,
+    RunStartRequest,
+    RunSummaryOut,
+    UserOut,
+    VerifyEmailRequest,
 )
 from perceptrome.jobs import JobEngine, JobEvent, JobSpec
 
@@ -1404,16 +1405,16 @@ def preview_dataset(dataset_id: str, limit: int = 25, user: User = Depends(get_c
     )
 
 
-@app.get("/api/admin/users")
+@app.get("/api/admin/users", response_model=list[AdminUserOut])
 def list_users(
     _admin: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
     users = db.execute(select(User).order_by(User.created_at.desc())).scalars().all()
-    return [UserOut.from_model(u).model_dump() for u in users]
+    return [AdminUserOut.from_model(u) for u in users]
 
 
-@app.post("/api/admin/users", response_model=UserOut)
+@app.post("/api/admin/users", response_model=AdminUserOut)
 def create_user_admin(
     payload: AdminCreateUserRequest,
     _admin: User = Depends(require_role("admin")),
@@ -1444,7 +1445,7 @@ def create_user_admin(
     db.add(user)
     db.commit()
     db.refresh(user)
-    return UserOut.from_model(user)
+    return AdminUserOut.from_model(user)
 
 
 def _ws_auth_user(websocket: WebSocket, db: Session) -> User | None:
