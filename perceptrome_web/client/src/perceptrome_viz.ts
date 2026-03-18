@@ -10,18 +10,24 @@ import {
 import type { RunConfig, ServerToClientMessage, ClientToServerMessage } from "./protocol";
 import { ActiveRunTimeline } from "./perceptrome_viz/active_run_timeline";
 import { ArtifactSummary } from "./perceptrome_viz/artifact_summary";
-import { asPrettyText, mustEl, type JsonRecord } from "./perceptrome_viz/dom";
+import { asPrettyText, type JsonRecord } from "./perceptrome_viz/dom";
 import { MetricsPanel } from "./perceptrome_viz/metrics_panel";
 import { RunQueueBoard } from "./perceptrome_viz/run_queue_board";
 
-function applyRunConfigFromQuery(): void {
+function getById<T extends Element>(root: ParentNode, id: string): T {
+  const element = root.querySelector<T>(`#${id}`);
+  if (!element) throw new Error(`Expected element #${id}`);
+  return element;
+}
+
+function applyRunConfigFromQuery(root: ParentNode): void {
   const params = new URLSearchParams(window.location.search);
   const dataset = params.get("dataset");
   const kind = params.get("kind");
   const configPath = params.get("config_path");
 
   if (dataset) {
-    const datasetEl = document.getElementById("dataset") as HTMLSelectElement | null;
+    const datasetEl = root.querySelector<HTMLSelectElement>("#dataset");
     if (datasetEl) {
       if (!Array.from(datasetEl.options).some((o) => o.value === dataset)) {
         const option = document.createElement("option");
@@ -34,38 +40,41 @@ function applyRunConfigFromQuery(): void {
   }
 
   if (kind) {
-    const kindEl = document.getElementById("run-kind") as HTMLSelectElement | null;
+    const kindEl = root.querySelector<HTMLSelectElement>("#run-kind");
     if (kindEl && Array.from(kindEl.options).some((o) => o.value === kind)) {
       kindEl.value = kind;
     }
   }
 
   if (configPath) {
-    const cfgEl = document.getElementById("config-path") as HTMLInputElement | null;
+    const cfgEl = root.querySelector<HTMLInputElement>("#config-path");
     if (cfgEl) cfgEl.value = configPath;
   }
 }
 
-export function setupPerceptromeViz(ws: WebSocket) {
-  const lineageSvg = mustEl<SVGSVGElement>("lineage-graph");
-  const lineageDetails = mustEl<HTMLElement>("lineage-details");
-  const lineageDepthEl = mustEl<HTMLInputElement>("lineage-depth");
-  const lineageArtifactTypeEl = mustEl<HTMLInputElement>("lineage-artifact-type");
-  const lineageRunStateEl = mustEl<HTMLSelectElement>("lineage-run-state");
-  const historyEl = mustEl<HTMLElement>("run-history");
-  const runForm = mustEl<HTMLFormElement>("run-form");
+export function setupPerceptromeViz(root: HTMLDivElement, ws: WebSocket) {
+  const lineageSvg = getById<SVGSVGElement>(root, "lineage-graph");
+  const lineageDetails = getById<HTMLElement>(root, "lineage-details");
+  const lineageDepthEl = getById<HTMLInputElement>(root, "lineage-depth");
+  const lineageArtifactTypeEl = getById<HTMLInputElement>(root, "lineage-artifact-type");
+  const lineageRunStateEl = getById<HTMLSelectElement>(root, "lineage-run-state");
+  const historyEl = getById<HTMLElement>(root, "run-history");
+  const runForm = getById<HTMLFormElement>(root, "run-form");
+  const clearLogsBtn = root.querySelector<HTMLButtonElement>("#clear-logs-btn");
+  const logsEl = getById<HTMLElement>(root, "logs");
 
-  const queueBoard = new RunQueueBoard();
-  const timeline = new ActiveRunTimeline();
-  const metricsPanel = new MetricsPanel();
-  const artifactSummary = new ArtifactSummary();
+  const queueBoard = new RunQueueBoard(root);
+  const timeline = new ActiveRunTimeline(root);
+  const metricsPanel = new MetricsPanel(root);
+  const artifactSummary = new ArtifactSummary(root);
 
-  const startBtn = document.getElementById("run-start-btn") as HTMLButtonElement | null;
-  const stopBtn = document.getElementById("run-stop-btn") as HTMLButtonElement | null;
-  const refreshHistoryBtn = document.getElementById("refresh-history-btn") as HTMLButtonElement | null;
-  const refreshLineageBtn = document.getElementById("refresh-lineage-btn") as HTMLButtonElement | null;
+  const startBtn = root.querySelector<HTMLButtonElement>("#run-start-btn");
+  const stopBtn = root.querySelector<HTMLButtonElement>("#run-stop-btn");
+  const refreshHistoryBtn = root.querySelector<HTMLButtonElement>("#refresh-history-btn");
+  const refreshLineageBtn = root.querySelector<HTMLButtonElement>("#refresh-lineage-btn");
+  const cleanupFns: Array<() => void> = [];
 
-  applyRunConfigFromQuery();
+  applyRunConfigFromQuery(root);
 
   let socketOpen = false;
   let runActive = false;
@@ -146,9 +155,7 @@ export function setupPerceptromeViz(ws: WebSocket) {
       const badges = [
         node.hash ? `hash:${node.hash.slice(0, 12)}` : null,
         node.config_snapshot?.sha256 ? `config:${node.config_snapshot.sha256.slice(0, 12)}` : null,
-      ]
-        .filter(Boolean)
-        .join(" | ");
+      ].filter(Boolean).join(" | ");
       title.textContent = `${node.kind} ${node.label}${badges ? `\n${badges}` : ""}`;
 
       g.appendChild(rect);
@@ -216,7 +223,7 @@ export function setupPerceptromeViz(ws: WebSocket) {
         activeRunId = runId;
         await inspectRun(runId);
         await refreshLineage(runId);
-        document.getElementById("run-drilldown")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        root.querySelector("#run-drilldown")?.scrollIntoView({ behavior: "smooth", block: "start" });
       });
       if (!activeRunId && board.activeRuns.length > 0) {
         activeRunId = board.activeRuns[0].run_id;
@@ -257,16 +264,16 @@ export function setupPerceptromeViz(ws: WebSocket) {
   }
 
   function readNumericInput(id: string, fallback: number): number {
-    const el = document.getElementById(id) as HTMLInputElement | null;
+    const el = root.querySelector<HTMLInputElement>(`#${id}`);
     const value = Number(el?.value);
     return Number.isFinite(value) ? value : fallback;
   }
 
   function readRunConfigFromForm(): RunConfig {
-    const kind = (document.getElementById("run-kind") as HTMLSelectElement).value;
-    const configPath = (document.getElementById("config-path") as HTMLInputElement).value.trim();
-    const dataset = (document.getElementById("dataset") as HTMLSelectElement).value;
-    const modelFamily = (document.getElementById("model-family") as HTMLSelectElement).value;
+    const kind = getById<HTMLSelectElement>(root, "run-kind").value;
+    const configPath = getById<HTMLInputElement>(root, "config-path").value.trim();
+    const dataset = getById<HTMLSelectElement>(root, "dataset").value;
+    const modelFamily = getById<HTMLSelectElement>(root, "model-family").value;
     if (!configPath) throw new Error("Config path is required");
 
     return {
@@ -276,10 +283,7 @@ export function setupPerceptromeViz(ws: WebSocket) {
       model_family: modelFamily,
       temperature: readNumericInput("temperature", 1.0),
       length_bp: readNumericInput("length-bp", 10000),
-      params: {
-        dataset,
-        model_family: modelFamily,
-      },
+      params: { dataset, model_family: modelFamily },
     } as RunConfig;
   }
 
@@ -316,7 +320,6 @@ export function setupPerceptromeViz(ws: WebSocket) {
         const statusText = typeof m.status === "string" ? m.status : "status";
         if (typeof m.run_id === "string") activeRunId = m.run_id;
         const progress = typeof m.progress === "number" ? m.progress : typeof m.percent === "number" ? (m.percent as number) / 100 : undefined;
-
         queueBoard.setStatus(statusText, progress);
         if (typeof m.state === "string") {
           if (m.state === "queued" || m.state === "running") setRunUiState(true);
@@ -324,11 +327,9 @@ export function setupPerceptromeViz(ws: WebSocket) {
         }
         break;
       }
-
       case "log":
         timeline.appendLog(typeof m.line === "string" ? m.line : asPrettyText(m), { kind: "raw" });
         break;
-
       case "progress": {
         const statusText = typeof m.phase === "string" ? m.phase : "running";
         const progress = typeof m.progress === "number" ? m.progress : undefined;
@@ -337,29 +338,24 @@ export function setupPerceptromeViz(ws: WebSocket) {
         setRunUiState(true);
         break;
       }
-
       case "phase": {
         if (typeof m.run_id === "string") activeRunId = m.run_id;
         timeline.appendLog(`[${String(m.phase ?? "phase")}] ${String(m.status ?? "")}`, { kind: "info" });
         timeline.pushTimelineEvent(`${String(m.phase ?? "phase")}: ${String(m.status ?? "")}`);
         break;
       }
-
       case "metric":
         metricsPanel.pushMetric(String(m.name ?? "metric"), m.value);
         break;
-
       case "checkpoint": {
         const p = String(m.path ?? "");
         const url = typeof m.download_url === "string" ? m.download_url : undefined;
         artifactSummary.pushArtifact(p, url);
         break;
       }
-
       case "validation-summary":
         artifactSummary.renderResults({ validation_results: m.summary ?? m });
         break;
-
       case "artifact-available": {
         const artifact = (m.artifact ?? {}) as JsonRecord;
         const path = typeof artifact.path === "string" ? artifact.path : "";
@@ -368,7 +364,6 @@ export function setupPerceptromeViz(ws: WebSocket) {
         artifactSummary.pushArtifact(path, downloadUrl);
         break;
       }
-
       case "result":
       case "results": {
         const payload = m.result ?? m.results ?? m.data ?? m.payload ?? m;
@@ -381,63 +376,83 @@ export function setupPerceptromeViz(ws: WebSocket) {
         timeline.appendLog(`Received ${type} payload`);
         break;
       }
-
       case "error":
         queueBoard.setStatus("error");
         timeline.appendLog(String(m.detail ?? m.message ?? "unknown error"), { kind: "error" });
         setRunUiState(false);
         break;
-
       case "run_stopped":
         queueBoard.setStatus("run stopped");
         setRunUiState(false);
         void refreshHistory();
         break;
-
       default:
         timeline.appendLog(`[${type}] ${asPrettyText(m)}`);
     }
   }
 
-  ws.addEventListener("open", () => {
+  const onOpen = () => {
     setSocketUiState(true);
     queueBoard.setStatus("connected");
     timeline.appendLog("WebSocket connected");
     void refreshHistory();
-  });
-
-  ws.addEventListener("close", () => {
+  };
+  const onClose = () => {
     setSocketUiState(false);
     queueBoard.setStatus("disconnected");
     timeline.appendLog("WebSocket disconnected", { kind: "warn" });
-  });
-
-  ws.addEventListener("message", (ev) => {
+  };
+  const onMessage = (ev: MessageEvent) => {
     try {
       const parsed = JSON.parse(String(ev.data)) as ServerToClientMessage;
       handleServerMessage(parsed);
     } catch (err) {
       timeline.appendLog(`Malformed server message: ${String(err)}`, { kind: "warn" });
     }
-  });
+  };
 
-  runForm.addEventListener("submit", (ev) => {
+  ws.addEventListener("open", onOpen);
+  ws.addEventListener("close", onClose);
+  ws.addEventListener("message", onMessage);
+  cleanupFns.push(() => ws.removeEventListener("open", onOpen));
+  cleanupFns.push(() => ws.removeEventListener("close", onClose));
+  cleanupFns.push(() => ws.removeEventListener("message", onMessage));
+
+  const onSubmit = (ev: Event) => {
     ev.preventDefault();
     try {
       sendRunConfig(readRunConfigFromForm());
     } catch (err) {
       timeline.appendLog(String(err), { kind: "error" });
     }
-  });
+  };
+  const onRefreshHistory = () => void refreshHistory();
+  const onRefreshLineage = () => void refreshLineage();
+  const onClearLogs = () => { logsEl.textContent = ""; };
 
-  stopBtn?.addEventListener("click", () => sendStopRun());
-  refreshHistoryBtn?.addEventListener("click", () => void refreshHistory());
-  refreshLineageBtn?.addEventListener("click", () => void refreshLineage());
-  lineageDepthEl.addEventListener("change", () => void refreshLineage());
-  lineageArtifactTypeEl.addEventListener("change", () => void refreshLineage());
-  lineageRunStateEl.addEventListener("change", () => void refreshLineage());
+  runForm.addEventListener("submit", onSubmit);
+  refreshHistoryBtn?.addEventListener("click", onRefreshHistory);
+  refreshLineageBtn?.addEventListener("click", onRefreshLineage);
+  stopBtn?.addEventListener("click", sendStopRun);
+  clearLogsBtn?.addEventListener("click", onClearLogs);
+  lineageDepthEl.addEventListener("change", onRefreshLineage);
+  lineageArtifactTypeEl.addEventListener("change", onRefreshLineage);
+  lineageRunStateEl.addEventListener("change", onRefreshLineage);
+
+  cleanupFns.push(() => runForm.removeEventListener("submit", onSubmit));
+  cleanupFns.push(() => refreshHistoryBtn?.removeEventListener("click", onRefreshHistory));
+  cleanupFns.push(() => refreshLineageBtn?.removeEventListener("click", onRefreshLineage));
+  cleanupFns.push(() => stopBtn?.removeEventListener("click", sendStopRun));
+  cleanupFns.push(() => clearLogsBtn?.removeEventListener("click", onClearLogs));
+  cleanupFns.push(() => lineageDepthEl.removeEventListener("change", onRefreshLineage));
+  cleanupFns.push(() => lineageArtifactTypeEl.removeEventListener("change", onRefreshLineage));
+  cleanupFns.push(() => lineageRunStateEl.removeEventListener("change", onRefreshLineage));
 
   setSocketUiState(ws.readyState === WebSocket.OPEN);
   queueBoard.setStatus("connecting…");
   void refreshDashboardBoards();
+
+  return () => {
+    cleanupFns.forEach((fn) => fn());
+  };
 }

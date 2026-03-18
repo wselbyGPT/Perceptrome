@@ -1,7 +1,11 @@
 import { mustEl } from "./dom";
 
 export class MetricsPanel {
-  private metricsEl = mustEl<HTMLElement>("metrics");
+  private metricsEl: HTMLElement;
+
+  constructor(root: ParentNode) {
+    this.metricsEl = mustEl<HTMLElement>(root, "metrics");
+  }
 
   pushMetric(name: string, value: unknown): void {
     const line = `${name}: ${String(value ?? "")}`;
