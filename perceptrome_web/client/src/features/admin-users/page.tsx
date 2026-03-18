@@ -19,18 +19,21 @@ function UsersTable({ rows }: { rows: AdminUser[] }) {
   return (
     <div className="table-wrap">
       <table className="table">
-        <thead><tr><th>Email</th><th>Username</th><th>Role</th><th>Status</th><th>Password Policy</th><th>User ID</th></tr></thead>
+        <thead><tr><th>Email</th><th>Username</th><th>Role</th><th>Status</th><th>Verification</th><th>Lockout</th><th>Password Policy</th><th>Last Login</th><th>User ID</th></tr></thead>
         <tbody>
           {rows.length ? rows.map((user) => (
             <tr key={user.id}>
               <td>{user.email}</td>
               <td>{user.username ?? ''}</td>
               <td><StatusBadge label={user.role} tone={user.role} /></td>
-              <td><StatusBadge label={user.is_active ? 'active' : 'inactive'} /></td>
+              <td><StatusBadge label={user.account_state} tone={user.is_active ? 'success' : 'warning'} /></td>
+              <td><StatusBadge label={user.email_verified_at ? 'verified' : 'pending'} tone={user.email_verified_at ? 'success' : 'warning'} /></td>
+              <td><StatusBadge label={user.is_locked ? `locked (${user.failed_login_count})` : `clear (${user.failed_login_count})`} tone={user.is_locked ? 'warning' : 'success'} /></td>
               <td><StatusBadge label={user.must_change_password ? 'must change' : 'current'} tone={user.must_change_password ? 'warning' : 'success'} /></td>
+              <td className="mono">{user.last_login_at ?? '—'}</td>
               <td className="mono">{user.id}</td>
             </tr>
-          )) : <tr><td colSpan={6} className="muted">No users found.</td></tr>}
+          )) : <tr><td colSpan={9} className="muted">No users found.</td></tr>}
         </tbody>
       </table>
     </div>
