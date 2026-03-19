@@ -1,14 +1,13 @@
-import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { listDatasets } from "../../dataset_api";
-import { getRunsSummary } from "../../run_api";
 import { ErrorState, FeedbackNotice, LoadingState, StatusBadge } from "../../components/ui/states";
 import { useAuth } from "../auth/auth-context";
+import { useDatasetCountQuery } from "../datasets/hooks";
+import { useRunSummaryQuery } from "../runs/hooks";
 
 export function DashboardPage() {
   const { me } = useAuth();
-  const summaryQuery = useQuery({ queryKey: ["runs-summary"], queryFn: getRunsSummary });
-  const datasetsQuery = useQuery({ queryKey: ["datasets", "count"], queryFn: listDatasets });
+  const summaryQuery = useRunSummaryQuery();
+  const datasetsQuery = useDatasetCountQuery();
 
   if (summaryQuery.isLoading || datasetsQuery.isLoading) {
     return <LoadingState title="Loading dashboard" message="Pulling run and dataset summaries." />;

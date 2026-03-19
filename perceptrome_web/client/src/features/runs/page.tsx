@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, type RefObject } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
-import { listDatasets } from "../../dataset_api";
 import { setupPerceptromeViz } from "../../perceptrome_viz";
-import { useRunsWebSocket } from "./ws-provider";
-import { ErrorState, FeedbackNotice, LoadingState } from "../../components/ui/states";
+import { ActionFeedback, QueryBoundary } from "../../lib/query-helpers";
+import { WorkspacePage } from "../../components/layout/workspace-page";
+import { useDatasetCountQuery } from "../datasets/hooks";
+import { useRunsLiveUpdates } from "./live-updates";
+import { StatusBadge } from "../../components/ui/states";
 
 function useVizMount(socket: WebSocket | null, rootRef: RefObject<HTMLDivElement | null>) {
   useEffect(() => {
@@ -15,8 +16,8 @@ function useVizMount(socket: WebSocket | null, rootRef: RefObject<HTMLDivElement
 
 export function RunsPage() {
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const { socket } = useRunsWebSocket();
-  const datasetsQuery = useQuery({ queryKey: ["datasets", "run-form"], queryFn: listDatasets });
+  const { socket, connectionState } = useRunsLiveUpdates();
+  const datasetsQuery = useDatasetCountQuery();
   const [params] = useSearchParams();
   useVizMount(socket, rootRef);
 
@@ -29,28 +30,33 @@ export function RunsPage() {
     return Array.from(ids).sort();
   }, [datasetsQuery.data, selectedDataset]);
 
-  if (datasetsQuery.isLoading) {
-    return <LoadingState title="Loading runs workspace" message="Preparing dataset options and live run controls." />;
-  }
-
-  if (datasetsQuery.error) {
-    return <ErrorState message={datasetsQuery.error instanceof Error ? datasetsQuery.error.message : 'Failed to load run form data.'} action={<button className="btn btn--secondary" onClick={() => void datasetsQuery.refetch()}>Retry</button>} />;
-  }
-
   return (
-    <div className="page-section stack-lg">
-      <FeedbackNotice title="Live runs visualization" message="The existing websocket-driven visualization is mounted inside this routed React page through a DOM wrapper rather than being rewritten." tone="info" />
-      <main ref={rootRef} className="layout">
-        <section className="column">
-          <section className="panel" aria-labelledby="status-panel-title">
-            <div className="panel-header"><div><h2 className="panel-title" id="status-panel-title">Run Queue / Status Board</h2><p className="panel-subtitle">Prioritized view of what is running and what failed recently</p></div></div>
-            <div className="status-card"><div className="status-row"><span className="status-dot" aria-hidden="true"></span><span className="status-label">Current status</span></div><div id="status" role="status" aria-live="polite">Waiting to connect…</div><div id="run-summary-cards" className="row"></div><h3 className="panel-title mt-2">Active runs</h3><div id="active-run-board" className="results-wrap"></div><h3 className="panel-title mt-2">Recent failures</h3><div id="failed-run-board" className="results-wrap"></div></div>
-          </section>
-          <section className="panel"><div className="panel-header"><div><h2 className="panel-title">Start New Run</h2><p className="panel-subtitle">Existing start/stop controls preserved inside the shell experience.</p></div></div><form id="run-form" className="stack"><div className="row"><label className="input-group"><span className="label">Job kind</span><select id="run-kind" className="input" defaultValue={selectedKind}><option value="generate_plasmid">generate_plasmid</option><option value="generate_protein">generate_protein</option><option value="validate_plasmid">validate_plasmid</option><option value="pretrain">pretrain</option><option value="train_one">train_one</option><option value="stream">stream</option></select></label><label className="input-group"><span className="label">Config path</span><input id="config-path" className="input" defaultValue={configPath} /></label></div><div className="row"><label className="input-group"><span className="label">Dataset</span><select id="dataset" className="input" defaultValue={selectedDataset || datasetOptions[0] || ''}>{datasetOptions.map((datasetId) => <option key={datasetId} value={datasetId}>{datasetId}</option>)}</select></label><label className="input-group"><span className="label">Model family</span><select id="model-family" className="input" defaultValue="baseline"><option value="baseline">baseline</option><option value="vae">vae</option><option value="transformer">transformer</option></select></label></div><div className="row3"><label className="input-group"><span className="label">Temperature</span><input id="temperature" className="input" type="number" min="0.1" step="0.1" defaultValue="1.0" /></label><label className="input-group"><span className="label">Length bp</span><input id="length-bp" className="input" type="number" min="64" step="1" defaultValue="10000" /></label><button id="run-start-btn" className="btn btn--primary" type="submit">Start Run</button></div><div className="run-actions"><button id="run-stop-btn" className="btn btn--secondary" type="button">Stop Run</button><button id="refresh-history-btn" className="btn btn--secondary" type="button">Refresh History</button></div></form></section>
-          <section id="run-drilldown" className="panel" aria-labelledby="lineage-panel-title"><div className="panel-header"><div><h2 className="panel-title" id="lineage-panel-title">Run Drill-down (Lineage + History)</h2><p className="panel-subtitle">Lineage, history, and artifact inspection remain intact.</p></div></div><h3 className="panel-title">Run history</h3><div id="run-history" className="results-wrap"></div><div className="row3 mt-2"><label className="input-group"><span className="label">Depth</span><input id="lineage-depth" className="input" type="number" min="0" max="6" defaultValue="2" /></label><label className="input-group"><span className="label">Artifact type</span><input id="lineage-artifact-type" className="input" placeholder="json, npy, ..." /></label><button id="refresh-lineage-btn" className="btn btn--secondary" type="button">Refresh Lineage</button></div><label className="input-group mt-2"><span className="label">Run states</span><select id="lineage-run-state" className="input" multiple><option value="queued">queued</option><option value="running">running</option><option value="completed">completed</option><option value="failed">failed</option><option value="canceled">canceled</option></select></label><div className="lineage-wrap mt-2"><svg id="lineage-graph" className="lineage-graph" viewBox="0 0 720 280" role="img" aria-label="Lineage graph"></svg></div><pre id="lineage-details" className="results-wrap mt-2">Select a run to view lineage.</pre></section>
-        </section>
-        <section className="column"><section className="panel" aria-labelledby="timeline-title"><div className="panel-header"><div><h2 className="panel-title" id="timeline-title">Active Run Timeline</h2><p className="panel-subtitle">Latest phases and events for the currently active run</p></div></div><div id="active-run-timeline" className="results-wrap"></div></section><section className="panel" aria-labelledby="logs-panel-title"><div className="panel-header"><div><h2 className="panel-title" id="logs-panel-title">Live Logs</h2><p className="panel-subtitle">Server messages and streaming job output</p></div><div className="run-actions"><button id="clear-logs-btn" className="btn btn--secondary btn--sm" type="button">Clear</button></div></div><div id="logs" className="terminal" aria-live="polite"></div></section><section className="panel"><div className="panel-header"><div><h2 className="panel-title">Metrics Panel</h2><p className="panel-subtitle">Streaming metrics</p></div></div><pre id="metrics" className="results-wrap"></pre></section><section className="panel"><div className="panel-header"><div><h2 className="panel-title">Artifact Summary</h2><p className="panel-subtitle">Current run outputs and downloadable artifacts</p></div></div><div id="results" className="results-wrap" aria-live="polite"></div><h3 className="panel-title mt-2">Generated Sequences</h3><pre id="generated-sequences" className="results-wrap"></pre><h3 className="panel-title mt-2">Validation</h3><pre id="validation-results" className="results-wrap"></pre><pre id="checkpoints" className="results-wrap"></pre></section></section>
-      </main>
-    </div>
+    <WorkspacePage
+      eyebrow="Runs workspace"
+      title="Runs"
+      description="Start experiments, watch websocket-backed status updates, and drill into lineage and artifacts from the authenticated shell."
+      actions={<StatusBadge label={connectionState} tone={connectionState === 'connected' ? 'connected' : connectionState === 'connecting' ? 'pending' : 'disconnected'} />}
+    >
+      <QueryBoundary
+        isLoading={datasetsQuery.isLoading}
+        error={datasetsQuery.error}
+        loadingTitle="Loading runs workspace"
+        loadingMessage="Preparing dataset options and live run controls."
+        errorMessage="Failed to load run form data."
+        onRetry={() => void datasetsQuery.refetch()}
+      >
+        <div className="stack-lg">
+          <ActionFeedback title="Live runs visualization" message="The websocket-backed run console remains intact, but connection ownership now lives in a dedicated provider so the runs route can subscribe cleanly." tone="info" />
+          <main ref={rootRef} className="layout">
+            <section className="column">
+              <section className="panel" aria-labelledby="status-panel-title"><div className="panel-header"><div><h2 className="panel-title" id="status-panel-title">Run Queue / Status Board</h2><p className="panel-subtitle">Prioritized view of what is running and what failed recently</p></div></div><div className="status-card"><div className="status-row"><span className="status-dot" aria-hidden="true"></span><span className="status-label">Current status</span></div><div id="status" role="status" aria-live="polite">Waiting to connect…</div><div id="run-summary-cards" className="row"></div><h3 className="panel-title mt-2">Active runs</h3><div id="active-run-board" className="results-wrap"></div><h3 className="panel-title mt-2">Recent failures</h3><div id="failed-run-board" className="results-wrap"></div></div></section>
+              <section className="panel"><div className="panel-header"><div><h2 className="panel-title">Start New Run</h2><p className="panel-subtitle">Existing start/stop controls preserved inside the shell experience.</p></div></div><form id="run-form" className="stack"><div className="row"><label className="input-group"><span className="label">Job kind</span><select id="run-kind" className="input" defaultValue={selectedKind}><option value="generate_plasmid">generate_plasmid</option><option value="generate_protein">generate_protein</option><option value="validate_plasmid">validate_plasmid</option><option value="pretrain">pretrain</option><option value="train_one">train_one</option><option value="stream">stream</option></select></label><label className="input-group"><span className="label">Config path</span><input id="config-path" className="input" defaultValue={configPath} /></label></div><div className="row"><label className="input-group"><span className="label">Dataset</span><select id="dataset" className="input" defaultValue={selectedDataset || datasetOptions[0] || ''}>{datasetOptions.map((datasetId) => <option key={datasetId} value={datasetId}>{datasetId}</option>)}</select></label><label className="input-group"><span className="label">Model family</span><select id="model-family" className="input" defaultValue="baseline"><option value="baseline">baseline</option><option value="vae">vae</option><option value="transformer">transformer</option></select></label></div><div className="row3"><label className="input-group"><span className="label">Temperature</span><input id="temperature" className="input" type="number" min="0.1" step="0.1" defaultValue="1.0" /></label><label className="input-group"><span className="label">Length bp</span><input id="length-bp" className="input" type="number" min="64" step="1" defaultValue="10000" /></label><button id="run-start-btn" className="btn btn--primary" type="submit">Start Run</button></div><div className="run-actions"><button id="run-stop-btn" className="btn btn--secondary" type="button">Stop Run</button><button id="refresh-history-btn" className="btn btn--secondary" type="button">Refresh History</button></div></form></section>
+              <section id="run-drilldown" className="panel" aria-labelledby="lineage-panel-title"><div className="panel-header"><div><h2 className="panel-title" id="lineage-panel-title">Run Drill-down (Lineage + History)</h2><p className="panel-subtitle">Lineage, history, and artifact inspection remain intact.</p></div></div><h3 className="panel-title">Run history</h3><div id="run-history" className="results-wrap"></div><div className="row3 mt-2"><label className="input-group"><span className="label">Depth</span><input id="lineage-depth" className="input" type="number" min="0" max="6" defaultValue="2" /></label><label className="input-group"><span className="label">Artifact type</span><input id="lineage-artifact-type" className="input" placeholder="json, npy, ..." /></label><button id="refresh-lineage-btn" className="btn btn--secondary" type="button">Refresh Lineage</button></div><label className="input-group mt-2"><span className="label">Run states</span><select id="lineage-run-state" className="input" multiple><option value="queued">queued</option><option value="running">running</option><option value="completed">completed</option><option value="failed">failed</option><option value="canceled">canceled</option></select></label><div className="lineage-wrap mt-2"><svg id="lineage-graph" className="lineage-graph" viewBox="0 0 720 280" role="img" aria-label="Lineage graph"></svg></div><pre id="lineage-details" className="results-wrap mt-2">Select a run to view lineage.</pre></section>
+            </section>
+            <section className="column"><section className="panel" aria-labelledby="timeline-title"><div className="panel-header"><div><h2 className="panel-title" id="timeline-title">Active Run Timeline</h2><p className="panel-subtitle">Latest phases and events for the currently active run</p></div></div><div id="active-run-timeline" className="results-wrap"></div></section><section className="panel" aria-labelledby="logs-panel-title"><div className="panel-header"><div><h2 className="panel-title" id="logs-panel-title">Live Logs</h2><p className="panel-subtitle">Server messages and streaming job output</p></div><div className="run-actions"><button id="clear-logs-btn" className="btn btn--secondary btn--sm" type="button">Clear</button></div></div><div id="logs" className="terminal" aria-live="polite"></div></section><section className="panel"><div className="panel-header"><div><h2 className="panel-title">Metrics Panel</h2><p className="panel-subtitle">Streaming metrics</p></div></div><pre id="metrics" className="results-wrap"></pre></section><section className="panel"><div className="panel-header"><div><h2 className="panel-title">Artifact Summary</h2><p className="panel-subtitle">Current run outputs and downloadable artifacts</p></div></div><div id="results" className="results-wrap" aria-live="polite"></div><h3 className="panel-title mt-2">Generated Sequences</h3><pre id="generated-sequences" className="results-wrap"></pre><h3 className="panel-title mt-2">Validation</h3><pre id="validation-results" className="results-wrap"></pre><pre id="checkpoints" className="results-wrap"></pre></section></section>
+          </main>
+        </div>
+      </QueryBoundary>
+    </WorkspacePage>
   );
 }
