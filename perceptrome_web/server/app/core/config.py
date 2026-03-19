@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     local_sqlite_database_url: str = "sqlite:///./perceptrome_dev.db"
     session_cookie_name: str = "perceptrome_session"
     session_ttl_hours: int = 24 * 7
+    invitation_ttl_hours: int = 72
     cookie_secure: bool = False
     cookie_samesite: str = "lax"
     cookie_domain: str | None = None

@@ -1,4 +1,4 @@
-from .audit import AuditEventOut
+from .audit import AuditEventListOut, AuditEventOut
 from .auth import (
     AuthUserOut,
     ChangePasswordRequest,
@@ -13,7 +13,7 @@ from .auth import (
     VerifyEmailRequest,
 )
 from .datasets import DatasetCatalogItemOut, DatasetDetailOut, DatasetPreviewOut, DatasetSplitOut
-from .invitations import UserInvitationOut
+from .invitations import UserInvitationActionOut, UserInvitationCreateRequest, UserInvitationListOut, UserInvitationOut
 from .runs import (
     ConfigSnapshotOut,
     LineageEdgeOut,

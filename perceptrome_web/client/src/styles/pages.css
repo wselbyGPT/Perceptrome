@@ -282,3 +282,14 @@ progress { width: 100%; height: 0.625rem; }
   .admin-users-layout { grid-template-columns: 1fr; }
   .admin-users-drawer { position: static; }
 }
+
+
+.admin-audit-metadata {
+  margin: 0;
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-2) 88%, black);
+  overflow-x: auto;
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
