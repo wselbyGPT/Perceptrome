@@ -120,23 +120,29 @@ def list_admin_users(
     return [AdminUserOut.from_model(u) for u in users], total
 
 
-def update_admin_user(db: Session, *, user_id: str, username: str | None, role: str | None, is_active: bool | None, must_change_password: bool | None) -> User:
+def update_admin_user(db: Session, *, user_id: str, username: str | None, role: str | None, is_active: bool | None, must_change_password: bool | None) -> tuple[User, dict[str, object]]:
     user = get_user_or_404(db, user_id)
     normalized_username = _normalize_username(username)
     normalized_role = _normalize_role(role)
     _ensure_unique_username_for_update(db, user_id=user.id, username=normalized_username)
 
-    user.username = normalized_username
-    if normalized_role is not None:
+    changes: dict[str, object] = {}
+    if user.username != normalized_username:
+        changes['username'] = {'from': user.username, 'to': normalized_username}
+        user.username = normalized_username
+    if normalized_role is not None and user.role != normalized_role:
+        changes['role'] = {'from': user.role, 'to': normalized_role}
         user.role = normalized_role
-    if is_active is not None:
+    if is_active is not None and user.is_active != is_active:
+        changes['is_active'] = {'from': user.is_active, 'to': is_active}
         user.is_active = is_active
-    if must_change_password is not None:
+    if must_change_password is not None and user.must_change_password != must_change_password:
+        changes['must_change_password'] = {'from': user.must_change_password, 'to': must_change_password}
         user.must_change_password = must_change_password
 
     db.commit()
     db.refresh(user)
-    return user
+    return user, changes
 
 
 def suspend_user(db: Session, *, user_id: str) -> tuple[User, int]:

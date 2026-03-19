@@ -62,6 +62,67 @@ export type AdminUserActionResponse = {
   revoked_session_count: number;
 };
 
+export type AdminInvitation = {
+  id: string;
+  email: string;
+  role: "admin" | "user" | string;
+  invited_by_user_id: string;
+  expires_at: string;
+  accepted_at?: string | null;
+  revoked_at?: string | null;
+  created_at: string;
+  status: "pending" | "accepted" | "revoked" | "expired" | string;
+  invite_url?: string | null;
+  token_preview?: string | null;
+};
+
+export type AdminInvitationListResponse = {
+  invitations: AdminInvitation[];
+  total: number;
+};
+
+export type AdminInvitationCreateInput = {
+  email: string;
+  role?: "admin" | "user";
+  reissue?: boolean;
+};
+
+export type AdminInvitationFilters = {
+  search?: string;
+  role?: "admin" | "user" | "all";
+  status?: "pending" | "accepted" | "revoked" | "expired" | "all";
+};
+
+export type AdminInvitationActionResponse = {
+  message: string;
+  invitation: AdminInvitation;
+};
+
+export type AuditEvent = {
+  id: string;
+  actor_user_id?: string | null;
+  actor_email?: string | null;
+  target_user_id?: string | null;
+  target_email?: string | null;
+  action: string;
+  ip_address?: string | null;
+  user_agent?: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+
+export type AuditEventListResponse = {
+  events: AuditEvent[];
+  total: number;
+};
+
+export type AuditFilters = {
+  action?: string;
+  actor?: string;
+  target?: string;
+  search?: string;
+};
+
 export type LoginInput = {
   email: string;
   password: string;
@@ -160,6 +221,40 @@ export async function adminUpdateUser(userId: string, input: AdminUserUpdateInpu
 
 async function adminUserAction(userId: string, action: string): Promise<AdminUserActionResponse> {
   return apiRequest<AdminUserActionResponse>(`/api/admin/users/${userId}/${action}`, { method: "POST" });
+}
+
+export async function adminListInvitations(filters: AdminInvitationFilters = {}): Promise<AdminInvitationListResponse> {
+  const params = new URLSearchParams();
+  if (filters.search?.trim()) params.set("search", filters.search.trim());
+  if (filters.role && filters.role !== "all") params.set("role", filters.role);
+  if (filters.status && filters.status !== "all") params.set("status", filters.status);
+  const query = params.toString();
+  return apiRequest<AdminInvitationListResponse>(`/api/admin/invitations${query ? `?${query}` : ""}`, { method: "GET" });
+}
+
+export async function adminCreateInvitation(input: AdminInvitationCreateInput): Promise<AdminInvitation> {
+  return apiRequest<AdminInvitation>("/api/admin/invitations", {
+    method: "POST",
+    body: {
+      email: input.email,
+      role: input.role ?? "user",
+      reissue: input.reissue ?? true,
+    },
+  });
+}
+
+export async function adminRevokeInvitation(invitationId: string): Promise<AdminInvitationActionResponse> {
+  return apiRequest<AdminInvitationActionResponse>(`/api/admin/invitations/${invitationId}/revoke`, { method: "POST" });
+}
+
+export async function adminListAuditEvents(filters: AuditFilters = {}): Promise<AuditEventListResponse> {
+  const params = new URLSearchParams();
+  if (filters.action?.trim()) params.set("action", filters.action.trim());
+  if (filters.actor?.trim()) params.set("actor", filters.actor.trim());
+  if (filters.target?.trim()) params.set("target", filters.target.trim());
+  if (filters.search?.trim()) params.set("search", filters.search.trim());
+  const query = params.toString();
+  return apiRequest<AuditEventListResponse>(`/api/admin/audit${query ? `?${query}` : ""}`, { method: "GET" });
 }
 
 export const adminSuspendUser = (userId: string) => adminUserAction(userId, "suspend");

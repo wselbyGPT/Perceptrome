@@ -1,6 +1,12 @@
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
+
+
+class UserInvitationCreateRequest(BaseModel):
+    email: EmailStr
+    role: str = Field(default="user")
+    reissue: bool = True
 
 
 class UserInvitationOut(BaseModel):
@@ -12,3 +18,16 @@ class UserInvitationOut(BaseModel):
     accepted_at: datetime | None = None
     revoked_at: datetime | None = None
     created_at: datetime
+    status: str
+    invite_url: str | None = None
+    token_preview: str | None = None
+
+
+class UserInvitationActionOut(BaseModel):
+    message: str
+    invitation: UserInvitationOut
+
+
+class UserInvitationListOut(BaseModel):
+    invitations: list[UserInvitationOut]
+    total: int
