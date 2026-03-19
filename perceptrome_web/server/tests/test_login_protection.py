@@ -126,3 +126,25 @@ def test_unlock_behavior_and_reset_on_success(monkeypatch, tmp_path):
     clock.advance(25)
     ok = client.post("/api/auth/login", json={"email": "unlock@example.com", "password": "verysecure123"})
     assert ok.status_code == 200
+
+
+def test_429_auth_error_contract_exposes_stable_detail_schema(monkeypatch, tmp_path):
+    client, _clock, _ = setup_client(monkeypatch, tmp_path)
+
+    register = client.post("/api/auth/register", json={"email": "contract@example.com", "password": "verysecure123"})
+    assert register.status_code == 200
+
+    for _ in range(2):
+        bad = client.post("/api/auth/login", json={"email": "contract@example.com", "password": "wrong"})
+        assert bad.status_code == 401
+
+    limited = client.post("/api/auth/login", json={"email": "contract@example.com", "password": "wrong"})
+    assert limited.status_code == 429
+    assert limited.headers["retry-after"] == "5"
+    assert limited.json() == {
+        "detail": {
+            "message": "Too many authentication attempts. Please retry later.",
+            "retry_after_seconds": 5,
+            "reason": "rate_limit_ip_email",
+        }
+    }
