@@ -4,7 +4,6 @@ import { LoginPage, ForgotPasswordPage, ResetPasswordPage, VerifyEmailPage } fro
 import { RunsPage } from "../features/runs/page";
 import { DatasetsPage } from "../features/datasets/page";
 import { AdminUsersPage } from "../features/admin-users/page";
-import { RunsWebSocketProvider } from "../features/runs/ws-provider";
 import { AuthenticatedLayout } from "../features/layout/authenticated-layout";
 import { DashboardPage } from "../features/dashboard/page";
 import { ProfilePage } from "../features/profile/page";
@@ -24,7 +23,7 @@ export function AppRouter() {
 
       <Route path="/" element={<RequireAuth><AuthenticatedLayout /></RequireAuth>}>
         <Route path="dashboard" element={<DashboardPage />} />
-        <Route path="runs" element={<RunsWebSocketProvider><RunsPage /></RunsWebSocketProvider>} />
+        <Route path="runs" element={<RunsPage />} />
         <Route path="datasets" element={<DatasetsPage />} />
         <Route path="profile" element={<ProfilePage />} />
         <Route path="security" element={<SecurityPage />} />
