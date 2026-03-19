@@ -9,6 +9,8 @@ It provides a CLI-first workflow for:
 - inspecting reconstruction/error dynamics with scope tools,
 - and generating candidate plasmid/protein sequences from trained models.
 
+The repository also includes **Perceptrome Web**, a browser-based React/FastAPI application for authenticated administration, dataset/runs views, and websocket-backed run monitoring. See [`perceptrome_web/README.md`](perceptrome_web/README.md) for setup details covering the client, API server, PostgreSQL, Alembic migrations, bootstrap admin flow, SPA/API wiring, and WebSocket expectations.
+
 ## Highlights
 
 - **CLI for end-to-end workflows** (catalog, fetch, encode, train, stream, generate).
@@ -17,10 +19,12 @@ It provides a CLI-first workflow for:
 - **NCBI-integrated data acquisition** with local caching for FASTA/GenBank/encoded artifacts.
 - **Training + observability utilities** including TensorBoard launcher and scope visualizers.
 - **Generation + validation commands** for plasmid and protein candidates.
+- **Web application companion** for authenticated API access, admin flows, and live run telemetry.
 
 ## Repository layout
 
 - `perceptrome/` – core package (CLI, encoding, model/training, generation, scope UI).
+- `perceptrome_web/` – web client/server application; production is PostgreSQL-first and uses mandatory Alembic migrations. SQLite remains a convenience mode for tests or local-only workflows.
 - `config/` – starter configs and curated accession/corpus files.
 - `accessions/` – accession lists by biological category.
 - `tests/` – unit/smoke tests for CLI and core utilities.
@@ -58,6 +62,8 @@ pip install -e .
 ```
 
 > `setup.py` defines the `perceptrome` console entrypoint used by `make`.
+>
+> For the web application, continue with the dedicated instructions in [`perceptrome_web/README.md`](perceptrome_web/README.md).
 
 ## Quick start
 
