@@ -12,6 +12,24 @@ class AdminCreateUserRequest(BaseModel):
     must_change_password: bool = True
 
 
+class AdminUserUpdateRequest(BaseModel):
+    username: str | None = Field(default=None, min_length=3, max_length=64)
+    role: str | None = None
+    is_active: bool | None = None
+    must_change_password: bool | None = None
+
+
+class AdminUserListOut(BaseModel):
+    users: list["AdminUserOut"]
+    total: int
+
+
+class AdminUserActionOut(BaseModel):
+    message: str
+    user: "AdminUserOut"
+    revoked_session_count: int = 0
+
+
 class UserOut(BaseModel):
     id: str
     email: EmailStr
@@ -41,6 +59,7 @@ class AdminUserOut(UserOut):
     failed_login_count: int
     account_state: str
     is_locked: bool
+    email_verification_sent_at: datetime | None
 
     @classmethod
     def from_model(cls, u):
@@ -54,4 +73,5 @@ class AdminUserOut(UserOut):
             failed_login_count=u.failed_login_count or 0,
             account_state=account_state,
             is_locked=is_locked,
+            email_verification_sent_at=u.email_verification_sent_at,
         )

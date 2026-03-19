@@ -26,6 +26,6 @@ from .runs import (
     RunsBoardOut,
     RunSummaryOut,
 )
-from .users import AdminCreateUserRequest, AdminUserOut, UserOut
+from .users import AdminCreateUserRequest, AdminUserActionOut, AdminUserListOut, AdminUserOut, AdminUserUpdateRequest, UserOut
 
 __all__ = [name for name in globals() if not name.startswith('_')]
