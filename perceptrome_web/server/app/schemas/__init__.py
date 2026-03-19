@@ -1,5 +1,6 @@
 from .audit import AuditEventOut
 from .auth import (
+    AuthUserOut,
     ChangePasswordRequest,
     ForgotPasswordRequest,
     LoginRequest,
@@ -7,6 +8,8 @@ from .auth import (
     RegisterRequest,
     ResendVerificationRequest,
     ResetPasswordRequest,
+    SessionOut,
+    UpdateProfileRequest,
     VerifyEmailRequest,
 )
 from .datasets import DatasetCatalogItemOut, DatasetDetailOut, DatasetPreviewOut, DatasetSplitOut

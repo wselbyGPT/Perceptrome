@@ -1,4 +1,8 @@
+from datetime import datetime
+
 from pydantic import BaseModel, EmailStr, Field
+
+from .users import UserOut
 
 
 class RegisterRequest(BaseModel):
@@ -32,6 +36,24 @@ class ResetPasswordRequest(BaseModel):
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str = Field(min_length=12, max_length=256)
+
+
+class UpdateProfileRequest(BaseModel):
+    username: str | None = Field(default=None, min_length=3, max_length=64)
+
+
+class SessionOut(BaseModel):
+    id: str
+    created_at: datetime
+    expires_at: datetime
+    revoked_at: datetime | None
+    ip_address: str | None
+    user_agent: str | None
+    is_current: bool
+
+
+class AuthUserOut(BaseModel):
+    user: UserOut
 
 
 class MessageOut(BaseModel):

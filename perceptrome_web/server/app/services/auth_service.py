@@ -181,7 +181,7 @@ def forgot_password(db: Session, email: str) -> str:
     return "If this email is registered, a password reset email has been sent"
 
 
-def reset_password(db: Session, *, token_value: str, new_password: str) -> str:
+def reset_password(db: Session, *, token_value: str, new_password: str, request: Request | None = None) -> str:
     token = db.execute(
         select(AuthToken)
         .where(AuthToken.purpose == "password_reset")
@@ -208,7 +208,15 @@ def reset_password(db: Session, *, token_value: str, new_password: str) -> str:
     user.must_change_password = False
     token.used_at = now
     db.commit()
-    session_service.revoke_all_active_sessions(db, user)
+    revoked_count = session_service.revoke_all_active_sessions(db, user)
+    audit_service.create_audit_event(
+        db,
+        action="auth.password_reset",
+        actor_user_id=user.id,
+        target_user_id=user.id,
+        request=request,
+        metadata={"revoked_session_count": revoked_count},
+    )
     return "Password reset successful"
 
 
@@ -280,7 +288,7 @@ def login_user(db: Session, *, email: str, password: str, request: Request) -> U
     return user
 
 
-def change_password(db: Session, *, user: User, current_password: str, new_password: str, current_cookie: str | None) -> str:
+def change_password(db: Session, *, user: User, current_password: str, new_password: str, current_cookie: str | None, request: Request | None = None) -> str:
     if not verify_password(current_password, user.password_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     if current_password == new_password:
@@ -292,8 +300,37 @@ def change_password(db: Session, *, user: User, current_password: str, new_passw
     user.password_hash = hash_password(new_password)
     user.must_change_password = False
     db.commit()
-    session_service.revoke_other_sessions(db, user, current_cookie=current_cookie)
+    revoked_count = session_service.revoke_other_sessions(db, user, current_cookie=current_cookie)
+    audit_service.create_audit_event(
+        db,
+        action="auth.password_changed",
+        actor_user_id=user.id,
+        target_user_id=user.id,
+        request=request,
+        metadata={"revoked_other_session_count": revoked_count},
+    )
     return "Password changed"
+
+
+def update_profile(db: Session, *, user: User, username: str | None, request: Request | None = None) -> User:
+    normalized_username = username.strip() if username else None
+    if normalized_username == user.username:
+        return user
+    if normalized_username and db.execute(select(User).where(User.username == normalized_username).where(User.id != user.id)).scalar_one_or_none():
+        raise HTTPException(status_code=409, detail='Username already taken')
+    previous_username = user.username
+    user.username = normalized_username
+    db.commit()
+    db.refresh(user)
+    audit_service.create_audit_event(
+        db,
+        action="auth.profile_updated",
+        actor_user_id=user.id,
+        target_user_id=user.id,
+        request=request,
+        metadata={"previous_username": previous_username, "new_username": user.username},
+    )
+    return user
 
 
 def raise_auth_429(retry_after_seconds: int, reason: str) -> None:
