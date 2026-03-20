@@ -50,4 +50,4 @@ perceptrome = "perceptrome.cli_main:main"
 
 [tool.setuptools.packages.find]
 include = ["perceptrome*"]
-exclude = ["tests*", "perceptrome_web*", "raylib_visualizer*"]
+exclude = ["tests*", "perceptrome_web*", "raylib_visualizer*", "gui*", "gui_qt*"]
