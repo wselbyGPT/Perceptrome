@@ -31,9 +31,6 @@ web = [
   "sqlalchemy>=2.0,<3",
   "uvicorn[standard]>=0.35,<1",
 ]
-gui = [
-  "PySide6>=6.6,<7",
-]
 dev = [
   "alembic>=1.16,<2",
   "argon2-cffi>=25.1,<26",
@@ -42,7 +39,6 @@ dev = [
   "httpx>=0.28,<1",
   "psycopg[binary]>=3.2,<4",
   "pydantic-settings>=2.10,<3",
-  "PySide6>=6.6,<7",
   "python-multipart>=0.0.20,<1",
   "pytest>=8,<9",
   "sqlalchemy>=2.0,<3",
@@ -53,5 +49,5 @@ dev = [
 perceptrome = "perceptrome.cli_main:main"
 
 [tool.setuptools.packages.find]
-include = ["perceptrome*", "gui_qt*"]
+include = ["perceptrome*"]
 exclude = ["tests*", "perceptrome_web*", "raylib_visualizer*"]
