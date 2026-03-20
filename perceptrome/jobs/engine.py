@@ -153,6 +153,32 @@ class JobEngine:
         return dict(profiles.get(key, {}))
 
     @staticmethod
+    def _sanitize_json_value(value: Any) -> Any:
+        if callable(value):
+            return None
+        if isinstance(value, dict):
+            sanitized: Dict[str, Any] = {}
+            for key, item in value.items():
+                clean_item = JobEngine._sanitize_json_value(item)
+                if clean_item is None and callable(item):
+                    continue
+                sanitized[str(key)] = clean_item
+            return sanitized
+        if isinstance(value, (list, tuple)):
+            sanitized_items = []
+            for item in value:
+                clean_item = JobEngine._sanitize_json_value(item)
+                if clean_item is None and callable(item):
+                    continue
+                sanitized_items.append(clean_item)
+            return sanitized_items
+        try:
+            json.dumps(value)
+        except TypeError:
+            return str(value)
+        return value
+
+    @staticmethod
     def _write_json_artifact(path: str, payload: Dict[str, Any]) -> None:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
@@ -251,7 +277,7 @@ class JobEngine:
             "run_kind": spec.kind,
             "config_path": str(spec.config_path),
             "loaded_config": cfg,
-            "overrides": params,
+            "overrides": self._sanitize_json_value(params),
         }
         os.makedirs(os.path.dirname(snapshot_path) or ".", exist_ok=True)
         with open(snapshot_path, "w", encoding="utf-8") as f:

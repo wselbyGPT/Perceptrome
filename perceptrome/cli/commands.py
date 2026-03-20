@@ -159,6 +159,15 @@ def _reference_score(generated_seq: str, ref_seq: str) -> Dict[str, float]:
     return reference_score(generated_seq, ref_seq)
 
 
+def _job_params(args: argparse.Namespace) -> Dict[str, Any]:
+    params: Dict[str, Any] = {}
+    for key, value in vars(args).items():
+        if key == "func" or callable(value):
+            continue
+        params[key] = value
+    return params
+
+
 def _normalize_ast_cli_args(params: Dict[str, Any]) -> Dict[str, Any]:
     normalized = dict(params)
     if normalized.get("ast_node_type_prompt") is None:
@@ -1044,7 +1053,7 @@ def cmd_encode_one(args: argparse.Namespace) -> int:
 
 
 def cmd_train_one(args: argparse.Namespace) -> int:
-    spec = JobSpec(kind="train_one", config_path=str(args.config), params=vars(args).copy())
+    spec = JobSpec(kind="train_one", config_path=str(args.config), params=_job_params(args))
     result = JobEngine().run(spec)
     if not result.ok:
         raise RuntimeError(result.message)
@@ -1306,7 +1315,7 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
 
 
 def cmd_stream(args: argparse.Namespace) -> int:
-    spec = JobSpec(kind="stream", config_path=str(args.config), params=vars(args).copy())
+    spec = JobSpec(kind="stream", config_path=str(args.config), params=_job_params(args))
     result = JobEngine().run(spec)
     if not result.ok:
         raise RuntimeError(result.message)
@@ -1314,7 +1323,7 @@ def cmd_stream(args: argparse.Namespace) -> int:
     return 0
 
 def cmd_generate_plasmid(args: argparse.Namespace) -> int:
-    spec = JobSpec(kind="generate_plasmid", config_path=str(args.config), params=_normalize_ast_cli_args(vars(args).copy()))
+    spec = JobSpec(kind="generate_plasmid", config_path=str(args.config), params=_normalize_ast_cli_args(_job_params(args)))
     result = JobEngine().run(spec)
     if not result.ok:
         raise RuntimeError(result.message)
@@ -1322,7 +1331,7 @@ def cmd_generate_plasmid(args: argparse.Namespace) -> int:
     return 0
 
 def cmd_validate_plasmid(args: argparse.Namespace) -> int:
-    spec = JobSpec(kind="validate_plasmid", config_path=str(args.config), params=vars(args).copy())
+    spec = JobSpec(kind="validate_plasmid", config_path=str(args.config), params=_job_params(args))
     result = JobEngine().run(spec)
     if not result.ok:
         raise RuntimeError(result.message)
@@ -1333,7 +1342,7 @@ def cmd_validate_plasmid(args: argparse.Namespace) -> int:
     return 0
 
 def cmd_generate_protein(args: argparse.Namespace) -> int:
-    spec = JobSpec(kind="generate_protein", config_path=str(args.config), params=_normalize_ast_cli_args(vars(args).copy()))
+    spec = JobSpec(kind="generate_protein", config_path=str(args.config), params=_normalize_ast_cli_args(_job_params(args)))
     result = JobEngine().run(spec)
     if not result.ok:
         raise RuntimeError(result.message)
@@ -1341,7 +1350,7 @@ def cmd_generate_protein(args: argparse.Namespace) -> int:
     return 0
 
 def cmd_pretrain(args: argparse.Namespace) -> int:
-    spec = JobSpec(kind="pretrain", config_path=str(args.config), params=vars(args).copy())
+    spec = JobSpec(kind="pretrain", config_path=str(args.config), params=_job_params(args))
     result = JobEngine().run(spec)
     if not result.ok:
         raise RuntimeError(result.message)
@@ -1378,12 +1387,12 @@ def cmd_compare_lanes(args: argparse.Namespace) -> int:
     with open(catalog_path, "w", encoding="utf-8") as f:
         f.write("\n".join(train_accessions) + "\n")
 
-    baseline_params = vars(args).copy()
+    baseline_params = _job_params(args)
     baseline_params["catalog"] = catalog_path
     baseline_params["max_epochs"] = int(args.max_epochs)
     baseline_params["model_type"] = str(args.baseline_model_type)
 
-    ast_params = vars(args).copy()
+    ast_params = _job_params(args)
     ast_params["catalog"] = catalog_path
     ast_params["max_epochs"] = int(args.max_epochs)
     ast_params["model_type"] = str(args.ast_model_type)
@@ -1509,7 +1518,7 @@ def cmd_compare_lanes(args: argparse.Namespace) -> int:
 
 
 def cmd_design_loop(args: argparse.Namespace) -> int:
-    spec = JobSpec(kind="design_loop", config_path=str(args.config), params=_normalize_ast_cli_args(vars(args).copy()))
+    spec = JobSpec(kind="design_loop", config_path=str(args.config), params=_normalize_ast_cli_args(_job_params(args)))
     result = JobEngine().run(spec)
     if not result.ok:
         raise RuntimeError(result.message)
