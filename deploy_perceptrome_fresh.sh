@@ -147,7 +147,7 @@ log "Installing npm deps and building frontend"
 pushd "${CLIENT_DIR}" >/dev/null
 
 # Use npm install for compatibility with fresh servers if lockfile may change.
-sudo -u "${APP_USER}" npm install
+sudo -u "${APP_USER}" npm ci
 sudo -u "${APP_USER}" npm run build
 
 if [[ ! -f "${CLIENT_DIR}/dist/index.html" ]]; then
@@ -166,7 +166,7 @@ fi
 log "Creating/updating Python virtual environment"
 sudo -u "${APP_USER}" python3 -m venv "${REPO_DIR}/.venv"
 sudo -u "${APP_USER}" "${REPO_DIR}/.venv/bin/pip" install --upgrade pip
-sudo -u "${APP_USER}" "${REPO_DIR}/.venv/bin/pip" install -r "${REPO_DIR}/requirements.txt"
+sudo -u "${APP_USER}" "${REPO_DIR}/.venv/bin/pip" install -r "${REPO_DIR}/requirements/web.txt"
 sudo -u "${APP_USER}" "${REPO_DIR}/.venv/bin/pip" install -e "${REPO_DIR}"
 
 log "Writing systemd service: ${SERVICE_FILE}"

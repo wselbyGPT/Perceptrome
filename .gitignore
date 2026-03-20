@@ -8,6 +8,8 @@ __pycache__/
 .dist-info/
 .pytest_cache/
 .mypy_cache/
+.coverage
+htmlcov/
 
 # Virtual envs
 venv/
@@ -19,6 +21,15 @@ venv/
 *.swo
 .vscode/
 .idea/
+
+# Node / web build artifacts
+perceptrome_web/client/node_modules/
+perceptrome_web/client/dist/
+
+# Local environment files
+.env
+*.env
+perceptrome_web/server/.env
 
 # Perceptrome artifacts (tune as you like)
 cache/
@@ -37,3 +48,4 @@ model/
 
 # Perceptrome web database files
 perceptrome_web/server/*.db
+perceptrome_web/server/*.sqlite3

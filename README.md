@@ -37,33 +37,78 @@ For a ready-to-run EC2 + Nginx + Route53 deployment bundle, see [`infra/aws/READ
 
 ## Installation
 
-### 1) Clone and enter the repo
+Perceptrome now uses a split bootstrap layout so each workflow installs only what it needs.
 
-```bash
-git clone <your-fork-or-this-repo-url>
-cd Perceptrome
-```
+### Python install paths
 
-### 2) One-command setup + run (recommended)
+| Workflow | Command | Includes |
+| --- | --- | --- |
+| Core / CLI | `python -m pip install -r requirements/core.txt` | `perceptrome` package plus lightweight CLI/runtime deps |
+| Web server | `python -m pip install -r requirements/web.txt` | FastAPI, SQLAlchemy, Alembic, auth/session deps |
+| GUI | `python -m pip install -r requirements/gui.txt` | Qt / PySide6 tooling |
+| Dev / test | `python -m pip install -r requirements/dev.txt` | Combined Python deps used across local development |
+| Optional GPU | `python -m pip install -r requirements/gpu-cu12.txt` | Torch + CUDA 12 runtime packages for accelerated workloads |
 
-```bash
-make
-```
+`requirements.txt` is kept as a compatibility shim and currently points at the CUDA-oriented GPU stack. New setups should prefer the split files above.
 
-This bootstraps `.venv`, installs dependencies (including `setup.py` editable install), initializes project state, and runs a default Perceptrome command (`catalog-show config/plasmids_100.txt`).
+### Recommended local bootstrap commands
 
-### 3) Manual environment setup (optional)
+Create and activate a virtual environment first:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-pip install -e .
+python -m pip install --upgrade pip
 ```
 
-> `setup.py` defines the `perceptrome` console entrypoint used by `make`.
->
-> For the web application, continue with the dedicated instructions in [`perceptrome_web/README.md`](perceptrome_web/README.md).
+Then choose one of the following:
+
+#### Core / CLI only
+
+```bash
+python -m pip install -r requirements/core.txt
+perceptrome --config config/stream_config.yaml init
+```
+
+#### Web local development
+
+```bash
+python -m pip install -r requirements/web.txt
+npm install --prefix perceptrome_web/client
+python -m alembic -c perceptrome_web/server/alembic.ini upgrade head
+```
+
+#### GUI local development
+
+```bash
+python -m pip install -r requirements/gui.txt
+python -m gui_qt
+```
+
+#### Dev / test workspace
+
+```bash
+python -m pip install -r requirements/dev.txt
+npm install --prefix perceptrome_web/client
+```
+
+#### Optional GPU training/generation add-on
+
+```bash
+python -m pip install -r requirements/gpu-cu12.txt
+```
+
+### Makefile shortcuts
+
+```bash
+make setup-core
+make setup-web
+make setup-gui
+make setup-dev
+make setup-gpu
+```
+
+Use `make help` to list the available bootstrap and local-run targets.
 
 ## Quick start
 

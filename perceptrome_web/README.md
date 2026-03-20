@@ -6,116 +6,143 @@ Perceptrome Web is the repository's browser-based control plane: a Vite/React si
 
 - **Client:** React 19 + Vite SPA in `perceptrome_web/client/`.
 - **Server:** FastAPI app in `perceptrome_web/server/app/`.
-- **Database:** `DATABASE_URL` defaults to PostgreSQL, and Alembic is the only supported schema-management path.
+- **Database:** `DATABASE_URL` defaults to PostgreSQL, and Alembic is the supported schema-management path.
 - **Realtime runs:** the runs UI uses an authenticated WebSocket at `/ws`; the browser must carry the session cookie used by the REST API.
 
-## Client install and development server
+## Quick start
 
-From `perceptrome_web/client/`:
+From the repository root, bootstrap the Python server stack and the Vite client with dedicated install paths instead of the old monolithic root requirements:
 
 ```bash
-npm install
-npm run dev
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements/web.txt
+npm install --prefix perceptrome_web/client
 ```
 
-Notes:
+Or use the Makefile shortcut:
+
+```bash
+make setup-web
+```
+
+## Local development workflow
+
+### 1) Configure the database
+
+Production and serious local development should use PostgreSQL.
+
+Create a database and application user, then export `DATABASE_URL`:
+
+```bash
+createdb perceptrome
+createuser perceptrome --pwprompt
+export DATABASE_URL='postgresql+psycopg://perceptrome:YOUR_PASSWORD@localhost:5432/perceptrome'
+```
+
+### 2) Apply Alembic migrations
+
+Run this from the repository root:
+
+```bash
+python -m alembic -c perceptrome_web/server/alembic.ini upgrade head
+```
+
+Or with Make:
+
+```bash
+make web-migrate
+```
+
+### 3) Start the API server
+
+```bash
+cd perceptrome_web/server
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Or with Make:
+
+```bash
+make web-api
+```
+
+### 4) Start the Vite dev server
+
+```bash
+npm run dev --prefix perceptrome_web/client
+```
+
+Or with Make:
+
+```bash
+make web-client
+```
+
+Then open `http://127.0.0.1:5173`.
+
+## Why the install flow changed
+
+The repository now separates Python dependency paths so web-only work does not pull in Qt or CUDA packages:
+
+- `requirements/core.txt` → lean CLI/core install
+- `requirements/web.txt` → FastAPI/Alembic/PostgreSQL stack
+- `requirements/gui.txt` → Qt GUI dependencies
+- `requirements/dev.txt` → combined local-development Python stack
+- `requirements/gpu-cu12.txt` → optional CUDA 12 / GPU training packages
+
+`requirements.txt` remains only as a compatibility shim for legacy GPU-oriented setups.
+
+## Client notes
 
 - The Vite dev server is pinned to `http://127.0.0.1:5173` / `http://localhost:5173`.
 - `vite.config.ts` proxies both `/api` and `/ws` to `http://127.0.0.1:8000`, so the SPA can talk to the local FastAPI backend without changing frontend code.
 - The frontend uses same-origin relative URLs such as `/api/auth/me` and `/ws`, so the proxy is the normal local-development path.
 
-## Server install and API startup
-
-The repo does not currently ship a dedicated `perceptrome_web/server/requirements.txt`, so install the repo requirements first, then ensure the FastAPI stack is available in your environment.
-
-Example from the repository root:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-pip install fastapi uvicorn sqlalchemy pydantic-settings email-validator python-multipart
-```
-
-Then start the API from `perceptrome_web/server/`:
-
-```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-The backend does **not** auto-create or patch tables on startup. Run Alembic first every time you initialize a database or pull schema changes.
-
-## PostgreSQL setup
-
-Production and serious local development should use PostgreSQL.
-
-1. Create a database and application user.
-2. Point `DATABASE_URL` at that database.
-3. Run Alembic migrations before launching `uvicorn`.
-
-Example local setup:
-
-```bash
-createdb perceptrome
-createuser perceptrome --pwprompt
-```
-
-Example environment variable:
-
-```bash
-export DATABASE_URL='postgresql+psycopg://perceptrome:YOUR_PASSWORD@localhost:5432/perceptrome'
-```
-
-Then apply migrations:
-
-```bash
-cd perceptrome_web/server
-python -m alembic -c alembic.ini upgrade head
-```
-
-### SQLite convenience mode
+## SQLite convenience mode
 
 SQLite is still useful for quick local smoke tests and for automated test coverage, but it is **not** the primary architecture. If you intentionally want SQLite for dev-only work, override `DATABASE_URL` yourself:
 
 ```bash
 export DATABASE_URL='sqlite:///./perceptrome_dev.db'
-python -m alembic -c alembic.ini upgrade head
+python -m alembic -c perceptrome_web/server/alembic.ini upgrade head
 ```
 
 `LOCAL_SQLITE_DATABASE_URL=sqlite:///./perceptrome_dev.db` exists as a convenience/documentation setting so local SQLite is explicit, not accidental.
 
 ## Alembic migration commands
 
-Run these from `perceptrome_web/server/`.
+Run these from the repository root unless noted otherwise.
 
 Apply the full schema:
 
 ```bash
-python -m alembic -c alembic.ini upgrade head
+python -m alembic -c perceptrome_web/server/alembic.ini upgrade head
 ```
 
 Check the current revision:
 
 ```bash
-python -m alembic -c alembic.ini current
+python -m alembic -c perceptrome_web/server/alembic.ini current
 ```
 
 See migration history:
 
 ```bash
-python -m alembic -c alembic.ini history
+python -m alembic -c perceptrome_web/server/alembic.ini history
 ```
 
 Create a new migration after model changes:
 
 ```bash
-python -m alembic -c alembic.ini revision --autogenerate -m "describe change"
+python -m alembic -c perceptrome_web/server/alembic.ini revision --autogenerate -m "describe change"
 ```
 
 Downgrade one step if needed:
 
 ```bash
-python -m alembic -c alembic.ini downgrade -1
+python -m alembic -c perceptrome_web/server/alembic.ini downgrade -1
 ```
 
 Because production is Postgres-first, schema changes should always be captured as Alembic revisions and applied before the API is deployed. Migrations are mandatory, not optional housekeeping.
@@ -180,8 +207,8 @@ On API startup, the server checks `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_P
 Recommended workflow:
 
 1. Set `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` in `perceptrome_web/server/.env`.
-2. Run `python -m alembic -c alembic.ini upgrade head`.
-3. Start `uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`.
+2. Run `python -m alembic -c perceptrome_web/server/alembic.ini upgrade head`.
+3. Start `uvicorn app.main:app --reload --host 0.0.0.0 --port 8000` from `perceptrome_web/server/`.
 4. Sign in through the SPA with the bootstrap admin credentials.
 5. Immediately change the password when prompted.
 6. Remove `BOOTSTRAP_ADMIN_PASSWORD` from your `.env` after the initial admin account exists.
@@ -194,40 +221,12 @@ Important behavior:
 
 After the first admin is established, use the admin UI and invitation/user-management APIs for ongoing account administration.
 
-## Running the SPA against the API
-
-### Recommended local workflow
-
-Run the API on port `8000` and the Vite dev server on port `5173`:
-
-```bash
-# terminal 1
-cd perceptrome_web/server
-python -m alembic -c alembic.ini upgrade head
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-
-# terminal 2
-cd perceptrome_web/client
-npm install
-npm run dev
-```
-
-Then open `http://127.0.0.1:5173`.
-
-Why this works:
-
-- frontend HTTP requests use relative `/api/...` paths;
-- frontend WebSocket connections use a relative `/ws` path derived from `window.location`;
-- Vite proxies both to the API server, preserving a browser-friendly same-origin development experience.
-
-### Production-style workflow
+## Production-style workflow
 
 Build the SPA and serve it from the same host as the API or through a reverse proxy that preserves `/api` and `/ws` routing:
 
 ```bash
-cd perceptrome_web/client
-npm install
-npm run build
+npm run build --prefix perceptrome_web/client
 ```
 
 If you serve the SPA and API from different origins, you must account for CORS, cookie scope, secure cookie settings, and WebSocket routing explicitly.
