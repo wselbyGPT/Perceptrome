@@ -11,7 +11,7 @@ Perceptrome Web is the repository's browser-based control plane: a Vite/React si
 
 ## Quick start
 
-From the repository root, bootstrap the Python server stack and the Vite client with dedicated install paths instead of the old monolithic root requirements:
+From the repository root, bootstrap the Python server stack and the Vite client with the dedicated web install path:
 
 ```bash
 python -m venv .venv

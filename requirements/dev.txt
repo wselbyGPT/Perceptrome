@@ -1,2 +1,2 @@
-# Keep dev installs aligned to the packaged Python modules only; no GUI/Qt extra.
+# Keep dev installs aligned to the packaged Python modules used for local development and testing.
 -e .[dev]
