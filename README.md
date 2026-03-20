@@ -98,7 +98,7 @@ make setup-dev
 make setup-gpu
 ```
 
-Use `make help` to list the available bootstrap and local-run targets.
+Use `make help` to list the available bootstrap and local development targets.
 
 ## Quick start
 
