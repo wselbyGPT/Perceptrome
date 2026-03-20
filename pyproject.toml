@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "perceptrome"
+version = "0.0.0"
+description = "Perceptrome CLI and local tooling"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=2.3,<3",
+  "PyYAML>=6,<7",
+  "requests>=2.32,<3",
+]
+
+[project.optional-dependencies]
+ml = [
+  "tensorboard>=2.20,<3",
+  "torch>=2.9,<3",
+]
+web = [
+  "alembic>=1.16,<2",
+  "argon2-cffi>=25.1,<26",
+  "email-validator>=2.2,<3",
+  "fastapi>=0.115,<1",
+  "httpx>=0.28,<1",
+  "psycopg[binary]>=3.2,<4",
+  "pydantic-settings>=2.10,<3",
+  "python-multipart>=0.0.20,<1",
+  "sqlalchemy>=2.0,<3",
+  "uvicorn[standard]>=0.35,<1",
+]
+gui = [
+  "PySide6>=6.6,<7",
+]
+dev = [
+  "alembic>=1.16,<2",
+  "argon2-cffi>=25.1,<26",
+  "email-validator>=2.2,<3",
+  "fastapi>=0.115,<1",
+  "httpx>=0.28,<1",
+  "psycopg[binary]>=3.2,<4",
+  "pydantic-settings>=2.10,<3",
+  "PySide6>=6.6,<7",
+  "python-multipart>=0.0.20,<1",
+  "pytest>=8,<9",
+  "sqlalchemy>=2.0,<3",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[project.scripts]
+perceptrome = "perceptrome.cli_main:main"
+
+[tool.setuptools.packages.find]
+include = ["perceptrome*", "gui_qt*"]
+exclude = ["tests*", "perceptrome_web*", "raylib_visualizer*"]
