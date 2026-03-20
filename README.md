@@ -28,7 +28,6 @@ The repository also includes **Perceptrome Web**, a browser-based React/FastAPI 
 - `config/` – starter configs and curated accession/corpus files.
 - `accessions/` – accession lists by biological category.
 - `tests/` – unit/smoke tests for CLI and core utilities.
-- `gui_qt/` and `gui.py` – Qt GUI entry points for running commands interactively.
 - `raylib_visualizer/` – optional C/Raylib scope visualizer.
 
 ## AWS EC2 deployment
@@ -45,7 +44,6 @@ Perceptrome now uses a split bootstrap layout so each workflow installs only wha
 | --- | --- | --- |
 | Core / CLI | `python -m pip install -r requirements/core.txt` | `perceptrome` package plus lightweight CLI/runtime deps |
 | Web server | `python -m pip install -r requirements/web.txt` | FastAPI, SQLAlchemy, Alembic, auth/session deps |
-| GUI | `python -m pip install -r requirements/gui.txt` | Qt / PySide6 tooling |
 | Dev / test | `python -m pip install -r requirements/dev.txt` | Combined Python deps used across local development |
 | Optional GPU | `python -m pip install -r requirements/gpu-cu12.txt` | Torch + CUDA 12 runtime packages for accelerated workloads |
 
@@ -78,13 +76,6 @@ npm install --prefix perceptrome_web/client
 python -m alembic -c perceptrome_web/server/alembic.ini upgrade head
 ```
 
-#### GUI local development
-
-```bash
-python -m pip install -r requirements/gui.txt
-python -m gui_qt
-```
-
 #### Dev / test workspace
 
 ```bash
@@ -103,7 +94,6 @@ python -m pip install -r requirements/gpu-cu12.txt
 ```bash
 make setup-core
 make setup-web
-make setup-gui
 make setup-dev
 make setup-gpu
 ```
@@ -248,8 +238,6 @@ python -m unittest discover -s tests -v
 
 ## Optional tools
 
-- **Qt GUI**
-  - Run with: `python -m gui_qt`
 - **Raylib scope visualizer**
   - See `raylib_visualizer/README.md` for build/run instructions.
 

@@ -13,14 +13,13 @@ ALEMBIC := $(VENV)/bin/python -m alembic -c $(WEB_SERVER_DIR)/alembic.ini
 
 .DEFAULT_GOAL := help
 
-.PHONY: help venv setup-core setup-web setup-gui setup-dev setup-gpu init run web-migrate web-api web-client clean
+.PHONY: help venv setup-core setup-web setup-dev setup-gpu init run web-migrate web-api web-client clean
 
 help:
 	@printf '%s\n' \
 	  'Perceptrome bootstrap targets:' \
 	  '  make setup-core   - install lean CLI/core dependencies into $(VENV)' \
 	  '  make setup-web    - install web server deps and client node modules' \
-	  '  make setup-gui    - install Qt GUI deps' \
 	  '  make setup-dev    - install combined dev/test deps and client node modules' \
 	  '  make setup-gpu    - install optional CUDA 12 / GPU training deps' \
 	  '  make init         - initialize default local state directories' \
@@ -41,8 +40,6 @@ setup-web: venv
 	$(PIP) install -r requirements/web.txt
 	npm install --prefix $(WEB_CLIENT_DIR)
 
-setup-gui: venv
-	$(PIP) install -r requirements/gui.txt
 
 setup-dev: venv
 	$(PIP) install -r requirements/dev.txt

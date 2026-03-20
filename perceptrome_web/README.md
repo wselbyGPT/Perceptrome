@@ -84,11 +84,10 @@ Then open `http://127.0.0.1:5173`.
 
 ## Why the install flow changed
 
-The repository now separates Python dependency paths so web-only work does not pull in Qt or CUDA packages:
+The repository now separates Python dependency paths so web-only work does not pull in unrelated optional stacks such as CUDA packages:
 
 - `requirements/core.txt` → lean CLI/core install
 - `requirements/web.txt` → FastAPI/Alembic/PostgreSQL stack
-- `requirements/gui.txt` → Qt GUI dependencies
 - `requirements/dev.txt` → combined local-development Python stack
 - `requirements/gpu-cu12.txt` → optional CUDA 12 / GPU training packages
 
