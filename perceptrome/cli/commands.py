@@ -357,6 +357,8 @@ def _run_local_io_cfg(io_cfg):
     layout = ensure_run_layout()
     io_cfg.checkpoints_dir = path_in_run(layout, "artifacts", "checkpoints")
     io_cfg.model_dir = path_in_run(layout, "artifacts", "model")
+    os.makedirs(io_cfg.model_dir, exist_ok=True)
+    os.makedirs(io_cfg.checkpoints_dir, exist_ok=True)
     return io_cfg
 
 

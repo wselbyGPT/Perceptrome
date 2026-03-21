@@ -540,6 +540,8 @@ def load_or_init_model(
     if torch is None or nn is None or optim is None:
         raise RuntimeError("PyTorch is required.")
 
+    os.makedirs(io_cfg.model_dir, exist_ok=True)
+    os.makedirs(io_cfg.checkpoints_dir, exist_ok=True)
     ckpt_path = os.path.join(io_cfg.checkpoints_dir, "latest.pt")
 
     mt = _normalize_model_type(model_type)
@@ -820,6 +822,8 @@ def save_checkpoint(
             ),
         },
     }
+    ckpt_dir = os.path.dirname(ckpt_path) or "."
+    os.makedirs(ckpt_dir, exist_ok=True)
     tmp = ckpt_path + ".tmp"
     torch.save(payload, tmp)
     os.replace(tmp, ckpt_path)
