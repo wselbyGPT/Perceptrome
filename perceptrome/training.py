@@ -88,12 +88,16 @@ def _apply_aa_span_mask(batch_onehot: "torch.Tensor", span_prob: float, span_len
 
 def _run_local_io_cfg(io_cfg: IOConfig) -> IOConfig:
     layout = ensure_run_layout()
+    model_dir = layout.artifacts_dir
+    checkpoints_dir = os.path.join(layout.artifacts_dir, "checkpoints")
+    os.makedirs(model_dir, exist_ok=True)
+    os.makedirs(checkpoints_dir, exist_ok=True)
     return IOConfig(
         cache_fasta_dir=io_cfg.cache_fasta_dir,
         cache_genbank_dir=io_cfg.cache_genbank_dir,
         cache_encoded_dir=io_cfg.cache_encoded_dir,
-        model_dir=layout.artifacts_dir,
-        checkpoints_dir=os.path.join(layout.artifacts_dir, "checkpoints"),
+        model_dir=model_dir,
+        checkpoints_dir=checkpoints_dir,
         logs_dir=io_cfg.logs_dir,
         state_file=io_cfg.state_file,
     )
