@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "tsc -p tsconfig.test.json && node --test .tmp-tests/tests/**/*.test.js"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.66.11",

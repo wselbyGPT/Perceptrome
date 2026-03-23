@@ -1,3 +1,4 @@
+import type { BioASTVisualizationBundle } from "../bio-ast/schemas";
 import { apiRequest } from "../../lib/api-client";
 
 export type RunArtifact = {
@@ -92,4 +93,11 @@ export const runsApi = {
     return apiRequest<RunLineage>(`/api/runs/${encodeURIComponent(runId)}/lineage${suffix}`);
   },
   start: (config: Record<string, unknown>) => apiRequest<RunRecord>("/api/runs/start", { method: "POST", body: { config } }),
+  bioAstBundle: (runId: string, options?: { accession?: string; artifactId?: number }) => {
+    const params = new URLSearchParams();
+    if (options?.accession) params.set("accession", options.accession);
+    if (typeof options?.artifactId === "number") params.set("artifact_id", String(options.artifactId));
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return apiRequest<BioASTVisualizationBundle>(`/api/runs/${encodeURIComponent(runId)}/bio-ast${suffix}`);
+  },
 };

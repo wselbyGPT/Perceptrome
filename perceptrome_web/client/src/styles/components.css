@@ -410,3 +410,12 @@ textarea.input:disabled {
 .state-card p { margin-top: var(--space-1); }
 
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+.bio-ast-selected {
+  outline: 2px solid var(--color-accent, #3b82f6);
+}
+
+.bio-ast-segment-active {
+  fill: var(--color-accent, #3b82f6);
+  stroke: var(--color-accent, #3b82f6);
+}

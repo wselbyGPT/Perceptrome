@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": ".tmp-tests",
+    "rootDir": "."
+  },
+  "include": [
+    "src/features/bio-ast/schemas.ts",
+    "src/features/bio-ast/selection-store.ts",
+    "tests/**/*.ts"
+  ]
+}

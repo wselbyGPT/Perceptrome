@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from ...deps import get_current_user_strict, get_db
 from ...models import Run, RunArtifact, User
-from ...schemas import RunArtifactOut, RunLineageOut, RunOut, RunsBoardOut, RunStartRequest, RunSummaryOut
+from ...schemas import BioASTVisualizationBundleOut, RunArtifactOut, RunLineageOut, RunOut, RunsBoardOut, RunStartRequest, RunSummaryOut
 from ...services import run_service
 
 router = APIRouter(prefix='/api/runs', tags=['runs'])
@@ -85,6 +85,15 @@ def get_run_lineage(run_id: str, depth: int = 2, artifact_type: str | None = Non
     states = {item.strip().lower() for item in (run_state or '').split(',') if item.strip()}
     nodes, edges = run_service.filter_lineage_graph(nodes=nodes, edges=edges, root_run_id=run_id, artifact_type_filter=artifact_type, run_state_filter=states)
     return RunLineageOut(run_id=run_id, depth_limit=depth_limit, artifact_type_filter=artifact_type, run_state_filter=sorted(states), nodes=nodes, edges=edges)
+
+
+@router.get('/{run_id}/bio-ast', response_model=BioASTVisualizationBundleOut)
+def get_run_bio_ast_bundle(run_id: str, artifact_id: int | None = None, accession: str | None = None, user: User = Depends(get_current_user_strict), db: Session = Depends(get_db)):
+    run = run_service.find_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail='Run not found')
+    run_service.assert_run_access(run, user)
+    return run_service.resolve_bio_ast_bundle(run, artifact_id=artifact_id, accession=accession)
 
 
 @router.get('/{run_id}/artifacts', response_model=list[RunArtifactOut])
