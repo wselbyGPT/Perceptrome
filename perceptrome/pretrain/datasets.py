@@ -12,6 +12,8 @@ except Exception:  # pragma: no cover - optional dependency
     torch = None  # type: ignore
     Dataset = object  # type: ignore
 
+from perceptrome.models.bio_ast_batch import BioASTBatch, collate_bio_ast_batches
+
 
 @dataclass
 class DatasetSpec:
@@ -53,6 +55,9 @@ class NPZPretrainDataset(Dataset):  # type: ignore[misc]
         else:
             row["sample_id"] = str(idx)
 
+        if "bio_ast" in row and row["bio_ast"] is not None:
+            row["bio_ast"] = BioASTBatch.from_canonical_json(row["bio_ast"].item() if isinstance(row["bio_ast"], np.ndarray) and row["bio_ast"].shape == () else row["bio_ast"])
+
         return row
 
 
@@ -71,13 +76,19 @@ def pretrain_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     for k in keys:
         vals = [b.get(k) for b in batch]
-        if vals[0] is None:
+        first = next((v for v in vals if v is not None), None)
+        if first is None:
             continue
-        if isinstance(vals[0], str):
+        if isinstance(first, BioASTBatch):
+            ast_batch = collate_bio_ast_batches(vals)
+            if ast_batch is not None:
+                out.update({f"ast_{name}" if name not in {"node_type_ids"} else "ast_node_type_ids": value for name, value in ast_batch.items()})
+            continue
+        if isinstance(first, str):
             out[k] = vals
             continue
-        if isinstance(vals[0], np.ndarray):
-            if vals[0].ndim == 1:
+        if isinstance(first, np.ndarray):
+            if first.ndim == 1:
                 arr = pad_1d_batch(vals, pad_value=0)
                 out[k] = torch.from_numpy(arr)
                 if k in {"input_ids", "view_a", "view_b"}:
@@ -85,7 +96,7 @@ def pretrain_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
             else:
                 out[k] = torch.from_numpy(np.stack(vals, axis=0))
             continue
-        if np.isscalar(vals[0]):
+        if np.isscalar(first):
             out[k] = torch.tensor(vals)
             continue
         out[k] = vals

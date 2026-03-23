@@ -7,9 +7,11 @@ from unittest.mock import patch
 import numpy as np
 
 from perceptrome.encoding.bio_ast_builder import BioASTBuilder
+from perceptrome.encoding.bio_ast_export import build_bio_ast_export_artifacts
 from perceptrome.encoding.genbank_features import CDSFeature
 from tests.fixtures.bio_ast_regression_fixtures import SYNTHETIC_FASTA_SEQUENCE
 from perceptrome.model import BioASTEmbeddingAPI
+from perceptrome.models.bio_ast_batch import BioASTBatch, canonical_bio_ast_json_to_numpy
 from perceptrome.cli.commands import _export_bio_ast_embeddings_for_accession
 
 
@@ -41,13 +43,24 @@ class ModelBioASTInputAdapterTests(unittest.TestCase):
         self.assertEqual(transformer_lengths.ndim, 1)
         self.assertTrue(all(len(item["path"]) == len(item["types"]) for item in transformer_paths))
 
+    def test_canonical_json_loader_includes_optional_semantic_edges(self):
+        built = BioASTBuilder().build(sequence=SYNTHETIC_FASTA_SEQUENCE, accession="CANON1")
+        canonical = build_bio_ast_export_artifacts(built, accession="CANON1", source="fixture")["canonical_ast"]
 
-if __name__ == "__main__":
-    unittest.main()
+        no_sem = canonical_bio_ast_json_to_numpy(canonical, include_semantic_edges=False)
+        with_sem = canonical_bio_ast_json_to_numpy(canonical, include_semantic_edges=True)
+        batch = BioASTBatch.from_canonical_json(canonical, include_semantic_edges=True)
+
+        self.assertEqual(no_sem["span_coords"].shape, (len(built.ast.nodes), 2))
+        self.assertEqual(with_sem["frame"].shape, (len(built.ast.nodes),))
+        self.assertEqual(with_sem["tree_edge_index"].shape[0], 2)
+        self.assertIn("semantic_edge_index", with_sem)
+        self.assertEqual(tuple(batch.node_type_ids.shape), (len(built.ast.nodes),))
+        self.assertEqual(tuple(batch.span_coords.shape), (len(built.ast.nodes), 2))
 
 
 class BioASTEmbeddingAPITests(unittest.TestCase):
-    def test_embedding_api_shapes(self):
+    def test_embedding_api_shapes_and_missing_ast_behavior(self):
         try:
             import torch
         except ImportError:
@@ -59,18 +72,27 @@ class BioASTEmbeddingAPITests(unittest.TestCase):
         node_ids = np.array([[0, 1, 2, 3, 4]], dtype=np.int64)
         coords = np.array([[[1, 5], [6, 10], [11, 15], [16, 20], [21, 25]]], dtype=np.float32)
         strand = np.array([[0, 1, -1, 0, 1]], dtype=np.int64)
+        frame = np.array([[0, 1, 2, -1, 0]], dtype=np.int64)
+        edge_index = torch.tensor([[0, 1, 2, 3], [1, 2, 3, 4]], dtype=torch.long)
+        node_mask = torch.tensor([[1, 1, 1, 1, 1]], dtype=torch.bool)
 
         model = BioASTEmbeddingAPI(seq_vocab_size=4, hidden_dim=32, ast_tree_layers=2, motif_kernel_size=3, motif_channels=16)
-        out = model(
+        out_fused = model(
             torch.from_numpy(seq),
             torch.from_numpy(node_ids),
             ast_coords=torch.from_numpy(coords),
             ast_strand=torch.from_numpy(strand),
+            ast_frame=torch.from_numpy(frame),
+            ast_edge_index=edge_index,
+            ast_node_mask=node_mask,
         )
+        out_seq_only = model(torch.from_numpy(seq))
 
-        self.assertEqual(tuple(out.fixed.shape), (1, 32))
-        self.assertEqual(tuple(out.token.shape), (1, feature_len, 32))
-        self.assertEqual(tuple(out.node.shape), (1, 5, 32))
+        self.assertEqual(tuple(out_fused.fixed.shape), (1, 32))
+        self.assertEqual(tuple(out_fused.token.shape), (1, feature_len, 32))
+        self.assertEqual(tuple(out_fused.node.shape), (1, 5, 32))
+        self.assertEqual(tuple(out_seq_only.fixed.shape), (1, 32))
+        self.assertEqual(tuple(out_seq_only.node.shape), (1, 0, 32))
 
     def test_embedding_export_metadata_schema(self):
         try:
@@ -118,3 +140,6 @@ class BioASTEmbeddingAPITests(unittest.TestCase):
             self.assertTrue(os.path.exists(outputs["token"]))
             self.assertTrue(os.path.exists(outputs["node"]))
 
+
+if __name__ == "__main__":
+    unittest.main()
