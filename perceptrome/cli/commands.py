@@ -29,8 +29,12 @@ from perceptrome.cli.common import (
 from perceptrome.catalog_schema import parse_catalog_schema
 from perceptrome.encoding.bio_ast_builder import BioASTBuilder
 from perceptrome.encoding.genbank_features import parse_cds_features_from_genbank
-from perceptrome.encoding.bio_ast_viz import ast_to_graph_json, ast_to_tree_json
-from perceptrome.encoding.storage_map import build_storage_map_payload
+from perceptrome.encoding.bio_ast_export import (
+    build_bio_ast_export_artifacts,
+    export_filenames,
+    normalize_visualization_loader_payload,
+    stable_json_dumps,
+)
 from perceptrome.io_utils import select_unique_accessions, write_catalog
 from perceptrome.encoding.parse import parse_fasta_sequence, parse_genbank_dna
 from perceptrome.encoding.encode import encode_sequence_one_hot
@@ -472,68 +476,9 @@ def _build_bio_ast(accession: str, source: str, io_cfg):
     )
 
 
-def _canonical_ast_json(built) -> Dict[str, Any]:
-    return built.ast.to_dict()
-
-
-def _motif_level_features(built) -> List[Dict[str, Any]]:
-    motif_node_types = {"region", "domain", "sme", "microfeature", "residue", "kmer"}
-    rows: List[Dict[str, Any]] = []
-    for node in built.ast.nodes:
-        if node.node_type not in motif_node_types:
-            continue
-        rows.append(
-            {
-                "node_id": node.canonical_id,
-                "node_type": node.node_type,
-                "parent_id": node.parent_id,
-                "start": node.start,
-                "end": node.end,
-                "length": (int(node.end) - int(node.start) + 1) if node.start is not None and node.end is not None else None,
-                "metadata": dict(node.metadata),
-            }
-        )
-    return rows
-
-
-def _tree_tensors_with_ids(built) -> Dict[str, Any]:
-    base = built.to_tree_message_passing_tensors()
-    return {
-        "node_ids": [node.canonical_id for node in built.ast.nodes],
-        **{key: value.tolist() for key, value in base.items()},
-    }
-
-
-def _graph_edge_list(built) -> List[Dict[str, Any]]:
-    id_to_idx = {node.canonical_id: idx for idx, node in enumerate(built.ast.nodes)}
-    edges: List[Dict[str, Any]] = []
-    for node in built.ast.nodes:
-        if not node.parent_id:
-            continue
-        if node.parent_id not in id_to_idx:
-            continue
-        edges.append(
-            {
-                "parent_id": node.parent_id,
-                "child_id": node.canonical_id,
-                "parent_index": id_to_idx[node.parent_id],
-                "child_index": id_to_idx[node.canonical_id],
-            }
-        )
-    return edges
-
-
 def _collect_bio_ast_transforms(accession: str, source: str, io_cfg) -> Dict[str, Any]:
     built = _build_bio_ast(accession=accession, source=source, io_cfg=io_cfg)
-    return {
-        "canonical_ast": _canonical_ast_json(built),
-        "motif_features": _motif_level_features(built),
-        "tree_tensors": _tree_tensors_with_ids(built),
-        "graph_edges": _graph_edge_list(built),
-        "tree_json": ast_to_tree_json(built.ast, accession=str(accession)),
-        "graph_json": ast_to_graph_json(built.ast, accession=str(accession)),
-        "storage_map": build_storage_map_payload(built.ast, len(built.sequence), accession=str(accession)),
-    }
+    return build_bio_ast_export_artifacts(built, accession=str(accession), source=str(source))
 
 
 def _build_and_write_bio_ast(accession: str, source: str, io_cfg) -> Optional[Dict[str, str]]:
@@ -547,21 +492,12 @@ def _build_and_write_bio_ast(accession: str, source: str, io_cfg) -> Optional[Di
     ast_dir = path_in_run(layout, "artifacts", os.path.join("bio_ast", str(accession)))
     os.makedirs(ast_dir, exist_ok=True)
 
-    filenames = {
-        "canonical_ast": "canonical_ast.json",
-        "motif_features": "motif_features.json",
-        "tree_tensors": "tree_tensors.json",
-        "graph_edges": "graph_edges.json",
-        "tree_json": "tree_json.json",
-        "graph_json": "graph_json.json",
-        "storage_map": "storage_map.json",
-    }
+    filenames = export_filenames()
     output_paths: Dict[str, str] = {}
     for key, filename in filenames.items():
         out_path = os.path.join(ast_dir, filename)
         with open(out_path, "w", encoding="utf-8") as handle:
-            json.dump(transforms[key], handle, indent=2, sort_keys=True)
-            handle.write("\n")
+            handle.write(stable_json_dumps(transforms[key]))
         output_paths[key] = out_path
 
     update_run_manifest(
@@ -590,29 +526,20 @@ def cmd_bio_ast_build(args: argparse.Namespace) -> int:
 def cmd_bio_ast_export(args: argparse.Namespace) -> int:
     layout = ensure_run_layout()
     acc_dir = path_in_run(layout, "artifacts", os.path.join("bio_ast", str(args.accession)))
-    transform_to_file = {
-        "canonical_ast": "canonical_ast.json",
-        "motif_features": "motif_features.json",
-        "tree_tensors": "tree_tensors.json",
-        "graph_edges": "graph_edges.json",
-        "tree_json": "tree_json.json",
-        "graph_json": "graph_json.json",
-        "storage_map": "storage_map.json",
-    }
+    transform_to_file = export_filenames()
     if args.transform == "all":
         payload = {}
         for key, filename in transform_to_file.items():
             path = os.path.join(acc_dir, filename)
             with open(path, "r", encoding="utf-8") as handle:
-                payload[key] = json.load(handle)
+                payload[key] = normalize_visualization_loader_payload(json.load(handle))
     else:
         path = os.path.join(acc_dir, transform_to_file[args.transform])
         with open(path, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
+            payload = normalize_visualization_loader_payload(json.load(handle))
 
     with open(args.output, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, sort_keys=True)
-        handle.write("\n")
+        handle.write(stable_json_dumps(payload))
     print(f"Exported {args.transform} for {args.accession} -> {args.output}")
     return 0
 
@@ -620,10 +547,11 @@ def cmd_bio_ast_export(args: argparse.Namespace) -> int:
 def cmd_bio_ast_inspect(args: argparse.Namespace) -> int:
     layout = ensure_run_layout()
     acc_dir = path_in_run(layout, "artifacts", os.path.join("bio_ast", str(args.accession)))
-    with open(os.path.join(acc_dir, "canonical_ast.json"), "r", encoding="utf-8") as handle:
+    filenames = export_filenames()
+    with open(os.path.join(acc_dir, filenames["canonical_ast"]), "r", encoding="utf-8") as handle:
         ast_payload = json.load(handle)
-    with open(os.path.join(acc_dir, "graph_edges.json"), "r", encoding="utf-8") as handle:
-        edges = json.load(handle)
+    with open(os.path.join(acc_dir, filenames["graph_edges"]), "r", encoding="utf-8") as handle:
+        edges = normalize_visualization_loader_payload(json.load(handle))
     nodes = ast_payload.get("nodes", []) if isinstance(ast_payload, dict) else []
     print(f"accession={args.accession}")
     print(f"nodes={len(nodes)}")
@@ -643,11 +571,12 @@ def cmd_bio_ast_visualize(args: argparse.Namespace) -> int:
     if not outputs:
         return 1
     print(f"{args.accession}: visualization artifacts written")
+    print(f"canonical_ast={outputs['canonical_ast']}")
     print(f"tree_json={outputs['tree_json']}")
     print(f"graph_json={outputs['graph_json']}")
+    print(f"storage_map={outputs['storage_map']}")
+    print(f"summary_json={outputs['summary_json']}")
     return 0
-
-
 
 
 def _checkpoint_sha256(path: Optional[str]) -> Optional[str]:

@@ -246,9 +246,20 @@ def load_bio_ast_visualization(accession: str) -> dict:
 
     layout = ensure_run_layout()
     base = path_in_run(layout, "artifacts", os.path.join("bio_ast", str(accession)))
-    tree_path = os.path.join(base, "tree_json.json")
-    graph_path = os.path.join(base, "graph_json.json")
-    storage_map_path = os.path.join(base, "storage_map.json")
+    from perceptrome.encoding.bio_ast_export import export_filenames
+
+    filenames = export_filenames()
+
+    def _resolve_artifact_path(primary: str, legacy: str) -> str:
+        primary_path = os.path.join(base, primary)
+        if os.path.exists(primary_path):
+            return primary_path
+        return os.path.join(base, legacy)
+
+    tree_path = _resolve_artifact_path(filenames["tree_json"], "tree_json.json")
+    graph_path = _resolve_artifact_path(filenames["graph_json"], "graph_json.json")
+    storage_map_path = _resolve_artifact_path(filenames["storage_map"], "storage_map.json")
+    summary_path = _resolve_artifact_path(filenames["summary_json"], filenames["summary_json"])
 
     with open(tree_path, "r", encoding="utf-8") as handle:
         tree_payload = json.load(handle)
@@ -256,6 +267,16 @@ def load_bio_ast_visualization(accession: str) -> dict:
         graph_payload = json.load(handle)
     with open(storage_map_path, "r", encoding="utf-8") as handle:
         storage_map_payload = json.load(handle)
+    if os.path.exists(summary_path):
+        with open(summary_path, "r", encoding="utf-8") as handle:
+            summary_payload = json.load(handle)
+    else:
+        summary_payload = {
+            "schema": "bio_ast_summary_v1",
+            "accession": accession,
+            "node_count": len(graph_payload.get("nodes", [])),
+            "edge_count": len(graph_payload.get("edges", [])),
+        }
 
     node_types = {}
     spans = []
@@ -289,6 +310,7 @@ def load_bio_ast_visualization(accession: str) -> dict:
         "tree": tree_payload,
         "graph": graph_payload,
         "storage_map": storage_map_payload,
+        "export_summary": summary_payload,
         "summary": {
             "node_types": node_types,
             "spans": spans,
