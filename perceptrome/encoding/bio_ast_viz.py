@@ -100,21 +100,29 @@ def ast_to_graph_json(ast: BioAST, *, accession: Optional[str] = None) -> Dict[s
     ]
 
     edges: List[Dict[str, Any]] = []
+    hierarchy_edges: List[Dict[str, Any]] = []
+    semantic_edges: List[Dict[str, Any]] = []
     for edge in ast.edges:
         if edge.source_id not in node_index or edge.target_id not in node_index:
             continue
         relation_type = "hierarchy" if edge.kind == CONTAINMENT_EDGE_KIND else "semantic"
-        edges.append(
-            {
-                "source": edge.source_id,
-                "target": edge.target_id,
-                "source_index": node_index[edge.source_id],
-                "target_index": node_index[edge.target_id],
-                "relation": edge.kind,
-                "relation_type": relation_type,
-                "metadata": dict(edge.metadata),
-            }
-        )
+        edge_payload = {
+            "id": f"{relation_type}:{edge.kind}:{edge.source_id}->{edge.target_id}",
+            "source": edge.source_id,
+            "target": edge.target_id,
+            "source_index": node_index[edge.source_id],
+            "target_index": node_index[edge.target_id],
+            "relation": edge.kind,
+            "edge_kind": edge.kind,
+            "relation_type": relation_type,
+            "evidence": dict(edge.metadata).get("evidence", "curated" if relation_type == "hierarchy" else "unspecified"),
+            "metadata": dict(edge.metadata),
+        }
+        edges.append(edge_payload)
+        if relation_type == "hierarchy":
+            hierarchy_edges.append(edge_payload)
+        else:
+            semantic_edges.append(edge_payload)
 
     edges.sort(
         key=lambda item: (
@@ -130,7 +138,11 @@ def ast_to_graph_json(ast: BioAST, *, accession: Optional[str] = None) -> Dict[s
         "schema": "bio_ast_graph_v1",
         "node_count": len(nodes_payload),
         "edge_count": len(edges),
+        "hierarchy_edge_count": len(hierarchy_edges),
+        "semantic_edge_count": len(semantic_edges),
         "sequence_metadata": ast.sequence_metadata.to_dict(),
         "nodes": nodes_payload,
         "edges": edges,
+        "hierarchy_edges": sorted(hierarchy_edges, key=lambda item: str(item["id"])),
+        "semantic_edges": sorted(semantic_edges, key=lambda item: str(item["id"])),
     }

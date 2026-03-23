@@ -23,6 +23,7 @@ from perceptrome.bio_ast import (
     SMENode,
     VirusNode,
 )
+from perceptrome.encoding.bio_ast_edges import derive_semantic_edges
 from perceptrome.encoding.encode import encode_sequence_one_hot
 from perceptrome.encoding.genbank_features import CDSFeature
 from perceptrome.encoding.orf import translate_orf
@@ -199,7 +200,7 @@ class BioASTBuilder:
             nodes.extend(derived_nodes)
 
         nodes[0] = self._replace_child_ids(top, tuple(top_child_ids))
-        ast = BioAST(
+        base_ast = BioAST(
             nodes=tuple(nodes),
             sequence_metadata=SequenceMetadata(
                 accession=str(accession),
@@ -210,6 +211,11 @@ class BioASTBuilder:
                 checksum=sequence_checksum(seq),
                 metadata={"top_level_type": str(top_level_type).lower()},
             ),
+        )
+        ast = BioAST(
+            nodes=base_ast.nodes,
+            sequence_metadata=base_ast.sequence_metadata,
+            relationships=derive_semantic_edges(base_ast, feature_annotations=feature_annotations),
         )
         return BuiltBioAST(ast=ast, sequence=seq)
 
