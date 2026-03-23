@@ -97,6 +97,15 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--tb-run-id", default=None, help="TensorBoard run id (default: accession or config)")
         sp.add_argument("--tb-log-every", type=int, default=None, help="TensorBoard logging interval in steps (default from config)")
 
+
+    def add_ast_template_args(sp):
+        sp.add_argument("--ast-template-artifact", default=None, help="Optional Bio-AST template or canonical AST artifact for round-trip validation")
+        sp.add_argument("--ast-template-mode", choices=["off", "rescore", "reject"], default="off", help="Template policy: ignore, rescore, or reject structurally mismatched candidates")
+        sp.add_argument("--ast-template-span-tolerance", type=int, default=0, help="Allowed absolute span delta when comparing rebuilt Bio-AST nodes")
+        sp.add_argument("--ast-template-min-score", type=float, default=1.0, help="Minimum template match score required for acceptance")
+        sp.add_argument("--ast-template-max-mismatches", type=int, default=0, help="Maximum total node/order/edge mismatches allowed")
+        sp.add_argument("--ast-template-include-semantic-edges", action="store_true", help="Require semantic edges from the template during comparison")
+
     def add_model_args(sp):
         sp.add_argument(
             "--model-type",
@@ -195,6 +204,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--ast-graph-hop-limit", type=int, default=1, help="Graph hop limit for AST mask expansion")
     s.add_argument("--ast-mask-strength", type=float, default=0.0, help="Mask strength [0..1] for AST-guided token preferences")
     add_tok_args(s)
+    add_ast_template_args(s)
     add_model_args(s)
     s.set_defaults(func=_lazy_cmd("cmd_generate_plasmid"))
 
@@ -238,6 +248,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--ast-graph-mask", choices=["none", "neighbors", "successors"], default="none", help="Graph-guided token masking mode")
     s.add_argument("--ast-graph-hop-limit", type=int, default=1, help="Graph hop limit for AST mask expansion")
     s.add_argument("--ast-mask-strength", type=float, default=0.0, help="Mask strength [0..1] for AST-guided token preferences")
+    add_ast_template_args(s)
     add_model_args(s)
     s.set_defaults(func=_lazy_cmd("cmd_generate_protein"))
 
@@ -264,6 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--ast-graph-mask", choices=["none", "neighbors", "successors"], default="none", help="Graph-guided token masking mode")
     s.add_argument("--ast-graph-hop-limit", type=int, default=1, help="Graph hop limit for AST mask expansion")
     s.add_argument("--ast-mask-strength", type=float, default=0.0, help="Mask strength [0..1] for AST-guided token preferences")
+    add_ast_template_args(s)
     s.set_defaults(func=_lazy_cmd("cmd_design_loop"))
 
     s = sub.add_parser("compare-lanes")
