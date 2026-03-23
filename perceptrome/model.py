@@ -15,6 +15,9 @@ except ImportError:
 from .config import IOConfig
 from .genome_schema import CURRENT_GENOME_SCHEMA_VERSION, migrate_genome_payload
 from .models.factory import build_hierarchical_model
+from .models.ast_nodes import ASTNodeEncoder
+from .models.ast_rvnn import TreeRvnnEncoder
+from .models.fusion import PooledASTFusion
 
 
 @dataclass(frozen=True)
@@ -32,7 +35,7 @@ class BioASTEmbeddingOutput:
 
 
 class BioASTEmbeddingAPI(nn.Module):  # type: ignore[misc]
-    """Explicit embedding API for joint sequence + AST tensors."""
+    """Explicit embedding API for sequence inputs with an optional Bio-AST branch."""
 
     def __init__(
         self,
@@ -43,6 +46,7 @@ class BioASTEmbeddingAPI(nn.Module):  # type: ignore[misc]
         motif_channels: int = 64,
         dropout: float = 0.1,
         node_type_vocab_size: int = 32,
+        fusion_strategy: str = "pooled_fusion",
     ):
         if torch is None or nn is None:
             raise RuntimeError("PyTorch is required for BioASTEmbeddingAPI.")
@@ -51,6 +55,7 @@ class BioASTEmbeddingAPI(nn.Module):  # type: ignore[misc]
         self.ast_tree_layers = max(1, int(ast_tree_layers))
         self.motif_kernel_size = int(motif_kernel_size)
         self.motif_channels = int(motif_channels)
+        self.fusion_strategy = str(fusion_strategy)
 
         self.seq_token_proj = nn.Linear(int(seq_vocab_size), self.hidden_dim)
         pad = self.motif_kernel_size // 2
@@ -61,52 +66,37 @@ class BioASTEmbeddingAPI(nn.Module):  # type: ignore[misc]
             nn.GELU(),
         )
 
-        self.node_type_embed = nn.Embedding(int(node_type_vocab_size), self.hidden_dim)
-        self.node_coord_proj = nn.Linear(2, self.hidden_dim)
-        self.node_strand_embed = nn.Embedding(3, self.hidden_dim)
-        self.node_blocks = nn.ModuleList(
-            [
-                nn.Sequential(
-                    nn.Linear(self.hidden_dim, self.hidden_dim),
-                    nn.GELU(),
-                    nn.Dropout(float(dropout)),
-                )
-                for _ in range(self.ast_tree_layers)
-            ]
-        )
-        self.fuse = nn.Linear(self.hidden_dim * 2, self.hidden_dim)
+        self.ast_node_encoder = ASTNodeEncoder(hidden_dim=self.hidden_dim, node_type_vocab_size=int(node_type_vocab_size), dropout=float(dropout))
+        self.ast_tree_encoder = TreeRvnnEncoder(hidden_dim=self.hidden_dim, layers=self.ast_tree_layers, dropout=float(dropout))
+        self.pooled_fusion = PooledASTFusion(hidden_dim=self.hidden_dim, dropout=float(dropout))
 
     def forward(
         self,
         sequence_tokens: "torch.Tensor",
-        ast_node_type_ids: "torch.Tensor",
+        ast_node_type_ids: Optional["torch.Tensor"] = None,
         ast_coords: Optional["torch.Tensor"] = None,
         ast_strand: Optional["torch.Tensor"] = None,
+        ast_frame: Optional["torch.Tensor"] = None,
+        ast_edge_index: Optional["torch.Tensor"] = None,
+        ast_node_mask: Optional["torch.Tensor"] = None,
     ) -> BioASTEmbeddingOutput:
         if sequence_tokens.dim() != 3:
             raise ValueError("sequence_tokens must be shaped (batch, seq_len, vocab_size)")
-        if ast_node_type_ids.dim() != 2:
-            raise ValueError("ast_node_type_ids must be shaped (batch, node_count)")
 
         token_embed = self.seq_token_proj(sequence_tokens)
         seq_motif = self.seq_motif(sequence_tokens.transpose(1, 2)).transpose(1, 2)
         token_embed = token_embed + seq_motif
-
-        node_ids = ast_node_type_ids.clamp(min=0, max=int(self.node_type_embed.num_embeddings) - 1)
-        node_embed = self.node_type_embed(node_ids)
-
-        if ast_coords is not None:
-            node_embed = node_embed + self.node_coord_proj(ast_coords.to(dtype=node_embed.dtype))
-        if ast_strand is not None:
-            strand_ids = (ast_strand + 1).clamp(min=0, max=2)
-            node_embed = node_embed + self.node_strand_embed(strand_ids)
-
-        for block in self.node_blocks:
-            node_embed = node_embed + block(node_embed)
-
         fixed_seq = token_embed.mean(dim=1)
-        fixed_nodes = node_embed.mean(dim=1)
-        fixed = self.fuse(torch.cat([fixed_seq, fixed_nodes], dim=-1))
+
+        if ast_node_type_ids is None:
+            empty_nodes = token_embed.new_zeros((sequence_tokens.size(0), 0, self.hidden_dim))
+            return BioASTEmbeddingOutput(fixed=fixed_seq, token=token_embed, node=empty_nodes)
+
+        if ast_node_type_ids.dim() != 2:
+            raise ValueError("ast_node_type_ids must be shaped (batch, node_count)")
+        node_embed = self.ast_node_encoder(ast_node_type_ids, coords=ast_coords, strand=ast_strand, frame=ast_frame)
+        node_embed, ast_root = self.ast_tree_encoder(node_embed, tree={"edge_index": ast_edge_index, "node_mask": ast_node_mask})
+        _, fixed = self.pooled_fusion(token_embed, fixed_seq, node_embed, ast_root, node_mask=ast_node_mask)
         return BioASTEmbeddingOutput(fixed=fixed, token=token_embed, node=node_embed)
 
 

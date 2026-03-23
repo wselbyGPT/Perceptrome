@@ -16,6 +16,7 @@ class ASTNodeEncoder(nn.Module):  # type: ignore[misc]
         self.type_embed = nn.Embedding(int(node_type_vocab_size), int(hidden_dim))
         self.coord_proj = nn.Linear(2, int(hidden_dim))
         self.strand_embed = nn.Embedding(3, int(hidden_dim))
+        self.frame_embed = nn.Embedding(5, int(hidden_dim))
         self.norm = nn.LayerNorm(int(hidden_dim))
         self.drop = nn.Dropout(float(dropout))
 
@@ -24,6 +25,7 @@ class ASTNodeEncoder(nn.Module):  # type: ignore[misc]
         node_type_ids: "torch.Tensor",
         coords: Optional["torch.Tensor"] = None,
         strand: Optional["torch.Tensor"] = None,
+        frame: Optional["torch.Tensor"] = None,
     ) -> "torch.Tensor":
         node_ids = node_type_ids.clamp(min=0, max=self.type_embed.num_embeddings - 1)
         x = self.type_embed(node_ids)
@@ -31,4 +33,6 @@ class ASTNodeEncoder(nn.Module):  # type: ignore[misc]
             x = x + self.coord_proj(coords.to(dtype=x.dtype))
         if strand is not None:
             x = x + self.strand_embed((strand + 1).clamp(min=0, max=2))
+        if frame is not None:
+            x = x + self.frame_embed((frame + 1).clamp(min=0, max=4))
         return self.drop(self.norm(x))

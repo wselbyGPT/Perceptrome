@@ -21,7 +21,7 @@ class HierarchicalModelTests(unittest.TestCase):
         self.assertEqual(train_cfg.stage_a_steps, 5)
         self.assertEqual(train_cfg.stage_d_steps, 3)
 
-    def test_hierarchical_forward_and_ablation(self):
+    def test_hierarchical_forward_sequence_only_and_fused_ablation(self):
         try:
             import torch
         except ImportError:
@@ -33,20 +33,28 @@ class HierarchicalModelTests(unittest.TestCase):
         x = torch.zeros((b, l, v), dtype=torch.float32)
         x[:, :, 0] = 1.0
         flat = x.view(b, -1)
+        ast_batch = {
+            "node_type_ids": torch.tensor([[0, 1, 2], [0, 1, 0]], dtype=torch.long),
+            "coords": torch.tensor([[[1, 2], [3, 4], [5, 6]], [[1, 2], [2, 3], [0, 0]]], dtype=torch.float32),
+            "strand": torch.tensor([[0, 1, -1], [0, 1, 0]], dtype=torch.long),
+            "frame": torch.tensor([[0, 1, 2], [0, 1, -1]], dtype=torch.long),
+            "node_mask": torch.tensor([[1, 1, 1], [1, 1, 0]], dtype=torch.bool),
+            "edge_index": [torch.tensor([[0, 1], [1, 2]], dtype=torch.long), torch.tensor([[0], [1]], dtype=torch.long)],
+        }
 
-        for mode in ("hierarchical", "cnn_only", "ast_only"):
-            model = HierarchicalVAE(
-                seq_len=l,
-                vocab_size=v,
-                hidden_dim=16,
-                latent_dim=8,
-                ast_tree_layers=2,
-                ablation_mode=mode,
-            )
-            recon, mu, logvar = model(flat)
-            self.assertEqual(tuple(recon.shape), (b, l * v))
-            self.assertEqual(tuple(mu.shape), (b, 8))
-            self.assertEqual(tuple(logvar.shape), (b, 8))
+        seq_only = HierarchicalVAE(seq_len=l, vocab_size=v, hidden_dim=16, latent_dim=8, ast_tree_layers=2)
+        seq_aux = seq_only.forward_with_aux(flat)
+        self.assertFalse(seq_aux.ast_used)
+        self.assertEqual(tuple(seq_aux.fused_token.shape), (b, l, 16))
+
+        for mode in ("pooled_fusion", "cnn_only", "ast_only"):
+            model = HierarchicalVAE(seq_len=l, vocab_size=v, hidden_dim=16, latent_dim=8, ast_tree_layers=2, ablation_mode=mode)
+            out = model.forward_with_aux(flat, ast_batch=ast_batch)
+            self.assertTrue(out.ast_used)
+            self.assertEqual(tuple(out.recon_logits.shape), (b, l * v))
+            self.assertEqual(tuple(out.mu.shape), (b, 8))
+            self.assertEqual(tuple(out.logvar.shape), (b, 8))
+            self.assertEqual(tuple(out.fused_global.shape), (b, 16))
 
     def test_checkpoint_roundtrip_hierarchical(self):
         try:
@@ -82,7 +90,7 @@ class HierarchicalModelTests(unittest.TestCase):
                 transformer_layers=2,
                 transformer_dropout=0.1,
                 hierarchical_latent_dim=8,
-                hierarchical_ablation_mode="hierarchical",
+                hierarchical_ablation_mode="pooled_fusion",
             )
             save_checkpoint(
                 ckpt_path=ckpt,
@@ -102,7 +110,7 @@ class HierarchicalModelTests(unittest.TestCase):
                 learning_rate=1e-3,
                 beta_kl=1e-3,
                 hierarchical_latent_dim=8,
-                hierarchical_ablation_mode="hierarchical",
+                hierarchical_ablation_mode="pooled_fusion",
             )
             model2, _, _, _ = load_or_init_model(
                 io_cfg=io_cfg,
@@ -119,7 +127,7 @@ class HierarchicalModelTests(unittest.TestCase):
                 transformer_layers=2,
                 transformer_dropout=0.1,
                 hierarchical_latent_dim=8,
-                hierarchical_ablation_mode="hierarchical",
+                hierarchical_ablation_mode="pooled_fusion",
             )
             self.assertIsNotNone(model2)
 

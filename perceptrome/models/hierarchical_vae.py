@@ -13,8 +13,16 @@ except ImportError:  # pragma: no cover
 from .cnn_local import LocalCNNEncoder
 from .ast_nodes import ASTNodeEncoder
 from .ast_rvnn import TreeRvnnEncoder
-from .fusion import CrossScaleFusion
+from .fusion import PooledASTFusion
 from .critics import CriticHeads
+
+
+def _first_present(mapping: Dict[str, "torch.Tensor"], *keys: str):
+    for key in keys:
+        value = mapping.get(key)
+        if value is not None:
+            return value
+    return None
 
 
 @dataclass
@@ -25,6 +33,7 @@ class HierarchicalOutput:
     fused_token: "torch.Tensor"
     fused_global: "torch.Tensor"
     critics: Dict[str, "torch.Tensor"]
+    ast_used: bool
 
 
 class HierarchicalVAE(nn.Module):  # type: ignore[misc]
@@ -37,7 +46,7 @@ class HierarchicalVAE(nn.Module):  # type: ignore[misc]
         ast_tree_layers: int = 2,
         ast_node_type_vocab_size: int = 64,
         dropout: float = 0.1,
-        ablation_mode: str = "hierarchical",
+        ablation_mode: str = "pooled_fusion",
     ):
         if nn is None:
             raise RuntimeError("PyTorch is required")
@@ -50,7 +59,7 @@ class HierarchicalVAE(nn.Module):  # type: ignore[misc]
         self.seq_encoder = LocalCNNEncoder(vocab_size, hidden_dim, channels=hidden_dim, dropout=dropout)
         self.ast_node_encoder = ASTNodeEncoder(hidden_dim=hidden_dim, node_type_vocab_size=ast_node_type_vocab_size, dropout=dropout)
         self.ast_tree_encoder = TreeRvnnEncoder(hidden_dim=hidden_dim, layers=ast_tree_layers, dropout=dropout)
-        self.fusion = CrossScaleFusion(hidden_dim=hidden_dim, dropout=dropout)
+        self.pooled_fusion = PooledASTFusion(hidden_dim=hidden_dim, dropout=dropout)
 
         self.fc_mu = nn.Linear(hidden_dim, int(latent_dim))
         self.fc_logvar = nn.Linear(hidden_dim, int(latent_dim))
@@ -58,37 +67,47 @@ class HierarchicalVAE(nn.Module):  # type: ignore[misc]
         self.dec_out = nn.Linear(hidden_dim, self.seq_len * self.vocab_size)
         self.critics = CriticHeads(hidden_dim=hidden_dim)
 
-    def _default_ast(self, x_seq: "torch.Tensor") -> Dict[str, "torch.Tensor"]:
-        bsz, seq_len, _ = x_seq.shape
-        node_count = max(2, min(16, seq_len // 8))
-        device = x_seq.device
-        node_type_ids = torch.zeros((bsz, node_count), dtype=torch.long, device=device)
-        coords = torch.zeros((bsz, node_count, 2), dtype=x_seq.dtype, device=device)
-        coords[..., 0] = torch.arange(node_count, device=device, dtype=x_seq.dtype)
-        coords[..., 1] = coords[..., 0] + 1.0
-        src = torch.arange(1, node_count, device=device, dtype=torch.long)
-        dst = torch.arange(0, node_count - 1, device=device, dtype=torch.long)
-        edge_index = torch.stack([src, dst], dim=0)
-        return {"node_type_ids": node_type_ids, "coords": coords, "edge_index": edge_index}
-
-    def encode_hierarchical(self, x_seq: "torch.Tensor", ast_batch: Optional[Dict[str, "torch.Tensor"]] = None) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor", "torch.Tensor", Dict[str, "torch.Tensor"]]:
-        ast = ast_batch or self._default_ast(x_seq)
+    def encode_hierarchical(self, x_seq: "torch.Tensor", ast_batch: Optional[Dict[str, "torch.Tensor"]] = None) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor", "torch.Tensor", Dict[str, "torch.Tensor"], bool]:
         seq_token, seq_global = self.seq_encoder(x_seq)
-        ast_nodes = self.ast_node_encoder(ast["node_type_ids"], coords=ast.get("coords"), strand=ast.get("strand"))
-        ast_node_struct, ast_root = self.ast_tree_encoder(ast_nodes, tree={"edge_index": ast.get("edge_index")})
+        ast_used = ast_batch is not None and ast_batch.get("node_type_ids") is not None
 
         mode = self.ablation_mode
-        if mode == "cnn_only":
+        if mode == "ast_only" and not ast_used:
+            raise ValueError("ast_only ablation requires ast_batch inputs")
+
+        if not ast_used:
             fused_token, fused_global = seq_token, seq_global
-        elif mode == "ast_only":
-            ast_summary = ast_node_struct.mean(dim=1, keepdim=True).expand(-1, seq_token.size(1), -1)
-            fused_token, fused_global = ast_summary, ast_root
         else:
-            fused_token, fused_global = self.fusion(seq_token, seq_global, ast_node_struct, ast_root)
+            ast_nodes = self.ast_node_encoder(
+                ast_batch["node_type_ids"],
+                coords=_first_present(ast_batch, "coords", "span_coords"),
+                strand=_first_present(ast_batch, "strand"),
+                frame=_first_present(ast_batch, "frame"),
+            )
+            ast_node_struct, ast_root = self.ast_tree_encoder(
+                ast_nodes,
+                tree={
+                    "edge_index": _first_present(ast_batch, "edge_index", "tree_edge_index"),
+                    "node_mask": _first_present(ast_batch, "node_mask"),
+                },
+            )
+            if mode == "cnn_only":
+                fused_token, fused_global = seq_token, seq_global
+            elif mode == "ast_only":
+                ast_summary = ast_root.unsqueeze(1).expand(-1, seq_token.size(1), -1)
+                fused_token, fused_global = ast_summary, ast_root
+            else:
+                fused_token, fused_global = self.pooled_fusion(
+                    seq_token,
+                    seq_global,
+                    ast_node_struct,
+                    ast_root,
+                    node_mask=_first_present(ast_batch, "node_mask"),
+                )
 
         mu = self.fc_mu(fused_global)
         logvar = self.fc_logvar(fused_global)
-        return mu, logvar, fused_token, fused_global, self.critics(fused_global)
+        return mu, logvar, fused_token, fused_global, self.critics(fused_global), ast_used
 
     def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
         std = torch.exp(0.5 * logvar)
@@ -105,9 +124,9 @@ class HierarchicalVAE(nn.Module):  # type: ignore[misc]
 
     def forward_with_aux(self, x: "torch.Tensor", ast_batch: Optional[Dict[str, "torch.Tensor"]] = None) -> HierarchicalOutput:
         x_seq = x.view(x.size(0), self.seq_len, self.vocab_size)
-        mu, logvar, fused_token, fused_global, critic_outputs = self.encode_hierarchical(x_seq, ast_batch=ast_batch)
+        mu, logvar, fused_token, fused_global, critic_outputs, ast_used = self.encode_hierarchical(x_seq, ast_batch=ast_batch)
         z = self.reparameterize(mu, logvar)
-        return HierarchicalOutput(self.decode(z), mu, logvar, fused_token, fused_global, critic_outputs)
+        return HierarchicalOutput(self.decode(z), mu, logvar, fused_token, fused_global, critic_outputs, ast_used)
 
     def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
         out = self.forward_with_aux(x)
