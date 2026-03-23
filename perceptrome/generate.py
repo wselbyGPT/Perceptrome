@@ -11,11 +11,14 @@ try:
 except ImportError:
     torch = None  # type: ignore
 
+from .bio_ast import BioAST
+from .bio_ast_template import compare_bio_ast_to_template, load_bio_ast_template
 from .config import TrainingConfig, IOConfig
 from .model import get_device, load_or_init_model
 from .encoding_main import tokenizer_meta, IDX_TO_CODON, CODON_VOCAB_SIZE, GC_COUNT_PER_TOKEN, IDX_TO_AA, AA_VOCAB_SIZE
 from .jobs.provenance import collect_and_write_provenance, resolve_seed, set_global_seeds
 from .run_layout import ensure_run_layout, path_in_run, update_run_manifest
+from .encoding.bio_ast_builder import BioASTBuilder
 from .scorecard import (
     build_plasmid_scorecard,
     build_protein_scorecard,
@@ -41,6 +44,89 @@ def _run_local_io_cfg(io_cfg: IOConfig) -> IOConfig:
     )
 
 
+
+
+
+@dataclass(frozen=True)
+class AstTemplateValidationConfig:
+    artifact_path: str
+    mode: str = "rescore"
+    span_tolerance: int = 0
+    min_score: float = 1.0
+    max_mismatches: int = 0
+    include_semantic_edges: bool = False
+
+
+def parse_ast_template_validation_config(
+    *,
+    template_artifact: Optional[str],
+    template_mode: Optional[str],
+    template_span_tolerance: int,
+    template_min_score: float,
+    template_max_mismatches: int,
+    template_include_semantic_edges: bool,
+) -> Optional[AstTemplateValidationConfig]:
+    mode = str(template_mode or "off").strip().lower()
+    if not template_artifact:
+        if mode not in {"off", "none"}:
+            raise ValueError("--ast-template-mode requires --ast-template-artifact")
+        return None
+    if mode in {"off", "none"}:
+        mode = "rescore"
+    if mode not in {"rescore", "reject"}:
+        raise ValueError(f"Unsupported --ast-template-mode: {mode}")
+    return AstTemplateValidationConfig(
+        artifact_path=str(template_artifact),
+        mode=mode,
+        span_tolerance=max(0, int(template_span_tolerance or 0)),
+        min_score=max(0.0, min(1.0, float(template_min_score or 0.0))),
+        max_mismatches=max(0, int(template_max_mismatches or 0)),
+        include_semantic_edges=bool(template_include_semantic_edges),
+    )
+
+
+def ast_template_validation_metadata(cfg: Optional[AstTemplateValidationConfig]) -> Dict[str, Any]:
+    if cfg is None:
+        return {"enabled": False}
+    return {
+        "enabled": True,
+        "artifact_path": cfg.artifact_path,
+        "mode": cfg.mode,
+        "span_tolerance": int(cfg.span_tolerance),
+        "min_score": float(cfg.min_score),
+        "max_mismatches": int(cfg.max_mismatches),
+        "include_semantic_edges": bool(cfg.include_semantic_edges),
+    }
+
+
+def _rebuild_bio_ast_roundtrip(*, sequence: str, template_cfg: AstTemplateValidationConfig) -> Dict[str, Any]:
+    template = load_bio_ast_template(
+        template_cfg.artifact_path,
+        span_tolerance=template_cfg.span_tolerance,
+        include_semantic_edges=template_cfg.include_semantic_edges,
+    )
+    top_level_type = str(template.top_level_type or "genome").lower()
+    built = BioASTBuilder().build(
+        sequence=sequence,
+        accession="generated_candidate",
+        source_format="generated",
+        top_level_type=top_level_type,
+        topology=template.topology,
+    )
+    report = compare_bio_ast_to_template(built.ast, template)
+    summary = dict(report.get("summary") or {})
+    score = float(summary.get("score", 0.0))
+    mismatches = int(summary.get("mismatch_count", 0))
+    topology_match = bool(report.get("topology_match", True))
+    accepted = topology_match and score >= float(template_cfg.min_score) and mismatches <= int(template_cfg.max_mismatches)
+    return {
+        "template": template.to_dict(),
+        "report": report,
+        "accepted": bool(accepted),
+        "score": score,
+        "mismatch_count": mismatches,
+        "topology_match": topology_match,
+    }
 
 @dataclass(frozen=True)
 class AstConditioningConfig:
@@ -367,6 +453,7 @@ def generate_plasmid_sequence(
     scorecard_reference_neighbors: Optional[Sequence[Dict[str, str]]] = None,
     scorecard_reference_top_n: int = 5,
     scorecard_motifs: Optional[Dict[str, str]] = None,
+    ast_template_validation: Optional[AstTemplateValidationConfig] = None,
 ) -> str:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -488,6 +575,12 @@ def generate_plasmid_sequence(
             },
         )
         metrics = scorecard["metrics"]
+        template_validation = _rebuild_bio_ast_roundtrip(sequence=seq, template_cfg=ast_template_validation) if ast_template_validation is not None else None
+        effective_score = float(metrics.get("score") or 0.0)
+        if template_validation is not None:
+            effective_score += float(template_validation.get("score", 0.0))
+            if not bool(template_validation.get("accepted", False)) and str(ast_template_validation.mode) == "reject":
+                effective_score = float("-inf")
         candidates.append({
             "candidate": i,
             "sequence": seq,
@@ -498,7 +591,9 @@ def generate_plasmid_sequence(
             "homopolymer_penalty": metrics.get("homopolymer_penalty"),
             "roundtrip_recon": recon,
             "recon_weight": float(recon_weight),
-            "score": metrics.get("score"),
+            "score": effective_score,
+            "base_score": metrics.get("score"),
+            "template_validation": template_validation,
             "scorecard_version": scorecard.get("scorecard_version"),
             "risk_flags": scorecard.get("risk_flags", []),
             "summary": scorecard.get("summary", {}),
@@ -506,6 +601,11 @@ def generate_plasmid_sequence(
         })
 
     ranked = sorted(candidates, key=lambda x: float(x["score"]), reverse=True)
+    if ast_template_validation is not None and ast_template_validation.mode == "reject":
+        accepted_ranked = [item for item in ranked if bool((item.get("template_validation") or {}).get("accepted", False))]
+        if not accepted_ranked:
+            raise RuntimeError("No generated plasmid candidates satisfied the Bio-AST template validation policy")
+        ranked = accepted_ranked + [item for item in ranked if item not in accepted_ranked]
     winner = ranked[0]
     seq = str(winner["sequence"])
 
@@ -545,6 +645,7 @@ def generate_plasmid_sequence(
             "max_homopolymer": max_homopolymer,
             "recon_weight": float(recon_weight),
             "ast_conditioning": ast_conditioning_metadata(ast_conditioning, ast_details),
+            "ast_template_validation": ast_template_validation_metadata(ast_template_validation),
             "winner": {k: v for k, v in winner.items() if k != "sequence"},
             "top_candidates": [{k: v for k, v in c.items() if k != "sequence"} for c in ranked[:top_k]],
             "scorecards": [{k: v for k, v in c.items() if k != "sequence"} for c in ranked],
@@ -613,6 +714,7 @@ def generate_protein_sequence(
     ast_conditioning: Optional[AstConditioningConfig] = None,
     scorecard_similarity_references: Optional[Sequence[Dict[str, str]]] = None,
     scorecard_reference_top_n: int = 5,
+    ast_template_validation: Optional[AstTemplateValidationConfig] = None,
 ) -> str:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -729,6 +831,10 @@ def generate_protein_sequence(
             },
         )
         metrics = scorecard["metrics"]
+        if ast_template_validation is not None:
+            raise ValueError("Bio-AST template round-trip validation is currently supported only for nucleotide/plasmid generation")
+        template_validation = None
+        effective_score = float(metrics["score"])
         candidates.append({
             "candidate": i,
             "sequence": cand,
@@ -739,7 +845,9 @@ def generate_protein_sequence(
             "stop_count": int(metrics["stop_count"]),
             "roundtrip_recon": recon,
             "recon_weight": float(recon_weight),
-            "score": metrics["score"],
+            "score": effective_score,
+            "base_score": metrics["score"],
+            "template_validation": template_validation,
             "scorecard_version": scorecard.get("scorecard_version"),
             "risk_flags": scorecard.get("risk_flags", []),
             "summary": scorecard.get("summary", {}),
@@ -785,6 +893,7 @@ def generate_protein_sequence(
             "max_internal_stops": max_internal_stops,
             "recon_weight": float(recon_weight),
             "ast_conditioning": ast_conditioning_metadata(ast_conditioning, ast_details),
+            "ast_template_validation": ast_template_validation_metadata(ast_template_validation),
             "winner": {k: v for k, v in ranked[0].items() if k != "sequence"},
             "top_candidates": [{k: v for k, v in c.items() if k != "sequence"} for c in ranked[:top_k]],
             "scorecards": [{k: v for k, v in c.items() if k != "sequence"} for c in ranked],

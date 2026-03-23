@@ -50,7 +50,7 @@ if "requests" not in sys.modules:
     sys.modules["requests"] = requests_stub
 
 from perceptrome.cli_main import build_parser
-from perceptrome.generate import ast_conditioning_metadata, parse_ast_conditioning_config
+from perceptrome.generate import ast_conditioning_metadata, ast_template_validation_metadata, parse_ast_conditioning_config, parse_ast_template_validation_config
 from perceptrome.jobs.engine import JobEngine, JobSpec
 
 
@@ -72,6 +72,12 @@ class AstConditioningCliTests(unittest.TestCase):
                 "2",
                 "--ast-mask-strength",
                 "0.5",
+                "--ast-template-artifact",
+                "template.json",
+                "--ast-template-mode",
+                "reject",
+                "--ast-template-span-tolerance",
+                "12",
             ]
         )
         self.assertEqual(args.ast_artifact, "ast.json")
@@ -80,6 +86,9 @@ class AstConditioningCliTests(unittest.TestCase):
         self.assertEqual(args.ast_graph_mask, "neighbors")
         self.assertEqual(args.ast_graph_hop_limit, 2)
         self.assertEqual(args.ast_mask_strength, 0.5)
+        self.assertEqual(args.ast_template_artifact, "template.json")
+        self.assertEqual(args.ast_template_mode, "reject")
+        self.assertEqual(args.ast_template_span_tolerance, 12)
 
         protein_args = parser.parse_args(["generate-protein", "--ast-node-type-prompt", "motif"])
         self.assertEqual(protein_args.ast_node_type_prompt, ["motif"])
@@ -109,6 +118,31 @@ class AstConditioningMetadataTests(unittest.TestCase):
         details = {"edge_count": 7, "node_type_counts": {"gene": 2, "motif": 3}}
         self.assertEqual(ast_conditioning_metadata(cfg_a, details), ast_conditioning_metadata(cfg_b, details))
 
+
+
+
+class AstTemplateValidationMetadataTests(unittest.TestCase):
+    def test_metadata_serializes_template_policy(self):
+        cfg = parse_ast_template_validation_config(
+            template_artifact="/tmp/template.json",
+            template_mode="reject",
+            template_span_tolerance=15,
+            template_min_score=0.8,
+            template_max_mismatches=2,
+            template_include_semantic_edges=True,
+        )
+        self.assertEqual(
+            ast_template_validation_metadata(cfg),
+            {
+                "enabled": True,
+                "artifact_path": "/tmp/template.json",
+                "mode": "reject",
+                "span_tolerance": 15,
+                "min_score": 0.8,
+                "max_mismatches": 2,
+                "include_semantic_edges": True,
+            },
+        )
 
 class AstConditioningJobEngineTests(unittest.TestCase):
     def test_generate_plasmid_job_passes_ast_conditioning(self):
@@ -157,6 +191,12 @@ class AstConditioningJobEngineTests(unittest.TestCase):
                             "ast_graph_mask": "neighbors",
                             "ast_graph_hop_limit": 2,
                             "ast_mask_strength": 0.3,
+                            "ast_template_artifact": ast_path,
+                            "ast_template_mode": "reject",
+                            "ast_template_span_tolerance": 10,
+                            "ast_template_min_score": 0.7,
+                            "ast_template_max_mismatches": 1,
+                            "ast_template_include_semantic_edges": True,
                         },
                     )
                 )
@@ -167,8 +207,12 @@ class AstConditioningJobEngineTests(unittest.TestCase):
             self.assertEqual(captured["ast_conditioning"].node_type_prompts, ("gene",))
             self.assertTrue(manifest_kwargs.get("run_parents"))
             self.assertTrue(manifest_kwargs.get("run_children"))
-            generated = (manifest_kwargs.get("artifacts") or [])[0]
+            generated_artifacts = manifest_kwargs.get("artifacts") or []
+            generated = generated_artifacts[-1]
             self.assertTrue(generated.get("parents"))
+            manifest_entry = ((manifest_kwargs.get("generated_sequences") or {}).get("entries") or [])[0]
+            self.assertTrue(manifest_entry.get("ast_template_validation", {}).get("enabled"))
+            self.assertEqual(manifest_entry.get("ast_template_validation", {}).get("mode"), "reject")
 
 
 if __name__ == "__main__":

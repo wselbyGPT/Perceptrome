@@ -10,7 +10,7 @@ from perceptrome.evolution_adapters import (
     genome_to_candidate_metadata,
     seed_metadata_from_defaults,
 )
-from perceptrome.generate import AstConditioningConfig, generate_plasmid_sequence
+from perceptrome.generate import AstConditioningConfig, AstTemplateValidationConfig, generate_plasmid_sequence
 from perceptrome.genome_evolution import crossover_genomes, initialize_genome, mutate_genome, repair, validate
 
 
@@ -128,6 +128,7 @@ def run_design_loop(
     sequence_operator_top_k: int = 3,
     emit: Optional[Callable[[str, str], None]] = None,
     ast_conditioning: Optional[AstConditioningConfig] = None,
+    ast_template_validation: Optional[AstTemplateValidationConfig] = None,
 ) -> Dict[str, Any]:
     rng = random.Random(seed)
     population_size = max(2, int(population_size))
@@ -184,6 +185,7 @@ def run_design_loop(
             target_gc=float(metadata["target_gc"]),
             max_homopolymer=int(metadata["max_homopolymer"]),
             ast_conditioning=ast_conditioning,
+            ast_template_validation=ast_template_validation,
         )
 
         if enable_sequence_operators and sequence_overrides:

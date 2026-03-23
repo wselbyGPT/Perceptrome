@@ -32,9 +32,11 @@ from perceptrome.cli.common import (
 from perceptrome.encoding.parse import parse_fasta_sequence
 from perceptrome.design_loop import run_design_loop
 from perceptrome.generate import (
+    ast_template_validation_metadata,
     generate_plasmid_sequence,
     generate_protein_sequence,
     parse_ast_conditioning_config,
+    parse_ast_template_validation_config,
 )
 from perceptrome.jobs.artifact_index import build_artifact_entry
 from perceptrome.jobs.manifest_writer import config_hash, write_experiment_run_manifest
@@ -563,6 +565,14 @@ class JobEngine:
             ast_graph_hop_limit=int(p.get("ast_graph_hop_limit", 1)),
             ast_mask_strength=float(p.get("ast_mask_strength", 0.0)),
         )
+        ast_template_validation = parse_ast_template_validation_config(
+            template_artifact=p.get("ast_template_artifact"),
+            template_mode=p.get("ast_template_mode"),
+            template_span_tolerance=int(p.get("ast_template_span_tolerance", 0)),
+            template_min_score=float(p.get("ast_template_min_score", 1.0)),
+            template_max_mismatches=int(p.get("ast_template_max_mismatches", 0)),
+            template_include_semantic_edges=bool(p.get("ast_template_include_semantic_edges", False)),
+        )
         layout = ensure_run_layout()
         _, config_snapshot, config_snapshot_artifact = self._write_resolved_config_snapshot(spec=spec, cfg=cfg, params=p, layout=layout)
         output, summary_json, top_k_output, scorecard_artifact = self._resolve_generation_paths(layout, p, "output", "generated/novel_plasmid.fasta")
@@ -573,7 +583,7 @@ class JobEngine:
             ("conditioning.ast", ast_artifact_path, "consumed.ast_artifact"),
         ])
         similarity_refs = self._collect_similarity_references(params=p, io_cfg=io_cfg, ncbi_cfg=None, sequence_kind="plasmid")
-        seq = generate_plasmid_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_bp=int(p.get("length_bp", 10000)), num_windows=p.get("num_windows"), window_size_bp=int(p.get("window_size") or train_cfg.window_size), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), gc_bias=float(p.get("gc_bias", 1.0)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), target_gc=float(p.get("target_gc", 0.5)), max_homopolymer=p.get("max_homopolymer"), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), name=str(p.get("name", "perceptrome_plasmid_1")), output_path=output, tokenizer=tokenizer, provenance_inputs={"config": str(spec.config_path)}, ast_conditioning=ast_conditioning, scorecard_reference_neighbors=similarity_refs, scorecard_reference_top_n=int(p.get("scorecard_reference_top_n", 5)), scorecard_motifs=p.get("scorecard_motifs"))
+        seq = generate_plasmid_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_bp=int(p.get("length_bp", 10000)), num_windows=p.get("num_windows"), window_size_bp=int(p.get("window_size") or train_cfg.window_size), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), gc_bias=float(p.get("gc_bias", 1.0)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), target_gc=float(p.get("target_gc", 0.5)), max_homopolymer=p.get("max_homopolymer"), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), name=str(p.get("name", "perceptrome_plasmid_1")), output_path=output, tokenizer=tokenizer, provenance_inputs={"config": str(spec.config_path)}, ast_conditioning=ast_conditioning, scorecard_reference_neighbors=similarity_refs, scorecard_reference_top_n=int(p.get("scorecard_reference_top_n", 5)), scorecard_motifs=p.get("scorecard_motifs"), ast_template_validation=ast_template_validation)
         self._emit("generate", "plasmid generated", output=output, length=len(seq))
         card_context = {
             "reference_neighbors": similarity_refs,
@@ -618,6 +628,7 @@ class JobEngine:
                         "tokenizer": tokenizer,
                         "similarity_artifact": similarity_artifact,
                         "top_neighbors": plasmid_card.get("reference_neighbors", []),
+                        "ast_template_validation": ast_template_validation_metadata(ast_template_validation),
                     }
                 ]
             },
@@ -673,6 +684,14 @@ class JobEngine:
             ast_graph_hop_limit=int(p.get("ast_graph_hop_limit", 1)),
             ast_mask_strength=float(p.get("ast_mask_strength", 0.0)),
         )
+        ast_template_validation = parse_ast_template_validation_config(
+            template_artifact=p.get("ast_template_artifact"),
+            template_mode=p.get("ast_template_mode"),
+            template_span_tolerance=int(p.get("ast_template_span_tolerance", 0)),
+            template_min_score=float(p.get("ast_template_min_score", 1.0)),
+            template_max_mismatches=int(p.get("ast_template_max_mismatches", 0)),
+            template_include_semantic_edges=bool(p.get("ast_template_include_semantic_edges", False)),
+        )
         layout = ensure_run_layout()
         _, config_snapshot, config_snapshot_artifact = self._write_resolved_config_snapshot(spec=spec, cfg=cfg, params=p, layout=layout)
         output, summary_json, top_k_output, scorecard_artifact = self._resolve_generation_paths(layout, p, "output", "generated/novel_protein.faa")
@@ -683,7 +702,7 @@ class JobEngine:
             ("conditioning.ast", ast_artifact_path, "consumed.ast_artifact"),
         ])
         similarity_refs = self._collect_similarity_references(params=p, io_cfg=io_cfg, ncbi_cfg=None, sequence_kind="protein")
-        seq = generate_protein_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_aa=int(p.get("length_aa", 600)), num_windows=p.get("num_windows"), window_aa=int(p.get("window_aa") or train_cfg.protein_window_aa), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), name=str(p.get("name", "perceptrome_protein_1")), output_path=output, reject=bool(p.get("reject", False)), reject_tries=int(p.get("reject_tries", 40)), reject_max_run=int(p.get("reject_max_run", 10)), reject_max_x_frac=float(p.get("reject_max_x_frac", 0.15)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), max_homopolymer=p.get("max_homopolymer"), max_x_frac=p.get("max_x_frac"), max_internal_stops=int(p.get("max_internal_stops", 0)), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), provenance_inputs={"config": str(spec.config_path)}, ast_conditioning=ast_conditioning, scorecard_similarity_references=similarity_refs, scorecard_reference_top_n=int(p.get("scorecard_reference_top_n", 5)))
+        seq = generate_protein_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_aa=int(p.get("length_aa", 600)), num_windows=p.get("num_windows"), window_aa=int(p.get("window_aa") or train_cfg.protein_window_aa), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), name=str(p.get("name", "perceptrome_protein_1")), output_path=output, reject=bool(p.get("reject", False)), reject_tries=int(p.get("reject_tries", 40)), reject_max_run=int(p.get("reject_max_run", 10)), reject_max_x_frac=float(p.get("reject_max_x_frac", 0.15)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), max_homopolymer=p.get("max_homopolymer"), max_x_frac=p.get("max_x_frac"), max_internal_stops=int(p.get("max_internal_stops", 0)), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), provenance_inputs={"config": str(spec.config_path)}, ast_conditioning=ast_conditioning, scorecard_similarity_references=similarity_refs, scorecard_reference_top_n=int(p.get("scorecard_reference_top_n", 5)), ast_template_validation=ast_template_validation)
         self._emit("generate", "protein generated", output=output, length=len(seq))
         card_context = {
             "similarity_references": similarity_refs,
@@ -728,6 +747,7 @@ class JobEngine:
                         "tokenizer": "aa",
                         "similarity_artifact": similarity_artifact,
                         "top_neighbors": protein_card.get("reference_neighbors", []),
+                        "ast_template_validation": ast_template_validation_metadata(ast_template_validation),
                     }
                 ]
             },
@@ -907,6 +927,14 @@ class JobEngine:
             ast_graph_hop_limit=int(p.get("ast_graph_hop_limit", 1)),
             ast_mask_strength=float(p.get("ast_mask_strength", 0.0)),
         )
+        ast_template_validation = parse_ast_template_validation_config(
+            template_artifact=p.get("ast_template_artifact"),
+            template_mode=p.get("ast_template_mode"),
+            template_span_tolerance=int(p.get("ast_template_span_tolerance", 0)),
+            template_min_score=float(p.get("ast_template_min_score", 1.0)),
+            template_max_mismatches=int(p.get("ast_template_max_mismatches", 0)),
+            template_include_semantic_edges=bool(p.get("ast_template_include_semantic_edges", False)),
+        )
 
         layout = ensure_run_layout()
         _, config_snapshot, config_snapshot_artifact = self._write_resolved_config_snapshot(spec=spec, cfg=cfg, params=p, layout=layout)
@@ -942,6 +970,7 @@ class JobEngine:
             sequence_operator_top_k=int(p.get("sequence_operator_top_k", 3)),
             emit=lambda stage, message: self._emit(stage, message),
             ast_conditioning=ast_conditioning,
+            ast_template_validation=ast_template_validation,
         )
 
         best = result.get("best_candidate", {})
