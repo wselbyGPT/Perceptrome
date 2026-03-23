@@ -15,7 +15,7 @@ class BioASTVisualizationTests(unittest.TestCase):
         orf_a = ORFNode(canonical_id="orf:ACC:1", parent_id=gene_a.canonical_id, start=10, end=50)
         cds_a = CDSNode(canonical_id="cds:ACC:1", parent_id=orf_a.canonical_id, start=10, end=50)
 
-        rel = RelationshipEdge(source_gene_id="g_b", target_gene_id="g_a", relation="depends_on", metadata={"weight": 1})
+        rel = RelationshipEdge(source_id="gene:ACC:2", target_id="gene:ACC:1", kind="regulates", metadata={"weight": 1})
 
         # Intentionally scrambled node order to verify deterministic sorting.
         return BioAST(nodes=(gene_b, cds_b, root, cds_a, orf_b, gene_a, orf_a), relationships=(rel,))
@@ -61,7 +61,7 @@ class BioASTVisualizationTests(unittest.TestCase):
         self.assertEqual(len(semantic_edges), 1)
         self.assertEqual(semantic_edges[0]["source"], "gene:ACC:2")
         self.assertEqual(semantic_edges[0]["target"], "gene:ACC:1")
-        self.assertEqual(semantic_edges[0]["relation"], "depends_on")
+        self.assertEqual(semantic_edges[0]["relation"], "regulates")
 
 
 if __name__ == "__main__":

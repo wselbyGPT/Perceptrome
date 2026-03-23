@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from perceptrome.bio_ast import BioAST, GeneNode
+from perceptrome.bio_ast import BioAST, CONTAINMENT_EDGE_KIND
 
 
 SortKey = Tuple[int, int, int, int, str]
@@ -81,6 +81,7 @@ def ast_to_tree_json(ast: BioAST, *, accession: Optional[str] = None) -> Dict[st
         "accession": accession,
         "schema": "bio_ast_tree_v1",
         "node_count": len(ast.nodes),
+        "sequence_metadata": ast.sequence_metadata.to_dict(),
         "roots": ordered_roots,
         "hierarchy": hierarchy,
     }
@@ -89,11 +90,6 @@ def ast_to_tree_json(ast: BioAST, *, accession: Optional[str] = None) -> Dict[st
 def ast_to_graph_json(ast: BioAST, *, accession: Optional[str] = None) -> Dict[str, Any]:
     ordered_nodes = sorted(ast.nodes, key=_node_sort_key)
     node_index = {node.canonical_id: idx for idx, node in enumerate(ordered_nodes)}
-    gene_id_to_canonical: Dict[str, str] = {
-        node.gene_id: node.canonical_id
-        for node in ordered_nodes
-        if isinstance(node, GeneNode) and node.gene_id
-    }
 
     nodes_payload = [
         {
@@ -104,33 +100,18 @@ def ast_to_graph_json(ast: BioAST, *, accession: Optional[str] = None) -> Dict[s
     ]
 
     edges: List[Dict[str, Any]] = []
-    for node in ordered_nodes:
-        if node.parent_id and node.parent_id in node_index:
-            edges.append(
-                {
-                    "source": node.parent_id,
-                    "target": node.canonical_id,
-                    "source_index": node_index[node.parent_id],
-                    "target_index": node_index[node.canonical_id],
-                    "relation": "parent_child",
-                    "relation_type": "hierarchy",
-                    "metadata": {},
-                }
-            )
-
-    for edge in ast.relationships:
-        source_id = gene_id_to_canonical.get(edge.source_gene_id, edge.source_gene_id)
-        target_id = gene_id_to_canonical.get(edge.target_gene_id, edge.target_gene_id)
-        if source_id not in node_index or target_id not in node_index:
+    for edge in ast.edges:
+        if edge.source_id not in node_index or edge.target_id not in node_index:
             continue
+        relation_type = "hierarchy" if edge.kind == CONTAINMENT_EDGE_KIND else "semantic"
         edges.append(
             {
-                "source": source_id,
-                "target": target_id,
-                "source_index": node_index[source_id],
-                "target_index": node_index[target_id],
-                "relation": edge.relation,
-                "relation_type": "semantic",
+                "source": edge.source_id,
+                "target": edge.target_id,
+                "source_index": node_index[edge.source_id],
+                "target_index": node_index[edge.target_id],
+                "relation": edge.kind,
+                "relation_type": relation_type,
                 "metadata": dict(edge.metadata),
             }
         )
@@ -149,6 +130,7 @@ def ast_to_graph_json(ast: BioAST, *, accession: Optional[str] = None) -> Dict[s
         "schema": "bio_ast_graph_v1",
         "node_count": len(nodes_payload),
         "edge_count": len(edges),
+        "sequence_metadata": ast.sequence_metadata.to_dict(),
         "nodes": nodes_payload,
         "edges": edges,
     }
