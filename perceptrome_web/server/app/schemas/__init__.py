@@ -29,3 +29,5 @@ from .runs import (
 from .users import AdminCreateUserRequest, AdminUserActionOut, AdminUserListOut, AdminUserOut, AdminUserUpdateRequest, UserOut
 
 __all__ = [name for name in globals() if not name.startswith('_')]
+
+from .runs import BioASTVisualizationBundleOut

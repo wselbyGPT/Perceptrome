@@ -16,9 +16,11 @@ from sqlalchemy.orm import Session
 
 from perceptrome.jobs import JobEngine, JobEvent, JobSpec
 
+from perceptrome.encoding.bio_ast_export import export_filenames
+
 from ..core.db import SessionLocal
 from ..models import Run, RunArtifact, User
-from ..schemas import LineageEdgeOut, LineageNodeOut, RunArtifactOut, RunLineageOut, RunOut, RunsBoardOut, RunSummaryOut
+from ..schemas import BioASTVisualizationBundleOut, LineageEdgeOut, LineageNodeOut, RunArtifactOut, RunLineageOut, RunOut, RunsBoardOut, RunSummaryOut
 from . import audit_service
 
 RunState = Literal["queued", "running", "completed", "failed", "canceled"]
@@ -463,6 +465,91 @@ def filter_lineage_graph(*, nodes: list[LineageNodeOut], edges: list[LineageEdge
         connected.add(edge.source)
         connected.add(edge.target)
     return [node for node in filtered.values() if node.id in connected], filtered_edges
+
+
+def _artifact_path_for_id(run: Run, artifact_id: int) -> str | None:
+    for artifact in run.artifacts:
+        if artifact.id == artifact_id:
+            return artifact.path
+    return None
+
+
+def _candidate_bio_ast_base_dirs(*, run: Run, selected_path: str | None, accession: str | None, manifest: dict[str, Any], manifest_path: str | None) -> list[Path]:
+    filenames = export_filenames()
+    expected_names = set(filenames.values())
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+
+    def append_candidate(path_like: str | None):
+        if not isinstance(path_like, str) or not path_like.strip():
+            return
+        resolved = Path(path_like).expanduser().resolve()
+        options = [resolved.parent if resolved.is_file() else resolved]
+        if accession:
+            options.append((resolved.parent if resolved.is_file() else resolved) / accession)
+        for option in options:
+            if option in seen:
+                continue
+            if all((option / name).exists() for name in expected_names):
+                seen.add(option)
+                candidates.append(option)
+
+    append_candidate(selected_path)
+    if manifest_path:
+        append_candidate(Path(manifest_path).expanduser().resolve().parent / 'bio_ast')
+        if accession:
+            append_candidate(Path(manifest_path).expanduser().resolve().parent / 'bio_ast' / accession)
+    for artifact in manifest.get('artifacts') or []:
+        if not isinstance(artifact, dict):
+            continue
+        artifact_path = artifact.get('path')
+        if accession and accession.lower() not in str(artifact_path or '').lower():
+            metadata = artifact.get('metadata') if isinstance(artifact.get('metadata'), dict) else {}
+            if str(metadata.get('accession') or '').lower() != accession.lower():
+                continue
+        append_candidate(artifact_path)
+    return candidates
+
+
+def resolve_bio_ast_bundle(run: Run, *, artifact_id: int | None = None, accession: str | None = None) -> BioASTVisualizationBundleOut:
+    selected_path = _artifact_path_for_id(run, artifact_id) if artifact_id is not None else None
+    if artifact_id is not None and not selected_path:
+        raise HTTPException(status_code=404, detail='Artifact not found')
+    manifest_path = manifest_path_for_run(run)
+    manifest = load_manifest(manifest_path)
+    candidates = _candidate_bio_ast_base_dirs(run=run, selected_path=selected_path, accession=accession, manifest=manifest, manifest_path=manifest_path)
+    if not candidates:
+        raise HTTPException(status_code=404, detail='Bio-AST visualization bundle not found for this run')
+    filenames = export_filenames()
+    last_error: Exception | None = None
+    for base_dir in candidates:
+        try:
+            canonical = load_json_file(base_dir / filenames['canonical_ast'])
+            storage_map = load_json_file(base_dir / filenames['storage_map'])
+            tree = load_json_file(base_dir / filenames['tree_json'])
+            graph = load_json_file(base_dir / filenames['graph_json'])
+            summary_path = base_dir / filenames['summary_json']
+            summary = load_json_file(summary_path) if summary_path.exists() else {}
+            resolved_accession = accession or canonical.get('accession') or tree.get('accession') or graph.get('accession')
+            return BioASTVisualizationBundleOut(
+                accession=str(resolved_accession) if resolved_accession else None,
+                resolved_from={
+                    'run_id': run.run_id,
+                    'artifact_id': artifact_id,
+                    'accession': str(resolved_accession) if resolved_accession else None,
+                    'manifest_path': manifest_path,
+                    'base_dir': str(base_dir),
+                },
+                canonical=canonical,
+                storage_map=storage_map,
+                tree=tree,
+                graph=graph,
+                summary=summary,
+            )
+        except Exception as exc:  # validation surfaces as 404/400 below
+            last_error = exc
+    detail = 'Bio-AST visualization bundle is invalid' if last_error else 'Bio-AST visualization bundle not found for this run'
+    raise HTTPException(status_code=400 if last_error else 404, detail=detail)
 
 
 def runs_summary_payload(runs: list[Run]) -> RunSummaryOut:
