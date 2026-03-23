@@ -248,11 +248,14 @@ def load_bio_ast_visualization(accession: str) -> dict:
     base = path_in_run(layout, "artifacts", os.path.join("bio_ast", str(accession)))
     tree_path = os.path.join(base, "tree_json.json")
     graph_path = os.path.join(base, "graph_json.json")
+    storage_map_path = os.path.join(base, "storage_map.json")
 
     with open(tree_path, "r", encoding="utf-8") as handle:
         tree_payload = json.load(handle)
     with open(graph_path, "r", encoding="utf-8") as handle:
         graph_payload = json.load(handle)
+    with open(storage_map_path, "r", encoding="utf-8") as handle:
+        storage_map_payload = json.load(handle)
 
     node_types = {}
     spans = []
@@ -285,6 +288,7 @@ def load_bio_ast_visualization(accession: str) -> dict:
         "accession": accession,
         "tree": tree_payload,
         "graph": graph_payload,
+        "storage_map": storage_map_payload,
         "summary": {
             "node_types": node_types,
             "spans": spans,

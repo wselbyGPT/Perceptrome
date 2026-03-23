@@ -30,6 +30,7 @@ from perceptrome.catalog_schema import parse_catalog_schema
 from perceptrome.encoding.bio_ast_builder import BioASTBuilder
 from perceptrome.encoding.genbank_features import parse_cds_features_from_genbank
 from perceptrome.encoding.bio_ast_viz import ast_to_graph_json, ast_to_tree_json
+from perceptrome.encoding.storage_map import build_storage_map_payload
 from perceptrome.io_utils import select_unique_accessions, write_catalog
 from perceptrome.encoding.parse import parse_fasta_sequence, parse_genbank_dna
 from perceptrome.encoding.encode import encode_sequence_one_hot
@@ -527,6 +528,7 @@ def _collect_bio_ast_transforms(accession: str, source: str, io_cfg) -> Dict[str
         "graph_edges": _graph_edge_list(built),
         "tree_json": ast_to_tree_json(built.ast, accession=str(accession)),
         "graph_json": ast_to_graph_json(built.ast, accession=str(accession)),
+        "storage_map": build_storage_map_payload(built.ast, len(built.sequence), accession=str(accession)),
     }
 
 
@@ -548,6 +550,7 @@ def _build_and_write_bio_ast(accession: str, source: str, io_cfg) -> Optional[Di
         "graph_edges": "graph_edges.json",
         "tree_json": "tree_json.json",
         "graph_json": "graph_json.json",
+        "storage_map": "storage_map.json",
     }
     output_paths: Dict[str, str] = {}
     for key, filename in filenames.items():
@@ -590,6 +593,7 @@ def cmd_bio_ast_export(args: argparse.Namespace) -> int:
         "graph_edges": "graph_edges.json",
         "tree_json": "tree_json.json",
         "graph_json": "graph_json.json",
+        "storage_map": "storage_map.json",
     }
     if args.transform == "all":
         payload = {}

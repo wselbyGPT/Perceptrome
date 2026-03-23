@@ -316,7 +316,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     e = bio_ast_sub.add_parser("export", help="Export one or all Bio-AST transforms")
     e.add_argument("accession")
-    e.add_argument("--transform", choices=["canonical_ast", "motif_features", "tree_tensors", "graph_edges", "tree_json", "graph_json", "all"], default="all")
+    e.add_argument("--transform", choices=["canonical_ast", "motif_features", "tree_tensors", "graph_edges", "tree_json", "graph_json", "storage_map", "all"], default="all")
     e.add_argument("--output", required=True)
     e.set_defaults(func=_lazy_cmd("cmd_bio_ast_export"))
 
