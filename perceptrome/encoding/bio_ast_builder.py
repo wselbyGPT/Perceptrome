@@ -8,6 +8,8 @@ import numpy as np
 from perceptrome.bio_ast import (
     ASTNode,
     BioAST,
+    SequenceMetadata,
+    sequence_checksum,
     CDSNode,
     DomainNode,
     GeneNode,
@@ -93,16 +95,16 @@ class BuiltBioAST:
                 edge_pairs.append((idx[node.parent_id], idx[node.canonical_id]))
 
         if edge_pairs:
-            edge_index = np.array(edge_pairs, dtype=np.int64).T
+            edge_index = np.array(edge_pairs, dtype="int64").T
         else:
-            edge_index = np.zeros((2, 0), dtype=np.int64)
+            edge_index = np.zeros((2, 0), dtype="int64")
 
-        node_type_ids = np.array([NODE_TYPE_TO_INT.get(node.node_type, -1) for node in ordered_nodes], dtype=np.int64)
+        node_type_ids = np.array([NODE_TYPE_TO_INT.get(node.node_type, -1) for node in ordered_nodes], dtype="int64")
         coords = np.array(
             [[node.start if node.start is not None else -1, node.end if node.end is not None else -1] for node in ordered_nodes],
-            dtype=np.int64,
+            dtype="int64",
         )
-        strand = np.array([1 if node.strand == "+" else (-1 if node.strand == "-" else 0) for node in ordered_nodes], dtype=np.int64)
+        strand = np.array([1 if node.strand == "+" else (-1 if node.strand == "-" else 0) for node in ordered_nodes], dtype="int64")
 
         return {
             "node_type_ids": node_type_ids,
@@ -139,6 +141,9 @@ class BioASTBuilder:
         feature_annotations: Optional[Mapping[str, Mapping[str, Any]]] = None,
         top_level_type: str = "genome",
         accession: str = "unknown",
+        source_format: str = "unknown",
+        molecule_type: str = "DNA",
+        topology: str | None = None,
     ) -> BuiltBioAST:
         seq = (sequence or "").upper()
         if not seq:
@@ -194,7 +199,18 @@ class BioASTBuilder:
             nodes.extend(derived_nodes)
 
         nodes[0] = self._replace_child_ids(top, tuple(top_child_ids))
-        ast = BioAST(nodes=tuple(nodes))
+        ast = BioAST(
+            nodes=tuple(nodes),
+            sequence_metadata=SequenceMetadata(
+                accession=str(accession),
+                length=len(seq),
+                topology=str(topology or ("circular" if str(top_level_type).lower() == "plasmid" else "linear")),
+                molecule_type=str(molecule_type),
+                source_format=str(source_format),
+                checksum=sequence_checksum(seq),
+                metadata={"top_level_type": str(top_level_type).lower()},
+            ),
+        )
         return BuiltBioAST(ast=ast, sequence=seq)
 
     def _build_top_node(self, *, top_level_type: str, accession: str, seq_len: int) -> ASTNode:

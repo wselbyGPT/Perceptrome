@@ -460,11 +460,15 @@ def _build_bio_ast(accession: str, source: str, io_cfg):
         sequence = parse_fasta_sequence(fasta_path)
         cds_features = None
 
+    top_level_type = _infer_top_level_type(accession, src)
     return builder.build(
         sequence=sequence,
         cds_features=cds_features,
-        top_level_type=_infer_top_level_type(accession, src),
+        top_level_type=top_level_type,
         accession=str(accession),
+        source_format=str(src),
+        molecule_type="DNA",
+        topology=("circular" if str(top_level_type).lower() == "plasmid" else "linear"),
     )
 
 
