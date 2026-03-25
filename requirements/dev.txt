@@ -1,2 +1,4 @@
 # Keep dev installs aligned to the packaged Python modules used for local development and testing.
 -e .[dev]
+rich>=13.9,<14
+textual>=0.86,<1
