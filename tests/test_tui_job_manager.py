@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
-import threading
+import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
+from time import monotonic, sleep
+from types import SimpleNamespace
 
-from perceptrome.tui.events import JobMetricUpdatedEvent
-from perceptrome.tui.job_manager import Job, JobManager, JobStatus, _RuntimeState
+from perceptrome.tui.events import JobArtifactEmittedEvent, JobCanceledEvent, JobCompletedEvent, JobMetricUpdatedEvent, JobStartedEvent, JobWarningEvent
+from perceptrome.tui.job_manager import JobManager, JobStatus
 
 
 @dataclass
@@ -25,23 +26,84 @@ class FakeJobResult:
     data: dict[str, object] = field(default_factory=dict)
 
 
-def test_rolling_loss_metrics_emitted() -> None:
-    jm = JobManager(persist_path="state/test_tui_jobs.json")
-    now = datetime.now(timezone.utc)
-    jm._jobs["r1"] = Job(id="r1", run_id="r1", title="Train", kind="train", created_at=now, updated_at=now)
-    jm._runtime["r1"] = _RuntimeState(cancel_event=threading.Event(), thread=threading.Thread())
+class FakeJobEngineSuccess:
+    def __init__(self, event_sink, cancel_event) -> None:
+        self._event_sink = event_sink
+        self._cancel_event = cancel_event
+
+    def run(self, spec):
+        del spec
+        self._event_sink(FakeJobEvent(stage="start", message="job started"))
+        self._event_sink(FakeJobEvent(stage="train", message="step 1", data={"loss": 2.0, "epoch": 1}))
+        self._event_sink(FakeJobEvent(stage="warn", message="soft warning"))
+        self._event_sink(FakeJobEvent(stage="train", message="step 2", data={"loss": 1.0, "epoch": 2, "path": "runs/r1/artifacts/model.pt"}))
+        return FakeJobResult(ok=True, exit_code=0, message="done")
+
+
+class FakeJobEngineCancelable:
+    def __init__(self, event_sink, cancel_event) -> None:
+        self._event_sink = event_sink
+        self._cancel_event = cancel_event
+        self._event_sink(FakeJobEvent(stage="start", message="job started"))
+
+    def run(self, spec):
+        del spec
+        self._cancel_event.wait(timeout=1.0)
+        return FakeJobResult(ok=False, exit_code=130, message="canceled")
+
+
+def _wait_for_status(manager: JobManager, job_id: str, expected: JobStatus, timeout: float = 2.0) -> None:
+    deadline = monotonic() + timeout
+    while monotonic() < deadline:
+        jobs = {job.id: job for job in manager.list_jobs()}
+        if jobs.get(job_id) is not None and jobs[job_id].status == expected:
+            return
+        sleep(0.01)
+    jobs = {job.id: job for job in manager.list_jobs()}
+    raise AssertionError(f"job {job_id} did not reach {expected!r}; got {jobs.get(job_id)}")
+
+
+def test_submit_event_flow_and_status_updates(monkeypatch, tmp_path: Path) -> None:
+    fake_engine_module = SimpleNamespace(JobEngine=FakeJobEngineSuccess)
+    monkeypatch.setitem(sys.modules, "perceptrome.jobs.engine", fake_engine_module)
+    manager = JobManager(persist_path=str(tmp_path / "state" / "tui_jobs.json"))
 
     seen: list[object] = []
-    jm.subscribe(seen.append)
+    manager.subscribe(seen.append)
 
-    jm._bridge_engine_event("r1", FakeJobEvent(stage="train", message="step", data={"loss": 1.0, "epoch": 1}))
-    jm._bridge_engine_event("r1", FakeJobEvent(stage="train", message="step", data={"loss": 3.0, "epoch": 2}))
+    job_id = manager.submit(SimpleNamespace(kind="train_one"), run_id="run_success", title="Train")
+    _wait_for_status(manager, job_id, JobStatus.HEALTHY)
 
-    metrics = [event for event in seen if isinstance(event, JobMetricUpdatedEvent)]
-    assert metrics
-    assert metrics[-1].latest_value == 3.0
-    assert metrics[-1].rolling_value == 2.0
-    assert jm._jobs["r1"].metrics.rolling_loss == 2.0
+    jobs = manager.list_jobs()
+    assert jobs[0].id == "run_success"
+    assert jobs[0].status == JobStatus.HEALTHY
+    assert "runs/r1/artifacts/model.pt" in jobs[0].artifacts
+    assert jobs[0].metrics.latest_loss == 1.0
+    assert jobs[0].metrics.rolling_loss == 1.5
+
+    assert any(isinstance(event, JobStartedEvent) for event in seen)
+    assert any(isinstance(event, JobWarningEvent) for event in seen)
+    assert any(isinstance(event, JobMetricUpdatedEvent) for event in seen)
+    assert any(isinstance(event, JobArtifactEmittedEvent) for event in seen)
+    assert any(isinstance(event, JobCompletedEvent) for event in seen)
+
+
+def test_cancel_flow_marks_stalled_and_emits_cancel_event(monkeypatch, tmp_path: Path) -> None:
+    fake_engine_module = SimpleNamespace(JobEngine=FakeJobEngineCancelable)
+    monkeypatch.setitem(sys.modules, "perceptrome.jobs.engine", fake_engine_module)
+    manager = JobManager(persist_path=str(tmp_path / "state" / "tui_jobs.json"))
+
+    seen: list[object] = []
+    manager.subscribe(seen.append)
+
+    job_id = manager.submit(SimpleNamespace(kind="train_one"), run_id="run_cancel", title="Train")
+    assert manager.cancel(job_id) is True
+    _wait_for_status(manager, job_id, JobStatus.STALLED)
+
+    jobs = manager.list_jobs()
+    assert jobs[0].id == "run_cancel"
+    assert jobs[0].status == JobStatus.STALLED
+    assert any(isinstance(event, JobCanceledEvent) for event in seen)
 
 
 def test_reconnect_hydrates_artifacts_and_status(tmp_path: Path) -> None:
@@ -66,11 +128,3 @@ def test_reconnect_hydrates_artifacts_and_status(tmp_path: Path) -> None:
     assert jobs[0].id == "run_123"
     assert jobs[0].status == JobStatus.STALLED
     assert "outputs/out.fasta" in jobs[0].artifacts
-
-
-def test_finalize_failed_marks_status() -> None:
-    jm = JobManager(persist_path="state/test_tui_jobs.json")
-    jm._jobs["r2"] = Job(id="r2", run_id="r2", title="Train", kind="train")
-    jm._runtime["r2"] = _RuntimeState(cancel_event=threading.Event(), thread=threading.Thread())
-    jm._finalize_job("r2", FakeJobResult(ok=False, exit_code=1, message="boom"))
-    assert jm._jobs["r2"].status == JobStatus.FAILED
