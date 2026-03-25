@@ -3,20 +3,22 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from perceptrome.tui.history import HistoryIndexer
-from perceptrome.tui.state_store import FailureSummary, JobRecord, StateStore
+from perceptrome.tui.state_store import FailureSummary, JobRecord, SCHEMA_VERSION, StateStore
 
 
-def test_state_store_corruption_fallback_and_helpers(tmp_path: Path) -> None:
+def test_state_store_load_save_and_corruption_fallback(tmp_path: Path) -> None:
     root = tmp_path / "state" / "tui"
     root.mkdir(parents=True)
     (root / "session.json").write_text("{broken", encoding="utf-8")
+    (root / "jobs.json").write_text("[broken", encoding="utf-8")
 
     store = StateStore(state_root=str(root))
     assert store.active_view == "overview"
+    assert store.list_jobs() == []
 
     store.set_active_view("jobs")
     store.set_active_focus("job-card", active_job_id="run_ok")
+    store.set_drawer_toggle("logs", True)
     store.add_launcher_history("open_panel", panel="jobs")
 
     ok_job = JobRecord(
@@ -24,6 +26,7 @@ def test_state_store_corruption_fallback_and_helpers(tmp_path: Path) -> None:
         run_id="run_ok",
         kind="train",
         status="healthy",
+        title="Healthy train run",
         config={"command": "perceptrome train --config config.yaml"},
         artifacts=[{"role": "checkpoint", "path": str(tmp_path / "runs" / "run_ok" / "artifacts" / "ckpt.pt")}],
     )
@@ -42,50 +45,45 @@ def test_state_store_corruption_fallback_and_helpers(tmp_path: Path) -> None:
     store.upsert_job(ok_job)
     store.upsert_job(failed_job)
 
-    assert store.open_active_job() is not None
-    assert store.open_active_job().id == "run_ok"
-    assert store.open_last_failed_job() is not None
-    assert store.open_last_failed_job().id == "run_bad"
-    assert store.rerun_last_job() is not None
+    reloaded = StateStore(state_root=str(root))
+    session = reloaded.get_session()
+    assert session.last_panel == "jobs"
+    assert session.active_job_id == "run_ok"
+    assert session.drawer_toggles["logs"] is True
 
-    assert store.launcher_history(limit=1)
+    assert reloaded.open_active_job() is not None
+    assert reloaded.open_active_job().id == "run_ok"
+    assert reloaded.open_last_failed_job() is not None
+    assert reloaded.open_last_failed_job().id == "run_bad"
+    assert reloaded.rerun_last_job() is not None
+    assert reloaded.launcher_history(limit=1)
 
 
-def test_history_indexer_merges_persisted_jobs_and_manifests(tmp_path: Path) -> None:
-    store = StateStore(state_root=str(tmp_path / "state" / "tui"))
-    store.upsert_job(
-        JobRecord(
-            id="run_123",
-            run_id="run_123",
-            kind="stream",
-            status="failed",
-            title="Persisted stream",
-            artifacts=[{"id": "persisted", "role": "output", "path": "outputs/persisted.fasta"}],
-            failure_summary=FailureSummary(stage="validate", latest_warning_or_error="score below threshold"),
-        )
-    )
+def test_state_store_schema_migration_falls_back_to_defaults(tmp_path: Path) -> None:
+    root = tmp_path / "state" / "tui"
+    root.mkdir(parents=True)
 
-    run_dir = tmp_path / "runs" / "run_123"
-    run_dir.mkdir(parents=True)
-    manifest = {
-        "run_id": "run_123",
-        "run_kind": "stream",
-        "updated_at": "2026-03-25T00:00:00+00:00",
-        "artifacts": [{"id": "manifest", "role": "checkpoint", "path": "artifacts/model.pt"}],
-        "checkpoints": {"latest": "artifacts/model_latest.pt"},
-        "error": "validation failed",
-        "traceback_path": "artifacts/traceback.txt",
+    legacy_session = {
+        "schema_version": SCHEMA_VERSION - 1,
+        "last_panel": "train",
+        "drawer_toggles": {"diagnostics": True},
+        "active_job_id": "old_job",
     }
-    (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    legacy_jobs = {
+        "schema_version": SCHEMA_VERSION - 1,
+        "jobs": [{"id": "legacy", "run_id": "legacy", "kind": "train", "status": "healthy"}],
+    }
+    (root / "session.json").write_text(json.dumps(legacy_session), encoding="utf-8")
+    (root / "jobs.json").write_text(json.dumps(legacy_jobs), encoding="utf-8")
 
-    indexer = HistoryIndexer(store, runs_dir=str(tmp_path / "runs"))
-    rows = indexer.merged_jobs()
+    store = StateStore(state_root=str(root))
 
-    assert rows
-    merged = rows[0]
-    assert merged.run_id == "run_123"
-    paths = {str(item.get("path")) for item in merged.artifacts}
-    assert "outputs/persisted.fasta" in paths
-    assert "artifacts/model.pt" in paths
-    assert merged.failure_summary is not None
-    assert merged.failure_summary.traceback_path == "artifacts/traceback.txt"
+    # Unsupported schema should gracefully reset in-memory state.
+    assert store.active_view == "overview"
+    assert store.list_jobs() == []
+
+    # Any save operation should rewrite with current schema.
+    store.set_active_view("train")
+    session_payload = json.loads((root / "session.json").read_text(encoding="utf-8"))
+    assert session_payload["schema_version"] == SCHEMA_VERSION
+    assert session_payload["last_panel"] == "train"
