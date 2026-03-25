@@ -148,6 +148,24 @@ class ASTNode:
 
 
 @dataclass
+class ASTEdge:
+    edge_id: int
+    source_id: int
+    target_id: int
+    kind: str
+    metadata: Dict[str, object] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            "id": self.edge_id,
+            "source": self.source_id,
+            "target": self.target_id,
+            "kind": self.kind,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass
 class TokenEvent:
     kind: str
     label: str
@@ -173,6 +191,7 @@ class BioASTVisualizer:
         self.compact_tokens = False
         self.highlight_motifs = True
         self.ast_mode = "tree"
+        self.tree_compact = False
         self.ast_follow = True
         self.step_delay = 0.05
         self.paused = False
@@ -191,6 +210,9 @@ class BioASTVisualizer:
         self.motif_hits: List[int] = []
         self.motif_hit_index = 0
         self._cached_tree_lines: List[RenderLine] = []
+        self.edges: List[ASTEdge] = []
+        self.edge_counter = 0
+        self.last_promoter_node_id: Optional[int] = None
 
         self._init_curses()
         self._init_colors()
@@ -274,6 +296,9 @@ class BioASTVisualizer:
         self.collapsed_nodes = set()
         self.last_export_path = ""
         self._cached_tree_lines = []
+        self.edges = []
+        self.edge_counter = 0
+        self.last_promoter_node_id = None
         self._refresh_motif_hits(recenter=False)
 
     def _new_node(self, kind: str, label: str, start: int, end: int, score: float = 1.0) -> ASTNode:
@@ -290,6 +315,10 @@ class BioASTVisualizer:
         self.parent_by_id[node.node_id] = None
         return node
 
+    def _add_edge(self, source_id: int, target_id: int, kind: str, metadata: Optional[Dict[str, object]] = None) -> None:
+        self.edge_counter += 1
+        self.edges.append(ASTEdge(edge_id=self.edge_counter, source_id=source_id, target_id=target_id, kind=kind, metadata=metadata or {}))
+
     def _touch_region(self, start: int, end: int) -> ASTNode:
         if self.current_region is None or start - self.current_region.end > 28:
             label = f"Region {len(self.root.children) + 1}"
@@ -302,6 +331,7 @@ class BioASTVisualizer:
         parent.children.append(child)
         parent.end = max(parent.end, child.end)
         self.parent_by_id[child.node_id] = parent.node_id
+        self._add_edge(parent.node_id, child.node_id, "contains")
         if self.current_region is not None:
             self.current_region.end = max(self.current_region.end, child.end)
         self.active_node_id = child.node_id
@@ -328,6 +358,7 @@ class BioASTVisualizer:
         self._append_child(region, node)
         self._push_token("Promoter", "TATAAT", i, i + 5, "canonical promoter")
         self.skip_until["Promoter"] = i + 6
+        self.last_promoter_node_id = node.node_id
         self.cursor += 6
 
     def _open_gene(self, i: int) -> None:
@@ -340,6 +371,8 @@ class BioASTVisualizer:
         self.current_gene_start = i
         self._push_token("Gene", gene.label, i, i + 2, "gene opened")
         self._push_token("StartCodon", "ATG", i, i + 2, "start codon")
+        if self.last_promoter_node_id is not None:
+            self._add_edge(self.last_promoter_node_id, gene.node_id, "promoter_of", {"inference_method": "heuristic", "confidence": 0.7})
         self.cursor += 3
 
     def _append_gene_codon(self, i: int, codon: str) -> None:
@@ -349,6 +382,7 @@ class BioASTVisualizer:
             self._append_child(self.current_gene, node)
             self.current_gene.end = i + 2
             self._push_token("StopCodon", codon, i, i + 2, "translation stop")
+            self._add_edge(self.current_gene.node_id, node.node_id, "terminates", {"inference_method": "heuristic"})
             self.current_gene = None
             self.current_gene_start = None
         else:
@@ -443,6 +477,9 @@ class BioASTVisualizer:
 
         self.cursor += 1
 
+    def _edge_payload(self) -> List[Dict[str, object]]:
+        return [edge.to_dict() for edge in self.edges]
+
     def export_json(self) -> None:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = f"bio_ast_export_{stamp}.json"
@@ -450,6 +487,15 @@ class BioASTVisualizer:
             json.dump(self.root.to_dict(), fh, indent=2)
         self.last_export_path = path
         self.status_message = f"Exported AST to {path}"
+
+    def export_brg_json(self) -> None:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = f"bio_brg_export_{stamp}.json"
+        payload = {"schema": "bio_ast_brg_v1", "mode": self.ast_mode, "tree": self.root.to_dict(), "edges": self._edge_payload()}
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2)
+        self.last_export_path = path
+        self.status_message = f"Exported BRG-aware JSON to {path}"
 
     def load_fasta(self, path: str) -> None:
         sequence, headers = load_fasta_sequence(path)
@@ -525,7 +571,7 @@ class BioASTVisualizer:
         has_children = bool(node.children)
         collapsed = node.node_id in self.collapsed_nodes
         marker = "[+]" if has_children and collapsed else "[-]" if has_children else "   "
-        if self.ast_mode == "compact":
+        if self.tree_compact:
             return f"{marker} {node.kind}: {node.label} [{node.start}:{node.end}]"
         return f"{marker} [{node.kind}] {node.label} [{node.start}:{node.end}]"
 
@@ -670,13 +716,18 @@ class BioASTVisualizer:
                 self.highlight_motifs = not self.highlight_motifs
                 self.status_message = "Motif highlighting ON" if self.highlight_motifs else "Motif highlighting OFF"
             elif ch in (ord("g"), ord("G")):
-                self.ast_mode = "compact" if self.ast_mode == "tree" else "tree"
-                self.status_message = f"AST mode: {self.ast_mode}"
+                self.ast_mode = "graph" if self.ast_mode == "tree" else "tree"
+                self.status_message = f"View mode: {self.ast_mode}"
+            elif ch in (ord("v"), ord("V")):
+                self.tree_compact = not self.tree_compact
+                self.status_message = "Tree labels: compact" if self.tree_compact else "Tree labels: verbose"
             elif ch in (ord("a"), ord("A")):
                 self.ast_follow = not self.ast_follow
                 self.status_message = "AST auto-follow ON" if self.ast_follow else "AST auto-follow OFF"
             elif ch in (ord("e"), ord("E")):
                 self.export_json()
+            elif ch in (ord("b"), ord("B")):
+                self.export_brg_json()
             elif ch in (ord("r"), ord("R")):
                 self.reset(generate_new=self.current_source_mode != "fasta")
             elif ch in (ord("c"), ord("C")):
@@ -847,11 +898,36 @@ class BioASTVisualizer:
             self._safe_add(win, y, 1, text, attr)
 
     def _render_ast(self, win: "curses._CursesWindow") -> None:
-        title = " Bio-AST (enter collapse, arrows navigate) "
+        title = " Bio-AST Tree " if self.ast_mode == "tree" else " Bio-Regulatory Graph "
         self._draw_box(win, title)
         h, w = win.getmaxyx()
         rows = h - 2
         if rows <= 0:
+            return
+
+        if self.ast_mode == "graph":
+            node = self._selected_node() or self.root
+            if self.selected_node_id is None:
+                self.selected_node_id = node.node_id
+            outgoing = [e for e in self.edges if e.source_id == node.node_id]
+            incoming = [e for e in self.edges if e.target_id == node.node_id]
+            self._safe_add(win, 1, 1, f"Selected: {node.kind} {node.label} [{node.start}:{node.end}]", self.cp(6) | curses.A_BOLD)
+            row = 3
+            self._safe_add(win, row, 1, "Outgoing:", self.cp(1) | curses.A_BOLD)
+            row += 1
+            for edge in outgoing[: max(0, rows // 2 - 3)]:
+                tgt = self.node_by_id.get(edge.target_id)
+                tgt_label = f"{tgt.kind}:{tgt.label}" if tgt else str(edge.target_id)
+                self._safe_add(win, row, 1, f"{edge.kind} -> {tgt_label}", self.cp(7))
+                row += 1
+            row += 1
+            self._safe_add(win, row, 1, "Incoming:", self.cp(1) | curses.A_BOLD)
+            row += 1
+            for edge in incoming[: max(0, rows - row - 1)]:
+                src = self.node_by_id.get(edge.source_id)
+                src_label = f"{src.kind}:{src.label}" if src else str(edge.source_id)
+                self._safe_add(win, row, 1, f"{src_label} -> {edge.kind}", self.cp(7))
+                row += 1
             return
 
         lines, selected_idx = self._tree_lines(self.root)
@@ -904,6 +980,7 @@ class BioASTVisualizer:
         token_label = "none" if not self.active_token else f"{self.active_token.kind} {self.active_token.label}"
         lines.append((f"Active token  : {token_label}", self.cp(10) | curses.A_BOLD))
         lines.append((f"Selected node : {selected_label}", self.cp(7)))
+        lines.append((f"View mode     : {self.ast_mode}", self.cp(1) | curses.A_BOLD))
         counts = "  ".join(f"{k[:4]}={v}" for k, v in self.kind_counts.items())
         lines.append((counts, self.cp(7)))
 
@@ -927,9 +1004,9 @@ class BioASTVisualizer:
             lines.append((f"Last export   : {self.last_export_path}", self.cp(10)))
         lines.append(("", 0))
         lines.append(("Controls:", self.cp(1) | curses.A_BOLD))
-        lines.append(("space pause  n step  r reset  l load FASTA  e export", self.cp(7)))
+        lines.append(("space pause  n step  r reset  l load FASTA  e AST export  b BRG export", self.cp(7)))
         lines.append(("arrows/WASD AST nav  enter toggle  / search  [ ] hits  x clear", self.cp(7)))
-        lines.append(("j/k speed  t tokens  m motifs  g ast  a follow  c colors  q quit", self.cp(7)))
+        lines.append(("j/k speed  t tokens  m motifs  g tree/graph  v tree labels  a follow  c colors  q quit", self.cp(7)))
         lines.append(("", 0))
         lines.append((self.status_message, self.cp(6) | curses.A_BOLD))
 

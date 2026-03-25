@@ -218,6 +218,27 @@ A new `training.model_type: hierarchical` path is available. It keeps two late-f
 - sequence branch: local 1D CNN encoder
 - Bio-AST branch: node encoder + tree RvNN encoder
 
+### Bio-AST + Bio-Regulatory Graph (BRG)
+
+The packaged schema in `perceptrome/bio_ast.py` now supports a backward-compatible BRG layer.
+
+- **AST layer**: structural containment and coordinate spans.
+- **BRG layer**: semantic/regulatory relationships (promoters, operators, RBS, terminators, transcript units, operons, and plasmid modules).
+
+New BRG inference utilities live in `perceptrome/bio_reg_graph.py` and provide deterministic rule-based helpers:
+
+- `infer_regulatory_features(...)`
+- `infer_transcript_units(...)`
+- `infer_operons(...)`
+- `infer_modules(...)`
+- `build_bio_regulatory_graph(...)`
+
+For the standalone curses visualizer (`bio_ast_viz (1).py`):
+
+- `e` exports tree AST JSON.
+- `b` exports BRG-aware JSON with relationship edges.
+- `g` toggles tree/graph inspection mode for selected-node edge introspection.
+
 Then the model applies late fusion, predicts latent `mu/logvar`, decodes sequence reconstruction, and exposes critic heads (`validity`, `novelty`, `gc_fraction`).
 
 Useful config keys under `training`:
