@@ -11,6 +11,11 @@ def _lazy_cmd(func_name: str):
 
     return _run
 
+
+def _run_tui(_args):
+    mod = importlib.import_module("perceptrome.tui.app")
+    return mod.main()
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="perceptrome", description="Perceptrome streaming VAE trainer + scope.")
     p.add_argument("--config", default="config/stream_config.yaml", help="YAML config path (default: config/stream_config.yaml)")
@@ -353,6 +358,9 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--source", choices=["fasta", "genbank"], default="genbank")
     v.add_argument("--force", action="store_true", help="Force refetch of source record")
     v.set_defaults(func=_lazy_cmd("cmd_bio_ast_visualize"))
+
+    s = sub.add_parser("tui", help="Launch the Perceptrome terminal UI")
+    s.set_defaults(func=_run_tui)
 
     return p
 
