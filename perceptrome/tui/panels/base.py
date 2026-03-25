@@ -12,3 +12,19 @@ class BasePanel(Vertical):
 
     def compose(self):
         yield Static(f"{self.TITLE} panel", classes="panel-title")
+
+    def on_mount(self) -> None:
+        jobs = getattr(self.app, "jobs", None)
+        self._job_subscription_token = None
+        if jobs is not None:
+            self._job_subscription_token = jobs.subscribe(self.handle_tui_event)
+
+    def on_unmount(self) -> None:
+        jobs = getattr(self.app, "jobs", None)
+        token = getattr(self, "_job_subscription_token", None)
+        if jobs is not None and token is not None:
+            jobs.unsubscribe(token)
+
+    def handle_tui_event(self, event: object) -> None:
+        """Panels can override to react to job manager events."""
+        _ = event

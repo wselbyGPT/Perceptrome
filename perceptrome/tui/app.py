@@ -48,6 +48,7 @@ class PerceptromeTUIApp(App[None]):
         diagnostics = capture_diagnostics()
         self.state.set_value("python", diagnostics.python_version)
         self.state.set_value("platform", diagnostics.platform)
+        self.jobs.reconnect_on_startup()
 
     def action_show_launcher(self) -> None:
         command_lines = [f"{entry.label} ({entry.view_id})" for entry in DEFAULT_COMMANDS]
