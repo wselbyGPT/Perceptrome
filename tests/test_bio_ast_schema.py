@@ -41,7 +41,7 @@ class BioASTSchemaTests(unittest.TestCase):
 
         restored = BioAST.from_dict(ast.to_dict())
 
-        self.assertEqual(restored.schema_version, 3)
+        self.assertEqual(restored.schema_version, 4)
         self.assertEqual(restored.sequence_metadata.topology, "linear")
         self.assertEqual(len(restored.nodes), 3)
         self.assertEqual(len(restored.containment_edges), 2)
@@ -55,10 +55,10 @@ class BioASTSchemaTests(unittest.TestCase):
         migrated = migrate_bio_ast_payload(payload)
         ast = BioAST.from_dict(payload)
 
-        self.assertEqual(migrated["schema_version"], 3)
+        self.assertEqual(migrated["schema_version"], 4)
         self.assertIn("sequence_metadata", migrated)
         self.assertIn("edges", migrated)
-        self.assertEqual(ast.schema_version, 3)
+        self.assertEqual(ast.schema_version, 4)
         self.assertEqual(tuple(g.gene_id for g in ast.genes), ("gA", "gB"))
         self.assertEqual(len(ast.nodes), 2)
 
@@ -95,7 +95,7 @@ class BioASTSchemaTests(unittest.TestCase):
         self.assertEqual(payload["sequence_metadata"]["source_format"], "fasta")
         self.assertEqual(payload["sequence_metadata"]["checksum"], restored.sequence_metadata.checksum)
         self.assertEqual([n["canonical_id"] for n in payload["nodes"]], [node.canonical_id for node in restored.nodes])
-        self.assertTrue(all(edge["kind"] == CONTAINMENT_EDGE_KIND or edge["kind"] in {"regulates", "overlaps", "adjacent_to", "homologous_to"} for edge in payload["edges"]))
+        self.assertTrue(all(edge["kind"] == CONTAINMENT_EDGE_KIND or edge["kind"] in {"regulates", "overlaps", "adjacent_to", "homologous_to", "promoter_of", "operator_of", "rbs_for", "terminates", "part_of_transcript_unit", "part_of_operon", "part_of_module", "encodes", "produces_transcript", "produces_protein", "upstream_of", "downstream_of", "same_strand_as", "opposite_strand_of"} for edge in payload["edges"]))
 
 
 if __name__ == "__main__":

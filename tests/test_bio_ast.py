@@ -49,7 +49,7 @@ class BioASTTests(unittest.TestCase):
 
         restored = BioAST.from_dict(ast.to_dict())
 
-        self.assertEqual(restored.schema_version, 2)
+        self.assertEqual(restored.schema_version, 4)
         self.assertEqual(len(restored.nodes), len(nodes))
         self.assertEqual(restored.genes[0].gene_id, "abc")
         self.assertEqual(restored.genes[0].parent_id, "genome:1")
@@ -64,7 +64,7 @@ class BioASTTests(unittest.TestCase):
 
         ast = BioAST.from_dict(payload)
 
-        self.assertEqual(ast.schema_version, 2)
+        self.assertEqual(ast.schema_version, 4)
         self.assertEqual(tuple(g.gene_id for g in ast.genes), ("g1", "g2"))
 
     def test_flat_adapters_support_legacy_and_new_payloads(self):
@@ -73,7 +73,7 @@ class BioASTTests(unittest.TestCase):
 
         modern = ast_from_flat_genes_payload(
             {
-                "schema_version": 2,
+                "schema_version": 4,
                 "nodes": [{"node_type": "gene", "canonical_id": "g3", "gene_id": "g3", "value": 30}],
             }
         )
