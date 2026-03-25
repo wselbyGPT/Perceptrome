@@ -1,32 +1,32 @@
 """Panel widgets for Perceptrome's seven TUI views."""
 
 from .base import BasePanel
-from .diagnostics import DiagnosticsPanel
+from .config import ConfigPanel
+from .data import DataPanel
+from .generate import GeneratePanel
 from .history import HistoryPanel
-from .jobs import JobsPanel
-from .metrics import MetricsPanel
 from .overview import OverviewPanel
-from .pipeline import PipelinePanel
-from .settings import SettingsPanel
+from .train import TrainPanel
+from .troubleshoot import TroubleshootPanel
 
 ALL_PANELS = [
     OverviewPanel,
-    JobsPanel,
-    MetricsPanel,
-    PipelinePanel,
+    ConfigPanel,
+    DataPanel,
+    TrainPanel,
+    GeneratePanel,
     HistoryPanel,
-    DiagnosticsPanel,
-    SettingsPanel,
+    TroubleshootPanel,
 ]
 
 __all__ = [
     "ALL_PANELS",
     "BasePanel",
     "OverviewPanel",
-    "JobsPanel",
-    "MetricsPanel",
-    "PipelinePanel",
+    "ConfigPanel",
+    "DataPanel",
+    "TrainPanel",
+    "GeneratePanel",
     "HistoryPanel",
-    "DiagnosticsPanel",
-    "SettingsPanel",
+    "TroubleshootPanel",
 ]

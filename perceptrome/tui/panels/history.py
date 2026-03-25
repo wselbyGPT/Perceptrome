@@ -10,4 +10,4 @@ class HistoryPanel(BasePanel):
     TITLE = "History"
 
     def compose(self):
-        yield Static("Command and event history timeline.")
+        yield Static("Run history, artifacts, and lineage snapshots.")

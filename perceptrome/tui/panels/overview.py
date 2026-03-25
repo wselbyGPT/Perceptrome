@@ -10,4 +10,4 @@ class OverviewPanel(BasePanel):
     TITLE = "Overview"
 
     def compose(self):
-        yield Static("Overview of Perceptrome jobs and system status.")
+        yield Static("Perceptrome launch summary, active run health, and quick links.")
