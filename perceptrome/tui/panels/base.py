@@ -26,5 +26,4 @@ class BasePanel(Vertical):
             jobs.unsubscribe(token)
 
     def handle_tui_event(self, event: object) -> None:
-        """Panels can override to react to job manager events."""
         _ = event
