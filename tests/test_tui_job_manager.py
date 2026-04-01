@@ -7,7 +7,16 @@ from pathlib import Path
 from time import monotonic, sleep
 from types import SimpleNamespace
 
-from perceptrome.tui.events import JobArtifactEmittedEvent, JobCanceledEvent, JobCompletedEvent, JobMetricUpdatedEvent, JobStartedEvent, JobWarningEvent
+from perceptrome.tui.events import (
+    JobArtifactEmittedEvent,
+    JobCanceledEvent,
+    JobCompletedEvent,
+    JobMetricUpdatedEvent,
+    JobRecoveryEvent,
+    JobStageUpdatedEvent,
+    JobStartedEvent,
+    JobWarningEvent,
+)
 from perceptrome.tui.job_manager import JobManager, JobStatus
 
 
@@ -34,9 +43,9 @@ class FakeJobEngineSuccess:
     def run(self, spec):
         del spec
         self._event_sink(FakeJobEvent(stage="start", message="job started"))
-        self._event_sink(FakeJobEvent(stage="train", message="step 1", data={"loss": 2.0, "epoch": 1}))
+        self._event_sink(FakeJobEvent(stage="train", message="step 1", data={"loss": 2.0, "step": 1, "epoch": 1, "total_steps": 2, "log_path": "runs/r1/train.log"}))
         self._event_sink(FakeJobEvent(stage="warn", message="soft warning"))
-        self._event_sink(FakeJobEvent(stage="train", message="step 2", data={"loss": 1.0, "epoch": 2, "path": "runs/r1/artifacts/model.pt"}))
+        self._event_sink(FakeJobEvent(stage="train", message="step 2", data={"loss": 1.0, "step": 2, "epoch": 2, "total_steps": 2, "path": "runs/r1/artifacts/model.pt"}))
         return FakeJobResult(ok=True, exit_code=0, message="done")
 
 
@@ -80,11 +89,16 @@ def test_submit_event_flow_and_status_updates(monkeypatch, tmp_path: Path) -> No
     assert "runs/r1/artifacts/model.pt" in jobs[0].artifacts
     assert jobs[0].metrics.latest_loss == 1.0
     assert jobs[0].metrics.rolling_loss == 1.5
+    assert jobs[0].current_stage == "train"
+    assert jobs[0].progress.step == 2
+    assert jobs[0].last_warning == "soft warning"
 
     assert any(isinstance(event, JobStartedEvent) for event in seen)
     assert any(isinstance(event, JobWarningEvent) for event in seen)
     assert any(isinstance(event, JobMetricUpdatedEvent) for event in seen)
     assert any(isinstance(event, JobArtifactEmittedEvent) for event in seen)
+    assert any(isinstance(event, JobStageUpdatedEvent) and event.stage == "progress" for event in seen)
+    assert any(isinstance(event, JobStageUpdatedEvent) and event.stage == "log" for event in seen)
     assert any(isinstance(event, JobCompletedEvent) for event in seen)
 
 
@@ -118,13 +132,48 @@ def test_reconnect_hydrates_artifacts_and_status(tmp_path: Path) -> None:
     (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     persist = tmp_path / "state" / "tui_jobs.json"
     persist.parent.mkdir(parents=True)
-    persist.write_text(json.dumps({"active": ["run_123"], "recent": ["run_123"]}), encoding="utf-8")
+    persist.write_text(
+        json.dumps(
+            {
+                "active": ["run_123"],
+                "recent": ["run_123"],
+                "cards": {
+                    "run_123": {
+                        "id": "run_123",
+                        "run_id": "run_123",
+                        "title": "stream",
+                        "kind": "stream",
+                        "status": "busy",
+                        "message": "in progress",
+                        "created_at": "2026-04-01T00:00:00+00:00",
+                        "updated_at": "2026-04-01T00:00:00+00:00",
+                        "finished_at": None,
+                        "artifacts": ["outputs/out.fasta"],
+                        "metrics": {"latest_loss": 1.25, "rolling_loss": 1.4},
+                        "current_stage": "train",
+                        "progress": {"step": 4, "epoch": 1, "total_steps": 10, "total_epochs": 4, "percent": 0.4},
+                        "last_warning": "watch loss",
+                        "last_error": "",
+                        "status_reason": "",
+                        "status_metadata": {},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
     jm = JobManager(persist_path=str(persist))
+    seen: list[object] = []
+    jm.subscribe(seen.append)
     jm.reconnect_on_startup(runs_dir=str(runs))
 
     jobs = jm.list_jobs()
     assert len(jobs) == 1
     assert jobs[0].id == "run_123"
     assert jobs[0].status == JobStatus.STALLED
+    assert jobs[0].status_reason == "recovered_orphaned_active"
+    assert jobs[0].current_stage == "train"
+    assert jobs[0].progress.percent == 0.4
     assert "outputs/out.fasta" in jobs[0].artifacts
+    assert any(isinstance(event, JobRecoveryEvent) for event in seen)

@@ -86,6 +86,13 @@ class JobCanceledEvent(JobEventBase):
 
 
 @dataclass(slots=True)
+class JobRecoveryEvent(JobEventBase):
+    kind: str = "recovery"
+    message: str = ""
+    data: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class TUIEvent(EventBase):
     """Legacy event payload used by state/history subsystems."""
 
