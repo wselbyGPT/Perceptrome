@@ -1,6 +1,7 @@
 import argparse
 import csv
 import datetime
+import glob
 import hashlib
 import json
 import logging
@@ -11,6 +12,10 @@ import subprocess
 import sys
 import time
 import uuid
+import urllib.error
+import urllib.parse
+import urllib.request
+import gzip
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -294,6 +299,168 @@ def _run_fold_one_internal(
 # -----------------------------
 # Commands
 # -----------------------------
+def _uniprot_query_with_mode(query: str, mode: str) -> str:
+    normalized = str(query or "").strip()
+    if not normalized:
+        raise ValueError("UniProt query must be non-empty")
+    mode = str(mode or "all").lower()
+    if mode == "reviewed":
+        return f"({normalized}) AND (reviewed:true)"
+    if mode == "unreviewed":
+        return f"({normalized}) AND (reviewed:false)"
+    return normalized
+
+
+def _uniprot_count_request(query: str) -> int:
+    params = urllib.parse.urlencode({"query": query, "size": 0})
+    url = f"https://rest.uniprot.org/uniprotkb/search?{params}"
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    return int(payload.get("totalResults", 0))
+
+
+def cmd_uniprot_count(args: argparse.Namespace) -> int:
+    try:
+        cfg = load_full_config(args.config)
+        _, _, io_cfg = extract_configs(cfg)
+        io_cfg = _run_local_io_cfg(io_cfg)
+        ensure_dirs(io_cfg)
+        full_query = _uniprot_query_with_mode(args.query, args.mode)
+        total = _uniprot_count_request(full_query)
+    except Exception as err:
+        if getattr(args, "json", False):
+            print(json.dumps({"ok": False, "error": str(err)}))
+        else:
+            print(f"[uniprot-count] error: {err}")
+        return 1
+
+    result = {"ok": True, "query": str(args.query), "mode": str(args.mode), "effective_query": full_query, "count": total}
+    if getattr(args, "json", False):
+        print(json.dumps(result))
+    else:
+        print(f"[uniprot-count] mode={args.mode} count={total}")
+    return 0
+
+
+def cmd_uniprot_fetch(args: argparse.Namespace) -> int:
+    try:
+        cfg = load_full_config(args.config)
+        _, _, io_cfg = extract_configs(cfg)
+        io_cfg = _run_local_io_cfg(io_cfg)
+        ensure_dirs(io_cfg)
+
+        full_query = _uniprot_query_with_mode(args.query, args.mode if hasattr(args, "mode") else "all")
+        total = _uniprot_count_request(full_query)
+        if getattr(args, "count_only", False):
+            payload = {"ok": True, "query": str(args.query), "effective_query": full_query, "count": total, "count_only": True}
+            if getattr(args, "json", False):
+                print(json.dumps(payload))
+            else:
+                print(f"[uniprot-fetch] count={total}")
+            return 0
+
+        if int(getattr(args, "records_per_shard", 1000)) <= 0:
+            raise ValueError("--records-per-shard must be > 0")
+
+        output_dir = str(getattr(args, "output_dir", None) or os.path.join(io_cfg.cache_fasta_dir, "uniprot"))
+        os.makedirs(output_dir, exist_ok=True)
+        prefix = str(getattr(args, "prefix", "uniprot") or "uniprot")
+        use_gzip = bool(getattr(args, "gzip_output", False))
+        ext = ".fasta.gz" if use_gzip else ".fasta"
+        pattern = os.path.join(output_dir, f"{prefix}.shard-*{ext}")
+        existing_shards = sorted(glob.glob(pattern))
+        if bool(getattr(args, "resume", False)) and existing_shards:
+            payload = {
+                "ok": True,
+                "query": str(args.query),
+                "effective_query": full_query,
+                "count": total,
+                "output_dir": output_dir,
+                "resumed": True,
+                "shards": existing_shards,
+                "records_per_shard": int(args.records_per_shard),
+            }
+            if getattr(args, "json", False):
+                print(json.dumps(payload))
+            else:
+                print(f"[uniprot-fetch] resume hit; using {len(existing_shards)} existing shard(s) in {output_dir}")
+            return 0
+
+        params = {
+            "query": full_query,
+            "format": "fasta",
+            "size": int(args.records_per_shard),
+            "includeIsoform": "true" if bool(getattr(args, "include_isoforms", False)) else "false",
+        }
+        next_url = f"https://rest.uniprot.org/uniprotkb/search?{urllib.parse.urlencode(params)}"
+        shards: List[str] = []
+        total_written = 0
+
+        while next_url:
+            req = urllib.request.Request(next_url, headers={"Accept": "text/plain;format=fasta"})
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                body = resp.read()
+                headers = dict(resp.headers.items())
+            text = body.decode("utf-8")
+            records = [part for part in text.split("\n>") if part.strip()]
+            if not records:
+                break
+            shard_index = len(shards) + 1
+            out_name = f"{prefix}.shard-{shard_index:05d}{ext}"
+            out_path = os.path.join(output_dir, out_name)
+            if use_gzip:
+                with gzip.open(out_path, "wt", encoding="utf-8") as handle:
+                    handle.write(text if text.startswith(">") else f">{text}")
+            else:
+                with open(out_path, "w", encoding="utf-8") as handle:
+                    handle.write(text if text.startswith(">") else f">{text}")
+            shards.append(out_path)
+            total_written += len(records)
+
+            link_header = headers.get("Link", "")
+            next_url = None
+            if link_header:
+                for part in link_header.split(","):
+                    if 'rel="next"' in part:
+                        left = part.split(";")[0].strip()
+                        if left.startswith("<") and left.endswith(">"):
+                            next_url = left[1:-1]
+                            break
+
+        payload = {
+            "ok": True,
+            "query": str(args.query),
+            "effective_query": full_query,
+            "count": total,
+            "downloaded_records": total_written,
+            "output_dir": output_dir,
+            "shards": shards,
+            "records_per_shard": int(args.records_per_shard),
+            "include_isoforms": bool(getattr(args, "include_isoforms", False)),
+            "gzip_output": use_gzip,
+        }
+        if getattr(args, "json", False):
+            print(json.dumps(payload))
+        else:
+            print(f"[uniprot-fetch] query count={total} downloaded={total_written}")
+            print(f"[uniprot-fetch] wrote {len(shards)} shard(s) under {output_dir}")
+        return 0
+    except urllib.error.HTTPError as err:
+        detail = f"HTTP {err.code} from UniProt API"
+        if getattr(args, "json", False):
+            print(json.dumps({"ok": False, "error": detail}))
+        else:
+            print(f"[uniprot-fetch] error: {detail}")
+        return 1
+    except Exception as err:
+        if getattr(args, "json", False):
+            print(json.dumps({"ok": False, "error": str(err)}))
+        else:
+            print(f"[uniprot-fetch] error: {err}")
+        return 1
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     cfg = load_full_config(args.config)
     _, _, io_cfg = extract_configs(cfg)
