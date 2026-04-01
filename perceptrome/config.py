@@ -16,6 +16,16 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_retries": 3,
         "backoff_seconds": 2.0,
     },
+    "uniprot": {
+        "base_url": "https://rest.uniprot.org",
+        "default_query": "reviewed:true AND fragment:false",
+        "include_isoforms": False,
+        "request_timeout": 60,
+        "retries": 3,
+        "backoff_seconds": 2.0,
+        "records_per_shard": 50000,
+        "gzip_output": False,
+    },
     "training": {
         # genome defaults
         "steps_per_plasmid": 50,
@@ -127,6 +137,18 @@ class NCBIConfig:
     api_key: Optional[str]
     max_retries: int
     backoff_seconds: float
+
+
+@dataclass
+class UniProtConfig:
+    base_url: str
+    default_query: str
+    include_isoforms: bool
+    request_timeout: int
+    retries: int
+    backoff_seconds: float
+    records_per_shard: int
+    gzip_output: bool
 
 
 @dataclass
@@ -349,3 +371,17 @@ def extract_configs(cfg: Dict[str, Any]) -> Tuple[NCBIConfig, TrainingConfig, IO
     )
 
     return ncbi_cfg, train_cfg, io_cfg
+
+
+def extract_uniprot_config(cfg: Dict[str, Any]) -> UniProtConfig:
+    u = cfg.get("uniprot", {}) or {}
+    return UniProtConfig(
+        base_url=str(u.get("base_url", "https://rest.uniprot.org")).rstrip("/"),
+        default_query=str(u.get("default_query", "reviewed:true AND fragment:false")),
+        include_isoforms=bool(u.get("include_isoforms", False)),
+        request_timeout=int(u.get("request_timeout", 60)),
+        retries=int(u.get("retries", 3)),
+        backoff_seconds=float(u.get("backoff_seconds", 2.0)),
+        records_per_shard=int(u.get("records_per_shard", 50000)),
+        gzip_output=bool(u.get("gzip_output", False)),
+    )
