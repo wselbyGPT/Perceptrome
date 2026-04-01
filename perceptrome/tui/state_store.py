@@ -11,9 +11,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .events import TUIEvent
+from .events import (
+    JobArtifactEmittedEvent,
+    JobCanceledEvent,
+    JobCompletedEvent,
+    JobErrorEvent,
+    JobEventBase,
+    JobFailedEvent,
+    JobRecoveryEvent,
+    JobStageUpdatedEvent,
+    JobStartedEvent,
+    JobWarningEvent,
+    TUIEvent,
+)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass(slots=True)
@@ -51,6 +63,11 @@ class SessionState:
     drawer_toggles: dict[str, bool] = field(default_factory=dict)
     active_focus: str | None = None
     active_job_id: str | None = None
+    selected_job_id: str | None = None
+    selected_artifact_path: str | None = None
+    active_detail_surface: str | None = None
+    panel_scroll_positions: dict[str, int] = field(default_factory=dict)
+    detail_scroll_positions: dict[str, int] = field(default_factory=dict)
 
 
 class StateStore:
@@ -89,6 +106,27 @@ class StateStore:
         self._session.active_focus = focus_id
         if active_job_id is not None:
             self._session.active_job_id = active_job_id
+            self._session.selected_job_id = active_job_id
+        self._save_session()
+
+    def set_selected_job(self, job_id: str | None) -> None:
+        self._session.selected_job_id = job_id
+        self._save_session()
+
+    def set_selected_artifact_path(self, artifact_path: str | None) -> None:
+        self._session.selected_artifact_path = artifact_path
+        self._save_session()
+
+    def set_active_detail_surface(self, surface: str | None) -> None:
+        self._session.active_detail_surface = surface
+        self._save_session()
+
+    def set_panel_scroll_position(self, panel_id: str, offset: int) -> None:
+        self._session.panel_scroll_positions[panel_id] = max(0, int(offset))
+        self._save_session()
+
+    def set_detail_scroll_position(self, surface: str, offset: int) -> None:
+        self._session.detail_scroll_positions[surface] = max(0, int(offset))
         self._save_session()
 
     def get_session(self) -> SessionState:
@@ -139,6 +177,54 @@ class StateStore:
             with self._events_path.open("a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
 
+    def apply_job_event(self, event: JobEventBase) -> JobRecord | None:
+        if not event.job_id:
+            return None
+        existing = {row.id: row for row in self.list_jobs()}
+        record = existing.get(event.job_id) or JobRecord(id=event.job_id, run_id=event.run_id or event.job_id, kind="unknown", status="busy")
+        record.run_id = event.run_id or record.run_id or event.job_id
+
+        if isinstance(event, JobStartedEvent):
+            record.title = event.title
+            record.status = "busy"
+            record.finished_at = None
+        elif isinstance(event, JobStageUpdatedEvent):
+            if event.message:
+                record.config["last_message"] = event.message
+            if event.stage:
+                record.config["stage"] = event.stage
+            if event.stage == "error":
+                record.status = "failed"
+        elif isinstance(event, JobArtifactEmittedEvent):
+            artifact = {"path": event.path, "role": event.role, "created_at": _utc_now()}
+            if event.path:
+                record.artifacts.append(artifact)
+                self.set_selected_artifact_path(event.path)
+        elif isinstance(event, JobWarningEvent):
+            record.config["last_warning"] = event.message
+        elif isinstance(event, JobErrorEvent):
+            record.status = "failed"
+            record.failure_summary = FailureSummary(latest_warning_or_error=event.error or event.message, stage="error")
+        elif isinstance(event, JobCompletedEvent):
+            record.status = "completed"
+            record.finished_at = _utc_now()
+        elif isinstance(event, JobFailedEvent):
+            record.status = "failed"
+            record.finished_at = _utc_now()
+            record.failure_summary = FailureSummary(latest_warning_or_error=event.error or event.message, stage="failed")
+        elif isinstance(event, JobCanceledEvent):
+            record.status = "canceled"
+            record.finished_at = _utc_now()
+        elif isinstance(event, JobRecoveryEvent):
+            record.config["last_recovery"] = event.message
+            if record.status == "failed":
+                record.status = "busy"
+
+        self.upsert_job(record)
+        self.set_selected_job(record.id)
+        self.set_active_focus(self._session.active_focus, active_job_id=record.id)
+        return record
+
     def add_launcher_history(self, action: str, *, command: str | None = None, panel: str | None = None) -> None:
         payload = self._load_json(self._launcher_history_path, default={"schema_version": SCHEMA_VERSION, "history": []})
         rows = payload.get("history") if isinstance(payload, dict) else []
@@ -154,6 +240,36 @@ class StateStore:
         if not isinstance(rows, list):
             return []
         return [dict(row) for row in rows[-limit:] if isinstance(row, dict)]
+
+    def launcher_history_tail(self, *, limit: int = 25, offset_from_end: int = 0) -> list[dict[str, Any]]:
+        payload = self._load_json(self._launcher_history_path, default={"schema_version": SCHEMA_VERSION, "history": []})
+        rows = payload.get("history") if isinstance(payload, dict) else []
+        if not isinstance(rows, list):
+            return []
+        head = max(0, len(rows) - max(0, int(offset_from_end)))
+        tail = rows[:head]
+        if limit <= 0:
+            return []
+        return [dict(row) for row in tail[-limit:] if isinstance(row, dict)]
+
+    def read_events_tail(self, *, limit: int = 100, offset_from_end: int = 0) -> list[dict[str, Any]]:
+        if limit <= 0 or not self._events_path.exists():
+            return []
+        try:
+            lines = self._events_path.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            return []
+        head = max(0, len(lines) - max(0, int(offset_from_end)))
+        chunk = lines[:head][-limit:]
+        out: list[dict[str, Any]] = []
+        for line in chunk:
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(payload, dict):
+                out.append(payload)
+        return out
 
     def open_active_job(self) -> JobRecord | None:
         active_id = self._session.active_job_id
@@ -209,13 +325,29 @@ class StateStore:
     def _load_session(self) -> SessionState:
         payload = self._load_json(
             self._session_path,
-            default={"schema_version": SCHEMA_VERSION, "last_panel": "overview", "drawer_toggles": {}, "active_focus": None, "active_job_id": None},
+            default={
+                "schema_version": SCHEMA_VERSION,
+                "last_panel": "overview",
+                "drawer_toggles": {},
+                "active_focus": None,
+                "active_job_id": None,
+                "selected_job_id": None,
+                "selected_artifact_path": None,
+                "active_detail_surface": None,
+                "panel_scroll_positions": {},
+                "detail_scroll_positions": {},
+            },
         )
         return SessionState(
             last_panel=str(payload.get("last_panel") or "overview"),
             drawer_toggles=dict(payload.get("drawer_toggles") or {}),
             active_focus=payload.get("active_focus"),
             active_job_id=payload.get("active_job_id"),
+            selected_job_id=payload.get("selected_job_id") or payload.get("active_job_id"),
+            selected_artifact_path=payload.get("selected_artifact_path"),
+            active_detail_surface=payload.get("active_detail_surface"),
+            panel_scroll_positions={str(k): int(v) for k, v in dict(payload.get("panel_scroll_positions") or {}).items()},
+            detail_scroll_positions={str(k): int(v) for k, v in dict(payload.get("detail_scroll_positions") or {}).items()},
         )
 
     def _save_session(self) -> None:
@@ -231,9 +363,28 @@ class StateStore:
             return dict(default)
         if not isinstance(payload, dict):
             return dict(default)
-        if int(payload.get("schema_version") or 0) != SCHEMA_VERSION:
+        return self._migrate_payload(path=path, payload=payload, default=default)
+
+    def _migrate_payload(self, *, path: Path, payload: dict[str, Any], default: dict[str, Any]) -> dict[str, Any]:
+        version = int(payload.get("schema_version") or 1)
+        if version == SCHEMA_VERSION:
+            return payload
+        migrations: dict[str, dict[int, Any]] = {
+            "session.json": {1: _migrate_session_v1_to_v2},
+            "jobs.json": {1: _migrate_passthrough_v1_to_v2},
+            "launcher_history.json": {1: _migrate_passthrough_v1_to_v2},
+        }
+        current = dict(payload)
+        migrators = migrations.get(path.name, {})
+        while version < SCHEMA_VERSION:
+            migrate = migrators.get(version)
+            if migrate is None:
+                return dict(default)
+            current = migrate(current)
+            version = int(current.get("schema_version") or 0)
+        if version != SCHEMA_VERSION:
             return dict(default)
-        return payload
+        return current
 
     def _atomic_write_json(self, path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -289,3 +440,21 @@ def _job_record_to_json(record: JobRecord) -> dict[str, Any]:
     if record.failure_summary is None:
         payload["failure_summary"] = None
     return payload
+
+
+def _migrate_passthrough_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated["schema_version"] = 2
+    return migrated
+
+
+def _migrate_session_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    active_job_id = migrated.get("active_job_id")
+    migrated.setdefault("selected_job_id", active_job_id)
+    migrated.setdefault("selected_artifact_path", None)
+    migrated.setdefault("active_detail_surface", None)
+    migrated.setdefault("panel_scroll_positions", {})
+    migrated.setdefault("detail_scroll_positions", {})
+    migrated["schema_version"] = 2
+    return migrated
