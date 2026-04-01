@@ -13,6 +13,18 @@ def _lazy_cmd(func_name: str):
 
 
 def _run_tui(_args):
+    from perceptrome.cli.common import resolve_tui_state_root, write_tui_startup_context
+    import os
+
+    state_root = resolve_tui_state_root(_args.config)
+    os.environ["PERCEPTROME_TUI_STATE_ROOT"] = state_root
+    write_tui_startup_context(
+        config_path=str(_args.config),
+        run_id=getattr(_args, "run_id", None),
+        job_id=getattr(_args, "job_id", None),
+        panel=getattr(_args, "panel", None),
+        detail_surface=getattr(_args, "detail_surface", None),
+    )
     mod = importlib.import_module("perceptrome.tui.app")
     return mod.main()
 
@@ -146,6 +158,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--stride", type=int, default=None)
     s.add_argument("--fps", type=float, default=12.0)
     s.add_argument("--reencode", action="store_true")
+    s.add_argument("--no-curses", action="store_true", help="Do not launch curses UI; emit structured summary artifact only")
+    s.add_argument("--summary-artifact", default=None, help="Optional path for scope summary JSON artifact")
     add_tok_args(s)
     s.add_argument("--loss-type", choices=["mse", "ce"], default=None, help="Override loss used for error metric (default: ce for aa, mse for base/codon)")
     add_model_args(s)
@@ -160,6 +174,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--fps", type=float, default=12.0)
     s.add_argument("--update-every", type=int, default=5)
     s.add_argument("--reencode", action="store_true")
+    s.add_argument("--no-curses", action="store_true", help="Do not launch curses UI; emit structured summary artifact only")
+    s.add_argument("--summary-artifact", default=None, help="Optional path for scope summary JSON artifact")
     add_tok_args(s)
     add_loss_args(s)
     add_tensorboard_args(s)
@@ -360,6 +376,10 @@ def build_parser() -> argparse.ArgumentParser:
     v.set_defaults(func=_lazy_cmd("cmd_bio_ast_visualize"))
 
     s = sub.add_parser("tui", help="Launch the Perceptrome terminal UI")
+    s.add_argument("--run-id", default=None, help="Open TUI with run context preselected")
+    s.add_argument("--job-id", default=None, help="Open TUI with job context preselected")
+    s.add_argument("--panel", default=None, help="Open directly on panel id (for example: overview, train, jobs)")
+    s.add_argument("--detail-surface", choices=["logs", "diagnostics", "resources", "traceback", "artifact"], default=None, help="Open detail surface immediately")
     s.set_defaults(func=_run_tui)
 
     return p

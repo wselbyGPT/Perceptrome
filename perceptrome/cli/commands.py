@@ -25,6 +25,7 @@ from perceptrome.cli.common import (
     run_scope_ui, run_scope_stream_ui, ScopeStreamContext,
     _get_tok, _get_frame, _get_min_orf, _get_grounded, _get_protein_opts,
     _get_source, _ensure_record,
+    resolve_run_local_io_cfg, write_tui_startup_context,
 )
 from perceptrome.catalog_schema import parse_catalog_schema
 from perceptrome.encoding.bio_ast_builder import BioASTBuilder
@@ -359,12 +360,32 @@ def _count_model_parameters(*, cfg: Dict[str, Any], args: argparse.Namespace) ->
 
 
 def _run_local_io_cfg(io_cfg):
-    layout = ensure_run_layout()
-    io_cfg.checkpoints_dir = path_in_run(layout, "artifacts", "checkpoints")
-    io_cfg.model_dir = path_in_run(layout, "artifacts", "model")
-    os.makedirs(io_cfg.model_dir, exist_ok=True)
-    os.makedirs(io_cfg.checkpoints_dir, exist_ok=True)
-    return io_cfg
+    return resolve_run_local_io_cfg(io_cfg)
+
+
+def _summarize_float_series(values: Any) -> Dict[str, Any]:
+    arr = np.asarray(values if values is not None else [], dtype=float).reshape(-1)
+    if arr.size == 0:
+        return {"count": 0, "min": None, "max": None, "mean": None}
+    return {
+        "count": int(arr.size),
+        "min": float(np.min(arr)),
+        "max": float(np.max(arr)),
+        "mean": float(np.mean(arr)),
+    }
+
+
+def _write_scope_summary_artifact(*, args: argparse.Namespace, default_name: str, payload: Dict[str, Any]) -> str:
+    out_path = getattr(args, "summary_artifact", None)
+    if not out_path:
+        layout = ensure_run_layout()
+        out_path = path_in_run(layout, "artifacts", default_name)
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    print(f"summary_json={out_path}")
+    return out_path
 
 
 def _write_fetch_manifest(
@@ -1001,7 +1022,7 @@ def cmd_train_one(args: argparse.Namespace) -> int:
     return 0
 
 def cmd_scope_one(args: argparse.Namespace) -> int:
-    if curses is None:
+    if curses is None and not bool(getattr(args, "no_curses", False)):
         raise RuntimeError("curses not available")
     cfg = load_full_config(args.config)
     cfg = _apply_cli_training_overrides(cfg, args)
@@ -1095,6 +1116,33 @@ def cmd_scope_one(args: argparse.Namespace) -> int:
         loss_type=getattr(args, "loss_type", None),
     )
     metric = compute_gc_from_encoded(encoded, tokenizer=tok)
+    layout = ensure_run_layout()
+    summary_payload = {
+        "run_id": layout.run_id,
+        "job_id": str(args.accession),
+        "command": "scope-one",
+        "accession": str(args.accession),
+        "tokenizer": tok,
+        "source": src,
+        "window_size": int(window_size),
+        "stride": int(stride),
+        "fps": float(args.fps),
+        "loss_type": str(getattr(args, "loss_type", None) or ("ce" if tok == "aa" else "mse")),
+        "encoded_path": enc_path,
+        "errors": _summarize_float_series(errors),
+        "gc": _summarize_float_series(metric),
+    }
+    _write_scope_summary_artifact(args=args, default_name=f"{args.accession}.scope_one.summary.json", payload=summary_payload)
+    write_tui_startup_context(
+        config_path=str(args.config),
+        run_id=layout.run_id,
+        job_id=str(args.accession),
+        panel="overview",
+        detail_surface="logs",
+    )
+
+    if bool(getattr(args, "no_curses", False)):
+        return 0
 
     curses.wrapper(
         run_scope_ui,
@@ -1109,7 +1157,7 @@ def cmd_scope_one(args: argparse.Namespace) -> int:
 
 
 def cmd_scope_stream(args: argparse.Namespace) -> int:
-    if curses is None:
+    if curses is None and not bool(getattr(args, "no_curses", False)):
         raise RuntimeError("curses not available")
     cfg = load_full_config(args.config)
     cfg = _apply_cli_training_overrides(cfg, args)
@@ -1238,6 +1286,35 @@ def cmd_scope_stream(args: argparse.Namespace) -> int:
         max_grad_norm=train_cfg.max_grad_norm,
         loss_type=lt, seq_len=int(seq_len), vocab_size=int(vocab_size),
     )
+    layout = ensure_run_layout()
+    summary_payload = {
+        "run_id": layout.run_id,
+        "job_id": str(args.accession),
+        "command": "scope-stream",
+        "accession": str(args.accession),
+        "tokenizer": tok,
+        "source": src,
+        "window_size": int(window_size),
+        "stride": int(stride),
+        "fps": float(args.fps),
+        "update_every": int(args.update_every),
+        "steps_target": int(steps),
+        "batch_size": int(batch_size),
+        "loss_type": lt,
+        "encoded_path": enc_path,
+        "gc": _summarize_float_series(metric),
+    }
+    _write_scope_summary_artifact(args=args, default_name=f"{args.accession}.scope_stream.summary.json", payload=summary_payload)
+    write_tui_startup_context(
+        config_path=str(args.config),
+        run_id=layout.run_id,
+        job_id=str(args.accession),
+        panel="overview",
+        detail_surface="logs",
+    )
+
+    if bool(getattr(args, "no_curses", False)):
+        return 0
 
     curses.wrapper(
         run_scope_stream_ui,

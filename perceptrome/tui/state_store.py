@@ -25,7 +25,7 @@ from .events import (
     TUIEvent,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 @dataclass(slots=True)
@@ -73,8 +73,9 @@ class SessionState:
 class StateStore:
     """Persistent state root with corruption-safe reads and atomic writes."""
 
-    def __init__(self, *, state_root: str = "state/tui") -> None:
-        self._root = Path(state_root)
+    def __init__(self, *, state_root: str | None = None) -> None:
+        resolved_root = state_root or os.environ.get("PERCEPTROME_TUI_STATE_ROOT") or "state/tui"
+        self._root = Path(resolved_root)
         self._lock = threading.RLock()
         self._root.mkdir(parents=True, exist_ok=True)
 
@@ -82,8 +83,10 @@ class StateStore:
         self._jobs_path = self._root / "jobs.json"
         self._events_path = self._root / "events.jsonl"
         self._launcher_history_path = self._root / "launcher_history.json"
+        self._startup_context_path = self._root / "startup_context.json"
 
         self._session = self._load_session()
+        self._apply_startup_context_if_present()
 
     @property
     def active_view(self) -> str:
@@ -357,6 +360,29 @@ class StateStore:
         payload = {"schema_version": SCHEMA_VERSION, **asdict(self._session)}
         self._atomic_write_json(self._session_path, payload)
 
+    def _apply_startup_context_if_present(self) -> None:
+        if not self._startup_context_path.exists():
+            return
+        try:
+            payload = json.loads(self._startup_context_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        if not isinstance(payload, dict):
+            return
+        panel = payload.get("panel")
+        if panel:
+            self._session.last_panel = str(panel)
+        job_id = payload.get("job_id")
+        run_id = payload.get("run_id")
+        selected = str(job_id or run_id or "").strip() or None
+        if selected:
+            self._session.active_job_id = selected
+            self._session.selected_job_id = selected
+        detail_surface = payload.get("detail_surface")
+        if detail_surface:
+            self._session.active_detail_surface = str(detail_surface)
+        self._save_session()
+
     def _load_json(self, path: Path, *, default: dict[str, Any]) -> dict[str, Any]:
         if not path.exists():
             return dict(default)
@@ -373,9 +399,9 @@ class StateStore:
         if version == SCHEMA_VERSION:
             return payload
         migrations: dict[str, dict[int, Any]] = {
-            "session.json": {1: _migrate_session_v1_to_v2},
-            "jobs.json": {1: _migrate_passthrough_v1_to_v2},
-            "launcher_history.json": {1: _migrate_passthrough_v1_to_v2},
+            "session.json": {1: _migrate_session_v1_to_v2, 2: _migrate_passthrough_v2_to_v3},
+            "jobs.json": {1: _migrate_passthrough_v1_to_v2, 2: _migrate_passthrough_v2_to_v3},
+            "launcher_history.json": {1: _migrate_passthrough_v1_to_v2, 2: _migrate_passthrough_v2_to_v3},
         }
         current = dict(payload)
         migrators = migrations.get(path.name, {})
@@ -448,6 +474,12 @@ def _job_record_to_json(record: JobRecord) -> dict[str, Any]:
 def _migrate_passthrough_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
     migrated = dict(payload)
     migrated["schema_version"] = 2
+    return migrated
+
+
+def _migrate_passthrough_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated["schema_version"] = 3
     return migrated
 
 

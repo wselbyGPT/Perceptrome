@@ -253,7 +253,10 @@ class PerceptromeTUIApp(App[None]):
         self.record_diagnostics_snapshot(diagnostics)
         self.jobs.reconnect_on_startup()
         self._job_subscription_token = self.jobs.subscribe(self._on_job_event)
-        self._set_panel(self.state.active_view if self.state.active_view else "overview")
+        session = self.state.get_session()
+        self._set_panel(session.last_panel if session.last_panel else "overview")
+        if session.active_detail_surface:
+            self._show_detail_surface(str(session.active_detail_surface), "")
 
     def on_unmount(self) -> None:
         if self._job_subscription_token is not None:
