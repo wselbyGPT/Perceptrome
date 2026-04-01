@@ -12,7 +12,7 @@ from textual.widgets import ContentSwitcher, Input, ListItem, ListView, Static
 from .diagnostics import capture_diagnostics
 from .events import JobArtifactEmittedEvent, JobCompletedEvent, JobFailedEvent, JobStartedEvent, JobStageUpdatedEvent
 from .job_manager import JobStatus, JobManager
-from .launcher import DEFAULT_COMMANDS, derive_context, rank_commands
+from .launcher import DEFAULT_COMMANDS, RankedCommand, derive_context, rank_and_filter_commands
 from .panels import ALL_PANELS, BasePanel
 from .state_store import FailureSummary, JobRecord, StateStore
 
@@ -73,7 +73,7 @@ class LauncherModal(ModalScreen[str | None]):
     def __init__(self, app: "PerceptromeTUIApp") -> None:
         super().__init__()
         self._app_ref = app
-        self._filtered = list(app._ranked_commands())
+        self._filtered: list[RankedCommand] = list(app._ranked_commands())
 
     def compose(self) -> ComposeResult:
         with Container(id="launcher-modal"):
@@ -86,17 +86,7 @@ class LauncherModal(ModalScreen[str | None]):
         self.query_one("#launcher-input", Input).focus()
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        query = event.value.strip().lower()
-        ranked = self._app_ref._ranked_commands()
-        self._filtered = [
-            row
-            for row in ranked
-            if not query
-            or query in row.label.lower()
-            or query in row.command_id.lower()
-            or any(query in token.lower() for token in row.keywords)
-            or query in row.category.lower()
-        ]
+        self._filtered = self._app_ref._ranked_commands(query=event.value)
         self._refresh_list()
 
     def on_input_submitted(self, _: Input.Submitted) -> None:
@@ -115,8 +105,10 @@ class LauncherModal(ModalScreen[str | None]):
     def _refresh_list(self) -> None:
         lst = self.query_one("#launcher-list", ListView)
         lst.clear()
-        for command in self._filtered[:20]:
-            item = ListItem(Static(f"{command.label}  [{command.category}]"))
+        for ranked in self._filtered[:20]:
+            command = ranked.command
+            status = "available" if ranked.enabled else f"disabled: {ranked.disabled_reason}"
+            item = ListItem(Static(f"{command.label}  [{command.category}] • {status}"))
             item.command_id = command.command_id
             lst.append(item)
         if len(lst) > 0:
@@ -253,6 +245,10 @@ class PerceptromeTUIApp(App[None]):
         command = by_id.get(command_id)
         if command is None:
             return
+        availability = next((row for row in self._ranked_commands() if row.command.command_id == command_id), None)
+        if availability is not None and not availability.enabled:
+            self._set_event_strip(availability.disabled_reason or "Command is currently unavailable")
+            return
         if command.panel_id:
             self._set_panel(command.panel_id)
             self.state.add_launcher_history("open_panel", command=command_id, panel=command.panel_id)
@@ -302,9 +298,9 @@ class PerceptromeTUIApp(App[None]):
         if command_id:
             self._execute_launcher_command(command_id)
 
-    def _ranked_commands(self):
+    def _ranked_commands(self, *, query: str = "") -> list[RankedCommand]:
         context = derive_context(active_panel=self.state.active_view, jobs=self.jobs.list_jobs())
-        return rank_commands(context)
+        return rank_and_filter_commands(context, query=query, launcher_history=self.state.launcher_history(limit=25))
 
     def _on_job_event(self, event: object) -> None:
         self.call_from_thread(self._handle_job_event, event)
