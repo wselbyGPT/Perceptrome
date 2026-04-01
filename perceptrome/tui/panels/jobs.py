@@ -18,20 +18,24 @@ class JobsPanel(BasePanel):
 
     def handle_tui_event(self, event: object) -> None:
         if hasattr(event, "job_id"):
-            self.call_after_refresh(self._render_jobs)
+            self.schedule_throttled_render("jobs", self._render_jobs)
 
     def _render_jobs(self) -> None:
         body = self.query_one("#jobs-body", Static)
-        jobs = getattr(self.app, "jobs", None)
-        if jobs is None:
-            body.update("No job manager available.")
-            return
-        cards = jobs.list_jobs()
+        cards = self.current_jobs()
         if not cards:
             body.update("No jobs yet.")
             return
+
+        context = self.selected_job_context()
+        selected_job_id = context["selected_job_id"]
+        active_job_id = context["active_job_id"]
+        if selected_job_id is None and active_job_id is None:
+            selected_job_id = cards[0].id
+
         lines = []
         for card in cards[:12]:
             artifacts = f" artifacts={len(card.artifacts)}" if card.artifacts else ""
-            lines.append(f"{card.id} [{card.status.value}] {card.message}{artifacts}")
+            marker = "*" if card.id in {selected_job_id, active_job_id} else " "
+            lines.append(f"{marker} {card.id} [{card.status.value}] {card.message}{artifacts}")
         body.update("\n".join(lines))
