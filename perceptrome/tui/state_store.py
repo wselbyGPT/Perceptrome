@@ -297,7 +297,10 @@ class StateStore:
         }
 
     def open_latest_checkpoint_output(self, job_id: str | None = None) -> str | None:
-        job = self.open_active_job() if job_id is None else next((x for x in self.list_jobs() if x.id == job_id), None)
+        jobs = self.list_jobs()
+        job = self.open_active_job() if job_id is None else next((x for x in jobs if x.id == job_id), None)
+        if job is None and jobs:
+            job = jobs[0]
         if job is None:
             return None
 

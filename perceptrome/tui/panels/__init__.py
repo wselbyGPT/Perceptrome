@@ -1,5 +1,6 @@
 """Panel widgets for Perceptrome's TUI views."""
 
+from .artifacts import ArtifactsPanel
 from .base import BasePanel
 from .config import ConfigPanel
 from .data import DataPanel
@@ -19,6 +20,7 @@ ALL_PANELS = [
     TrainPanel,
     GeneratePanel,
     HistoryPanel,
+    ArtifactsPanel,
     JobsPanel,
     MetricsPanel,
     PipelinePanel,
@@ -34,6 +36,7 @@ __all__ = [
     "TrainPanel",
     "GeneratePanel",
     "HistoryPanel",
+    "ArtifactsPanel",
     "JobsPanel",
     "MetricsPanel",
     "PipelinePanel",

@@ -279,8 +279,12 @@ class PerceptromeTUIApp(App[None]):
             trace = failed.failure_summary.traceback_path if failed and failed.failure_summary else "No traceback path"
             self._show_detail_surface("traceback", f"Traceback: {trace}")
         elif action in {"toggle_artifact_details", "open_artifact"}:
-            path = self.state.open_latest_checkpoint_output() or "No recent output artifact"
-            self._show_detail_surface("artifact", f"Latest artifact: {path}")
+            self._set_panel("artifacts")
+            path = self.state.open_latest_checkpoint_output()
+            if path:
+                self.state.set_selected_artifact_path(path)
+            selected = self.state.get_session().selected_artifact_path or "No recent output artifact"
+            self._show_detail_surface("artifact", f"Selected artifact: {selected}")
         elif action in {"open_failed", "reopen_failed"}:
             self._set_panel("troubleshoot")
             self._show_detail_surface("traceback", "Failed run focused for troubleshooting.")
