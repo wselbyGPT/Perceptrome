@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import random
+import shutil
 import subprocess
 import sys
 import time
@@ -50,6 +51,18 @@ from perceptrome.jobs.manifest_writer import (
     iso_now,
     sidecar_manifest_path,
     write_sidecar_run_manifest,
+)
+from perceptrome.structure.colabfold_runner import resolve_colabfold_binary, run_colabfold_monomer
+from perceptrome.structure.fold_manifest import build_fold_manifest_update
+from perceptrome.structure.parsers import discover_colabfold_outputs
+from perceptrome.structure.summary import (
+    FoldSummaryRecord,
+    build_batch_summary,
+    build_fold_summary_record,
+    write_batch_summary_json,
+    write_batch_summary_tsv,
+    write_summary_json,
+    write_summary_tsv,
 )
 
 
@@ -187,6 +200,95 @@ def _normalize_ast_cli_args(params: Dict[str, Any]) -> Dict[str, Any]:
     if normalized.get("ast_mask_strength") is None:
         normalized["ast_mask_strength"] = 0.0
     return normalized
+
+
+def _copy_run_input(layout, source_path: str, target_name: str) -> str:
+    dst = path_in_run(layout, "inputs", target_name)
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    shutil.copy2(source_path, dst)
+    return dst
+
+
+def _fasta_files_in_dir(input_dir: str) -> List[str]:
+    files: List[str] = []
+    for name in sorted(os.listdir(input_dir)):
+        path = os.path.join(input_dir, name)
+        if not os.path.isfile(path):
+            continue
+        low = name.lower()
+        if low.endswith((".fasta", ".fa", ".faa")):
+            files.append(path)
+    return files
+
+
+def _resolve_fold_summary_json(run_or_path: str) -> str:
+    if os.path.isfile(run_or_path):
+        return run_or_path
+    run_path = os.path.join("runs", str(run_or_path), "outputs", "summary.json")
+    if os.path.exists(run_path):
+        return run_path
+    batch_path = os.path.join("runs", str(run_or_path), "outputs", "batch_summary.json")
+    if os.path.exists(batch_path):
+        return batch_path
+    raise FileNotFoundError(f"Unable to locate fold summary for: {run_or_path}")
+
+
+def _run_fold_one_internal(
+    *,
+    fasta_path: str,
+    layout,
+    engine: str,
+    num_recycle: int,
+    num_models: int,
+    colabfold_bin: Optional[str],
+) -> tuple[FoldSummaryRecord, str, str]:
+    input_copy = _copy_run_input(layout, fasta_path, os.path.basename(fasta_path))
+    protein_id = os.path.splitext(os.path.basename(fasta_path))[0]
+    fold_output_dir = path_in_run(layout, "artifacts", os.path.join("fold", protein_id))
+    stdout_log = path_in_run(layout, "provenance", f"{protein_id}.colabfold.stdout.log")
+    stderr_log = path_in_run(layout, "provenance", f"{protein_id}.colabfold.stderr.log")
+    started_at = iso_now()
+
+    warnings: List[str] = []
+    errors: List[str] = []
+    status = "ok"
+    try:
+        resolved_bin = resolve_colabfold_binary(colabfold_bin)
+        result = run_colabfold_monomer(
+            fasta_path=input_copy,
+            output_dir=fold_output_dir,
+            num_recycle=num_recycle,
+            num_models=num_models,
+            colabfold_bin=resolved_bin,
+            stdout_log_path=stdout_log,
+            stderr_log_path=stderr_log,
+        )
+        if result.return_code != 0:
+            status = "error"
+            errors.append(f"colabfold_exit_code={result.return_code}")
+    except FileNotFoundError as err:
+        status = "error"
+        errors.append(str(err))
+        with open(stderr_log, "a", encoding="utf-8") as handle:
+            handle.write(str(err) + "\n")
+
+    artifacts = discover_colabfold_outputs(fold_output_dir)
+    if status == "ok" and not artifacts.structures_pdb and not artifacts.structures_cif:
+        status = "error"
+        errors.append("No structure outputs (.pdb/.cif) discovered")
+
+    record = build_fold_summary_record(
+        protein_id=protein_id,
+        source_input_path=input_copy,
+        engine=engine,
+        engine_status=status,
+        artifacts=artifacts,
+        warnings=warnings,
+        errors=errors,
+        started_at=started_at,
+        completed_at=iso_now(),
+    )
+    return record, stdout_log, stderr_log
 
 
 # -----------------------------
@@ -597,6 +699,162 @@ def cmd_bio_ast_visualize(args: argparse.Namespace) -> int:
     print(f"graph_json={outputs['graph_json']}")
     print(f"storage_map={outputs['storage_map']}")
     print(f"summary_json={outputs['summary_json']}")
+    return 0
+
+
+def cmd_fold_one(args: argparse.Namespace) -> int:
+    layout = ensure_run_layout(run_id=getattr(args, "run_id", None))
+    record, stdout_log, stderr_log = _run_fold_one_internal(
+        fasta_path=str(args.fasta),
+        layout=layout,
+        engine=str(getattr(args, "engine", "colabfold")),
+        num_recycle=int(getattr(args, "num_recycle", 3)),
+        num_models=int(getattr(args, "num_models", 5)),
+        colabfold_bin=getattr(args, "colabfold_bin", None),
+    )
+
+    summary_json = path_in_run(layout, "outputs", "summary.json")
+    summary_tsv = path_in_run(layout, "outputs", "summary.tsv")
+    write_summary_json(summary_json, [record])
+    write_summary_tsv(summary_tsv, [record])
+
+    manifest_update = build_fold_manifest_update(
+        command_name="fold_one",
+        run_id=layout.run_id,
+        summary_json_path=summary_json,
+        summary_tsv_path=summary_tsv,
+        stdout_log_path=stdout_log,
+        stderr_log_path=stderr_log,
+        records=[record],
+    )
+    update_run_manifest(layout, **manifest_update)
+    print(f"fold-one run_id={layout.run_id} protein_id={record.protein_id} status={record.engine_status}")
+    print(f"summary_json={summary_json}")
+    print(f"summary_tsv={summary_tsv}")
+    return 0 if record.engine_status == "ok" else 2
+
+
+def cmd_fold_batch(args: argparse.Namespace) -> int:
+    layout = ensure_run_layout(run_id=getattr(args, "run_id", None))
+    files = _fasta_files_in_dir(str(args.input_dir))
+    if not files:
+        raise FileNotFoundError(f"No FASTA files found in {args.input_dir}")
+    started_at = iso_now()
+    records: List[FoldSummaryRecord] = []
+    shared_stdout = path_in_run(layout, "provenance", "fold_batch.stdout.log")
+    shared_stderr = path_in_run(layout, "provenance", "fold_batch.stderr.log")
+
+    min_len = getattr(args, "min_protein_aa", None)
+    max_len = getattr(args, "max_protein_aa", None)
+    keep_going = bool(getattr(args, "keep_going", False))
+
+    for fasta_path in files:
+        seq = parse_fasta_sequence(fasta_path)
+        if min_len is not None and len(seq) < int(min_len):
+            continue
+        if max_len is not None and len(seq) > int(max_len):
+            continue
+        record, stdout_log, stderr_log = _run_fold_one_internal(
+            fasta_path=fasta_path,
+            layout=layout,
+            engine=str(getattr(args, "engine", "colabfold")),
+            num_recycle=int(getattr(args, "num_recycle", 3)),
+            num_models=int(getattr(args, "num_models", 5)),
+            colabfold_bin=getattr(args, "colabfold_bin", None),
+        )
+        records.append(record)
+        for src, dst in ((stdout_log, shared_stdout), (stderr_log, shared_stderr)):
+            if os.path.exists(src):
+                with open(src, "r", encoding="utf-8", errors="ignore") as hsrc, open(dst, "a", encoding="utf-8") as hdst:
+                    hdst.write(hsrc.read())
+                    hdst.write("\n")
+        if record.engine_status != "ok" and not keep_going:
+            break
+
+    summary_json = path_in_run(layout, "outputs", "summary.json")
+    summary_tsv = path_in_run(layout, "outputs", "summary.tsv")
+    batch_json = path_in_run(layout, "outputs", "batch_summary.json")
+    batch_tsv = path_in_run(layout, "outputs", "batch_summary.tsv")
+    write_summary_json(summary_json, records)
+    write_summary_tsv(summary_tsv, records)
+    batch = build_batch_summary(layout.run_id, str(getattr(args, "engine", "colabfold")), records, started_at)
+    write_batch_summary_json(batch_json, batch, records)
+    write_batch_summary_tsv(batch_tsv, batch)
+
+    manifest_update = build_fold_manifest_update(
+        command_name="fold_batch",
+        run_id=layout.run_id,
+        summary_json_path=summary_json,
+        summary_tsv_path=summary_tsv,
+        stdout_log_path=shared_stdout,
+        stderr_log_path=shared_stderr,
+        records=records,
+    )
+    paths = manifest_update.get("paths") or {}
+    if isinstance(paths, dict):
+        fold_paths = dict(paths.get("fold") or {})
+        fold_paths["batch_summary_json"] = batch_json
+        fold_paths["batch_summary_tsv"] = batch_tsv
+        paths["fold"] = fold_paths
+    manifest_update["paths"] = paths
+    update_run_manifest(layout, **manifest_update)
+    print(f"fold-batch run_id={layout.run_id} records={len(records)} failed={batch.failed_count}")
+    print(f"batch_summary_json={batch_json}")
+    print(f"batch_summary_tsv={batch_tsv}")
+    return 0 if batch.failed_count == 0 else 2
+
+
+def cmd_fold_inspect(args: argparse.Namespace) -> int:
+    summary_path = _resolve_fold_summary_json(str(args.run_or_path))
+    with open(summary_path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    rows = payload.get("records") if isinstance(payload, dict) else []
+    if not isinstance(rows, list):
+        rows = []
+    print(f"summary={summary_path}")
+    print(f"records={len(rows)}")
+    ok_count = sum(1 for row in rows if isinstance(row, dict) and row.get("engine_status") == "ok")
+    print(f"ok={ok_count} failed={len(rows) - ok_count}")
+    for row in rows[:10]:
+        if not isinstance(row, dict):
+            continue
+        print(
+            f"- protein_id={row.get('protein_id')} status={row.get('engine_status')} "
+            f"aa_length={row.get('aa_length')} mean_plddt={row.get('mean_plddt')}"
+        )
+    return 0
+
+
+def cmd_fold_export(args: argparse.Namespace) -> int:
+    summary_path = _resolve_fold_summary_json(str(args.run_or_path))
+    with open(summary_path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    rows = payload.get("records") if isinstance(payload, dict) else []
+    rows = rows if isinstance(rows, list) else []
+
+    if os.path.isfile(str(args.run_or_path)):
+        output_dir = str(getattr(args, "output_dir", None) or os.path.dirname(summary_path) or ".")
+    else:
+        layout = ensure_run_layout(run_id=str(args.run_or_path))
+        output_dir = str(getattr(args, "output_dir", None) or layout.outputs_dir)
+    os.makedirs(output_dir, exist_ok=True)
+
+    export_json = os.path.join(output_dir, "fold_export.json")
+    export_tsv = os.path.join(output_dir, "fold_export.tsv")
+    with open(export_json, "w", encoding="utf-8") as handle:
+        json.dump({"records": rows}, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+    keys = ["protein_id", "engine_status", "aa_length", "mean_plddt", "min_plddt", "max_plddt", "ptm", "rank_1_structure_path"]
+    with open(export_tsv, "w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=keys, dialect="excel-tab")
+        writer.writeheader()
+        for row in rows:
+            if isinstance(row, dict):
+                writer.writerow({k: row.get(k) for k in keys})
+
+    print(f"fold-export json={export_json}")
+    print(f"fold-export tsv={export_tsv}")
     return 0
 
 
