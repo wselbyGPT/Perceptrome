@@ -100,3 +100,31 @@ def test_history_index_artifacts_group_and_checkpoint_inspector(tmp_path: Path) 
     assert inspection.exists
     assert inspection.run_kind == "train_one"
     assert inspection.metadata["git_sha"] == "abc123"
+
+
+def test_history_index_resolves_log_and_traceback_paths(tmp_path: Path) -> None:
+    store = StateStore(state_root=str(tmp_path / "state" / "tui"))
+    run_dir = tmp_path / "runs" / "run_logs"
+    artifacts = run_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    log_path = artifacts / "stdout.log"
+    log_path.write_text("hello\nworld\n", encoding="utf-8")
+    tb_path = artifacts / "traceback.txt"
+    tb_path.write_text("Traceback...", encoding="utf-8")
+
+    manifest = {
+        "run": {"id": "run_logs", "kind": "train"},
+        "artifacts": [
+            {"role": "log", "path": "artifacts/stdout.log"},
+            {"role": "traceback", "path": "artifacts/traceback.txt"},
+        ],
+        "error": "boom",
+        "traceback_path": "artifacts/traceback.txt",
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    indexer = HistoryIndexer(store, runs_dir=str(tmp_path / "runs"))
+    assert indexer.resolve_log_path() is not None
+    assert indexer.resolve_log_path().endswith("runs/run_logs/artifacts/stdout.log")
+    assert indexer.resolve_traceback_path() is not None
+    assert indexer.resolve_traceback_path().endswith("runs/run_logs/artifacts/traceback.txt")

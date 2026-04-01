@@ -8,7 +8,8 @@ from textual.screen import ModalScreen
 from textual.widgets import ContentSwitcher, Input, ListItem, ListView, Static
 
 from .diagnostics import capture_diagnostics
-from .events import JobEventBase
+from .events import JobEventBase, TUIEvent
+from .history import HistoryIndexer
 from .job_manager import JobStatus, JobManager
 from .launcher import DEFAULT_COMMANDS, RankedCommand, derive_context, rank_and_filter_commands
 from .panels import ALL_PANELS, BasePanel
@@ -33,10 +34,45 @@ class LogsDetailSurface(DetailSurface):
     SURFACE = "logs"
     TITLE = "Logs"
 
+    def on_mount(self) -> None:
+        self.set_interval(1.0, self._refresh_tail)
+        self._refresh_tail()
+
+    def _refresh_tail(self) -> None:
+        app = self.app
+        source = app.resolve_log_source_path() if isinstance(app, PerceptromeTUIApp) else None
+        self.set_body(_tail_file(source, fallback="No log source path could be resolved."))
+
 
 class DiagnosticsDetailSurface(DetailSurface):
     SURFACE = "diagnostics"
     TITLE = "Diagnostics"
+
+    def on_mount(self) -> None:
+        self.set_interval(2.0, self._refresh_payload)
+        self._refresh_payload()
+
+    def _refresh_payload(self) -> None:
+        app = self.app
+        if not isinstance(app, PerceptromeTUIApp):
+            return
+        snapshot = capture_diagnostics()
+        app.record_diagnostics_snapshot(snapshot)
+        payload = snapshot.as_payload()
+        self.set_body(
+            "\n".join(
+                [
+                    f"captured_at: {payload['captured_at']}",
+                    f"python: {payload['python_version']}",
+                    f"platform: {payload['platform']}",
+                    f"cpu_count: {payload['cpu_count']}",
+                    f"memory_total_mb: {payload['memory_total_mb']}",
+                    f"memory_available_mb: {payload['memory_available_mb']}",
+                    f"gpu_present: {payload['gpu_present']}",
+                    f"gpu_label: {payload['gpu_label'] or 'n/a'}",
+                ]
+            )
+        )
 
 
 class ResourcesDetailSurface(DetailSurface):
@@ -47,6 +83,15 @@ class ResourcesDetailSurface(DetailSurface):
 class TracebackDetailSurface(DetailSurface):
     SURFACE = "traceback"
     TITLE = "Traceback"
+
+    def on_mount(self) -> None:
+        self.set_interval(1.5, self._refresh_preview)
+        self._refresh_preview()
+
+    def _refresh_preview(self) -> None:
+        app = self.app
+        source = app.resolve_traceback_source_path() if isinstance(app, PerceptromeTUIApp) else None
+        self.set_body(_tail_file(source, lines=30, fallback="No traceback source path could be resolved."))
 
 
 class ArtifactDetailSurface(DetailSurface):
@@ -185,6 +230,7 @@ class PerceptromeTUIApp(App[None]):
         super().__init__()
         self.state = StateStore()
         self.jobs = JobManager()
+        self.history_indexer = HistoryIndexer(self.state)
         self._panel_registry = {panel_cls.PANEL_ID: panel_cls for panel_cls in ALL_PANELS}
         self.config_overrides: list[str] = []
         self._active_surface = ""
@@ -204,6 +250,7 @@ class PerceptromeTUIApp(App[None]):
         diagnostics = capture_diagnostics()
         self.state.set_value("python", diagnostics.python_version)
         self.state.set_value("platform", diagnostics.platform)
+        self.record_diagnostics_snapshot(diagnostics)
         self.jobs.reconnect_on_startup()
         self._job_subscription_token = self.jobs.subscribe(self._on_job_event)
         self._set_panel(self.state.active_view if self.state.active_view else "overview")
@@ -233,7 +280,8 @@ class PerceptromeTUIApp(App[None]):
             return
         card = widget_cls(classes="detail-surface")
         host.mount(card)
-        card.set_body(body)
+        if body:
+            card.set_body(body)
         self._set_event_strip(f"Opened {surface} details")
 
     def _close_detail_surface(self) -> None:
@@ -268,16 +316,13 @@ class PerceptromeTUIApp(App[None]):
             rerun = self.state.rerun_last_job()
             self._set_event_strip(f"Rerun prepared for {rerun['job_id']}" if rerun else "No recent job to rerun")
         elif action in {"inspect_active", "show_logs", "toggle_logs"}:
-            details = f"Active: {active.id} [{active.status.value}]" if active else "No active job"
-            self._show_detail_surface("logs", details)
+            self._show_detail_surface("logs", "")
         elif action in {"toggle_diagnostics"}:
-            self._show_detail_surface("diagnostics", "Captured diagnostics and environment checks.")
+            self._show_detail_surface("diagnostics", "")
         elif action in {"toggle_resources"}:
             self._show_detail_surface("resources", "CPU/GPU/memory resource snapshot placeholder.")
         elif action in {"toggle_traceback"}:
-            failed = self.state.open_last_failed_job()
-            trace = failed.failure_summary.traceback_path if failed and failed.failure_summary else "No traceback path"
-            self._show_detail_surface("traceback", f"Traceback: {trace}")
+            self._show_detail_surface("traceback", "")
         elif action in {"toggle_artifact_details", "open_artifact"}:
             self._set_panel("artifacts")
             path = self.state.open_latest_checkpoint_output()
@@ -330,6 +375,41 @@ class PerceptromeTUIApp(App[None]):
 
     def action_show_diagnostics(self) -> None:
         self._dispatch_command("view.diagnostics")
+
+    def resolve_log_source_path(self) -> str | None:
+        selected_job = self.state.get_session().selected_job_id
+        return self.history_indexer.resolve_log_path(run_id=selected_job) or self.history_indexer.resolve_log_path()
+
+    def resolve_traceback_source_path(self) -> str | None:
+        selected_job = self.state.get_session().selected_job_id
+        failed = self.state.open_last_failed_job()
+        if failed and failed.failure_summary and failed.failure_summary.traceback_path:
+            from pathlib import Path
+
+            candidate = Path(failed.failure_summary.traceback_path)
+            if candidate.exists():
+                return str(candidate)
+        return self.history_indexer.resolve_traceback_path(run_id=selected_job) or self.history_indexer.resolve_traceback_path()
+
+    def record_diagnostics_snapshot(self, snapshot: object) -> None:
+        payload = snapshot.as_payload() if hasattr(snapshot, "as_payload") else {}
+        self.state.append_event(TUIEvent(kind="diagnostics", message="resource_snapshot", payload=payload))
+
+
+def _tail_file(path: str | None, *, lines: int = 40, fallback: str) -> str:
+    from pathlib import Path
+
+    if not path:
+        return fallback
+    target = Path(path)
+    if not target.exists() or not target.is_file():
+        return f"{path}\n\n(missing on disk)"
+    try:
+        content = target.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception as exc:
+        return f"{path}\n\n(unable to read: {exc})"
+    tail = content[-max(1, lines) :] if content else ["(empty file)"]
+    return f"{path}\n\n" + "\n".join(tail)
 
 
 def main() -> None:
