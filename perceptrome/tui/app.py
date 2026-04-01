@@ -2,15 +2,133 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from textual.app import App, ComposeResult
-from textual.containers import Container
-from textual.widgets import ContentSwitcher, Static
+from textual.containers import Container, Vertical
+from textual.screen import ModalScreen
+from textual.widgets import ContentSwitcher, Input, ListItem, ListView, Static
 
 from .diagnostics import capture_diagnostics
+from .events import JobArtifactEmittedEvent, JobCompletedEvent, JobFailedEvent, JobStartedEvent, JobStageUpdatedEvent
 from .job_manager import JobStatus, JobManager
 from .launcher import DEFAULT_COMMANDS, derive_context, rank_commands
-from .state_store import StateStore
-from .panels import ALL_PANELS
+from .panels import ALL_PANELS, BasePanel
+from .state_store import FailureSummary, JobRecord, StateStore
+
+
+class DetailSurface(Vertical):
+    """Typed detail surface base widget."""
+
+    SURFACE = "detail"
+    TITLE = "Details"
+
+    def compose(self) -> ComposeResult:
+        yield Static(self.TITLE, classes="detail-title")
+        yield Static("", classes="detail-body")
+
+    def set_body(self, body: str) -> None:
+        self.query_one(".detail-body", Static).update(body)
+
+
+class LogsDetailSurface(DetailSurface):
+    SURFACE = "logs"
+    TITLE = "Logs"
+
+
+class DiagnosticsDetailSurface(DetailSurface):
+    SURFACE = "diagnostics"
+    TITLE = "Diagnostics"
+
+
+class ResourcesDetailSurface(DetailSurface):
+    SURFACE = "resources"
+    TITLE = "Resources"
+
+
+class TracebackDetailSurface(DetailSurface):
+    SURFACE = "traceback"
+    TITLE = "Traceback"
+
+
+class ArtifactDetailSurface(DetailSurface):
+    SURFACE = "artifact"
+    TITLE = "Artifact Details"
+
+
+DETAIL_WIDGETS: dict[str, type[DetailSurface]] = {
+    "logs": LogsDetailSurface,
+    "diagnostics": DiagnosticsDetailSurface,
+    "resources": ResourcesDetailSurface,
+    "traceback": TracebackDetailSurface,
+    "artifact": ArtifactDetailSurface,
+}
+
+
+class LauncherModal(ModalScreen[str | None]):
+    """Interactive launcher with filter + selection support."""
+
+    BINDINGS = [("escape", "dismiss", "Close")]
+
+    def __init__(self, app: "PerceptromeTUIApp") -> None:
+        super().__init__()
+        self._app_ref = app
+        self._filtered = list(app._ranked_commands())
+
+    def compose(self) -> ComposeResult:
+        with Container(id="launcher-modal"):
+            yield Static("Command Palette", classes="launcher-title")
+            yield Input(placeholder="Type to filter commands…", id="launcher-input")
+            yield ListView(id="launcher-list")
+
+    def on_mount(self) -> None:
+        self._refresh_list()
+        self.query_one("#launcher-input", Input).focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        query = event.value.strip().lower()
+        ranked = self._app_ref._ranked_commands()
+        self._filtered = [
+            row
+            for row in ranked
+            if not query
+            or query in row.label.lower()
+            or query in row.command_id.lower()
+            or any(query in token.lower() for token in row.keywords)
+            or query in row.category.lower()
+        ]
+        self._refresh_list()
+
+    def on_input_submitted(self, _: Input.Submitted) -> None:
+        self._select_current_or_first()
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        command_id = getattr(event.item, "command_id", None)
+        self.dismiss(command_id)
+
+    def key_enter(self) -> None:
+        self._select_current_or_first()
+
+    def action_dismiss(self) -> None:
+        self.dismiss(None)
+
+    def _refresh_list(self) -> None:
+        lst = self.query_one("#launcher-list", ListView)
+        lst.clear()
+        for command in self._filtered[:20]:
+            item = ListItem(Static(f"{command.label}  [{command.category}]"))
+            item.command_id = command.command_id
+            lst.append(item)
+        if len(lst) > 0:
+            lst.index = 0
+
+    def _select_current_or_first(self) -> None:
+        lst = self.query_one("#launcher-list", ListView)
+        item = lst.highlighted_child
+        if item is None and self._filtered:
+            self.dismiss(self._filtered[0].command_id)
+            return
+        self.dismiss(getattr(item, "command_id", None))
 
 
 class PerceptromeTUIApp(App[None]):
@@ -42,11 +160,27 @@ class PerceptromeTUIApp(App[None]):
         display: block;
     }
     .detail-surface {
-        display: none;
         padding: 1;
     }
-    .detail-surface.-active {
-        display: block;
+    #launcher-modal {
+        width: 80%;
+        max-width: 90;
+        height: 70%;
+        border: heavy $accent;
+        background: $surface;
+        padding: 1;
+    }
+    .launcher-title {
+        text-style: bold;
+        margin-bottom: 1;
+    }
+    #launcher-list {
+        height: 1fr;
+        margin-top: 1;
+    }
+    .detail-title {
+        text-style: bold;
+        margin-bottom: 1;
     }
     """
 
@@ -63,6 +197,7 @@ class PerceptromeTUIApp(App[None]):
         self.jobs = JobManager()
         self.config_overrides: list[str] = []
         self._active_surface = ""
+        self._job_subscription_token: int | None = None
 
     def compose(self) -> ComposeResult:
         yield Static("Perceptrome • ready", id="top-status")
@@ -71,12 +206,7 @@ class PerceptromeTUIApp(App[None]):
                 for panel_cls in ALL_PANELS:
                     with Container(id=f"panel-{panel_cls.PANEL_ID}"):
                         yield panel_cls()
-            with Container(id="detail-host"):
-                yield Static("Logs", id="surface-title-logs", classes="detail-surface")
-                yield Static("Diagnostics", id="surface-title-diagnostics", classes="detail-surface")
-                yield Static("Resources", id="surface-title-resources", classes="detail-surface")
-                yield Static("Traceback", id="surface-title-traceback", classes="detail-surface")
-                yield Static("Artifact Details", id="surface-title-artifact", classes="detail-surface")
+            yield Container(id="detail-host")
         yield Static("No events yet", id="bottom-status")
 
     def on_mount(self) -> None:
@@ -84,7 +214,12 @@ class PerceptromeTUIApp(App[None]):
         self.state.set_value("python", diagnostics.python_version)
         self.state.set_value("platform", diagnostics.platform)
         self.jobs.reconnect_on_startup()
+        self._job_subscription_token = self.jobs.subscribe(self._on_job_event)
         self._set_panel(self.state.active_view if self.state.active_view else "overview")
+
+    def on_unmount(self) -> None:
+        if self._job_subscription_token is not None:
+            self.jobs.unsubscribe(self._job_subscription_token)
 
     def _set_panel(self, panel_id: str) -> None:
         self.query_one("#panel-switcher", ContentSwitcher).current = f"panel-{panel_id}"
@@ -96,30 +231,22 @@ class PerceptromeTUIApp(App[None]):
 
     def _show_detail_surface(self, surface: str, body: str) -> None:
         host = self.query_one("#detail-host", Container)
+        host.remove_children()
         host.add_class("-active")
         self._active_surface = surface
-        for row in self.query(".detail-surface"):
-            row.remove_class("-active")
-        target_id = {
-            "logs": "#surface-title-logs",
-            "diagnostics": "#surface-title-diagnostics",
-            "resources": "#surface-title-resources",
-            "traceback": "#surface-title-traceback",
-            "artifact": "#surface-title-artifact",
-        }.get(surface)
-        if target_id is None:
+        widget_cls = DETAIL_WIDGETS.get(surface)
+        if widget_cls is None:
             return
-        card = self.query_one(target_id, Static)
-        card.update(body)
-        card.add_class("-active")
+        card = widget_cls(classes="detail-surface")
+        host.mount(card)
+        card.set_body(body)
         self._set_event_strip(f"Opened {surface} details")
 
     def _close_detail_surface(self) -> None:
         self._active_surface = ""
         host = self.query_one("#detail-host", Container)
         host.remove_class("-active")
-        for row in self.query(".detail-surface"):
-            row.remove_class("-active")
+        host.remove_children()
 
     def _execute_launcher_command(self, command_id: str) -> None:
         by_id = {entry.command_id: entry for entry in DEFAULT_COMMANDS}
@@ -165,19 +292,62 @@ class PerceptromeTUIApp(App[None]):
 
         self.state.add_launcher_history("command", command=command_id, panel=self.state.active_view)
 
-    def action_show_launcher(self) -> None:
+    def _dispatch_command(self, command_id: str) -> None:
+        if command_id == "launcher.open":
+            self.push_screen(LauncherModal(self), self._handle_launcher_result)
+            return
+        self._execute_launcher_command(command_id)
+
+    def _handle_launcher_result(self, command_id: str | None) -> None:
+        if command_id:
+            self._execute_launcher_command(command_id)
+
+    def _ranked_commands(self):
         context = derive_context(active_panel=self.state.active_view, jobs=self.jobs.list_jobs())
-        ranked = rank_commands(context)[:12]
-        lines = [f"{idx+1:02d}. {entry.label}" for idx, entry in enumerate(ranked)]
-        self.notify("Launcher\n" + "\n".join(lines), title="Command Palette")
-        if ranked:
-            self._execute_launcher_command(ranked[0].command_id)
+        return rank_commands(context)
+
+    def _on_job_event(self, event: object) -> None:
+        self.call_from_thread(self._handle_job_event, event)
+
+    def _handle_job_event(self, event: object) -> None:
+        for panel in self.query(BasePanel):
+            panel.handle_tui_event(event)
+        self._persist_job_event(event)
+
+    def _persist_job_event(self, event: object) -> None:
+        job_id = getattr(event, "job_id", "")
+        if not job_id:
+            return
+        existing = {row.id: row for row in self.state.list_jobs()}
+        record = existing.get(job_id) or JobRecord(id=job_id, run_id=getattr(event, "run_id", job_id), kind="unknown", status="busy")
+        record.run_id = getattr(event, "run_id", record.run_id or job_id)
+        if isinstance(event, JobStartedEvent):
+            record.title = event.title
+            record.status = "busy"
+        elif isinstance(event, JobStageUpdatedEvent):
+            if event.message:
+                record.config["last_message"] = event.message
+            if event.stage == "error":
+                record.status = "failed"
+        elif isinstance(event, JobArtifactEmittedEvent):
+            record.artifacts.append({"path": event.path, "role": event.role, "created_at": datetime.now(timezone.utc).isoformat()})
+        elif isinstance(event, JobCompletedEvent):
+            record.status = "completed"
+            record.finished_at = datetime.now(timezone.utc).isoformat()
+        elif isinstance(event, JobFailedEvent):
+            record.status = "failed"
+            record.finished_at = datetime.now(timezone.utc).isoformat()
+            record.failure_summary = FailureSummary(latest_warning_or_error=event.error or event.message, stage="failed")
+        self.state.upsert_job(record)
+
+    def action_show_launcher(self) -> None:
+        self._dispatch_command("launcher.open")
 
     def action_show_logs(self) -> None:
-        self._execute_launcher_command("view.logs")
+        self._dispatch_command("view.logs")
 
     def action_show_diagnostics(self) -> None:
-        self._execute_launcher_command("view.diagnostics")
+        self._dispatch_command("view.diagnostics")
 
 
 def main() -> None:
