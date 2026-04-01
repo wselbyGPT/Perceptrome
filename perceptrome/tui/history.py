@@ -201,6 +201,52 @@ class HistoryIndexer:
             metadata=manifest_metadata,
         )
 
+    def resolve_log_path(self, *, run_id: str | None = None) -> str | None:
+        for row in self.merged_jobs(limit=100):
+            if run_id and row.run_id != run_id:
+                continue
+            path = self._first_existing_log_path(row)
+            if path:
+                return path
+        return None
+
+    def resolve_traceback_path(self, *, run_id: str | None = None) -> str | None:
+        for row in self.merged_jobs(limit=100):
+            if run_id and row.run_id != run_id:
+                continue
+            if row.failure_summary and row.failure_summary.traceback_path:
+                resolved = _resolve_artifact_path(
+                    row.failure_summary.traceback_path,
+                    run_id=row.run_id,
+                    runs_dir=self._runs_dir,
+                    manifest_path=row.manifest_path,
+                )
+                return str(resolved)
+            for item in row.artifacts:
+                if not isinstance(item, dict):
+                    continue
+                path = str(item.get("path") or "")
+                if "traceback" in path.lower():
+                    return path
+        return None
+
+    def _first_existing_log_path(self, row: IndexedJob) -> str | None:
+        preferred = ("log", "stdout", "stderr")
+        for item in row.artifacts:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "").lower()
+            path = str(item.get("path") or "")
+            if not path:
+                continue
+            if role in preferred or any(token in path.lower() for token in preferred):
+                return path
+        if row.manifest_path:
+            candidate = Path(row.manifest_path).with_name("run.log")
+            if candidate.exists():
+                return str(candidate)
+        return None
+
 
 def _merge_artifacts(left: list[dict[str, Any]], right: list[dict[str, Any]]) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
