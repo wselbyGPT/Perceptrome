@@ -16,6 +16,7 @@ except ImportError:
     DataLoader = None  # type: ignore
 
 from ..model import vae_loss
+from .summary import ScopeSummaryAdapter, build_scope_summary_frame, normalize_values
 from .ui import TerminalGradient, compute_errors_with_model_and_tensor
 
 
@@ -50,6 +51,7 @@ def run_scope_stream_ui(
     update_every: int,
     ctx: ScopeStreamContext,
     color: bool = True,
+    adapter: ScopeSummaryAdapter | None = None,
 ) -> None:
     """
     Live GenomeScope + VAE training.
@@ -79,6 +81,7 @@ def run_scope_stream_ui(
     gradient = TerminalGradient(stdscr, use_color=color)
     start_idx = 0
     paused = False
+    adapter = adapter or ScopeSummaryAdapter()
 
     errors = compute_errors_with_model_and_tensor(
         ctx.model, windows_tensor, ctx.device,
@@ -90,20 +93,24 @@ def run_scope_stream_ui(
         stdscr.erase()
         h, w = stdscr.getmaxyx()
         width = max(10, w - 2)
-        end_idx = min(start_idx + width, num_windows)
-
-        if errors.size > 0:
-            min_e = float(errors.min())
-            max_e = float(errors.max())
-        else:
-            min_e, max_e = 0.0, 1.0
-        span_e = max(max_e - min_e, 1e-8)
-        norm_err = (errors - min_e) / span_e if errors.size > 0 else errors
-
-        min_gc = float(gc_values.min())
-        max_gc = float(gc_values.max())
-        span_gc = max(max_gc - min_gc, 1e-8)
-        norm_gc = (gc_values - min_gc) / span_gc
+        frame = adapter.publish(
+            build_scope_summary_frame(
+                accession=accession,
+                errors=errors,
+                metric_values=gc_values,
+                window_size=window_size,
+                stride=stride,
+                start_idx=start_idx,
+                width=width,
+                status="PAUSED" if paused else "TRAINING",
+                steps_done=ctx.steps_done,
+                steps_target=ctx.steps_target,
+                global_step=ctx.global_step,
+            )
+        )
+        end_idx = frame.end_idx
+        norm_err = normalize_values(errors, frame.error_range)
+        norm_gc = normalize_values(gc_values, frame.metric_range)
 
         status = "PAUSED" if paused else "TRAINING"
         header = (
@@ -114,14 +121,16 @@ def run_scope_stream_ui(
         if h > 1:
             info1 = (
                 f"steps {ctx.steps_done}/{ctx.steps_target}  "
-                f"(global={ctx.global_step})  total_loss={ctx.last_total:.6f}"
+                f"(global={ctx.global_step})  total_loss={ctx.last_total:.6f} "
+                f"progress={100.0 * frame.progress.ratio:.1f}%"
             )
             stdscr.addstr(1, 0, info1[: w - 1])
 
         if h > 2:
             info2 = (
-                f"ERROR  min={min_e:.3g} max={max_e:.3g}  "
-                f"METRIC min={min_gc:.3f} max={max_gc:.3f} "
+                f"ERROR min={frame.error_range.min_value:.3g} max={frame.error_range.max_value:.3g} "
+                f"bands={frame.error_bands.low}/{frame.error_bands.mid}/{frame.error_bands.high}  "
+                f"METRIC min={frame.metric_range.min_value:.3f} max={frame.metric_range.max_value:.3f} "
                 f"gradient={'ansi' if gradient.use_color else 'ascii'}"
             )
             stdscr.addstr(2, 0, info2[: w - 1])
