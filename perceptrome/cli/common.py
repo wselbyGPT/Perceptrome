@@ -1,4 +1,4 @@
-import argparse, logging, os
+import argparse, datetime, json, logging, os
 from typing import Any
 
 import numpy as np
@@ -327,3 +327,46 @@ def _resolve_proteome_params(args: argparse.Namespace, train_cfg, state, tok: st
         pol["span_mask_len"] = int(getattr(args, "span_mask_len"))
 
     return pol
+
+
+def resolve_run_local_io_cfg(io_cfg, *, run_id: str | None = None):
+    from ..run_layout import ensure_run_layout, path_in_run
+
+    layout = ensure_run_layout(run_id=run_id)
+    io_cfg.checkpoints_dir = path_in_run(layout, "artifacts", "checkpoints")
+    io_cfg.model_dir = path_in_run(layout, "artifacts", "model")
+    os.makedirs(io_cfg.model_dir, exist_ok=True)
+    os.makedirs(io_cfg.checkpoints_dir, exist_ok=True)
+    return io_cfg
+
+
+def resolve_tui_state_root(config_path: str) -> str:
+    cfg = load_full_config(config_path)
+    _, _, io_cfg = extract_configs(cfg)
+    state_file = str(getattr(io_cfg, "state_file", "state/state.json"))
+    state_dir = os.path.dirname(state_file) or "state"
+    return os.path.join(state_dir, "tui")
+
+
+def write_tui_startup_context(
+    *,
+    config_path: str,
+    run_id: str | None = None,
+    job_id: str | None = None,
+    panel: str | None = None,
+    detail_surface: str | None = None,
+) -> str:
+    root = resolve_tui_state_root(config_path)
+    os.makedirs(root, exist_ok=True)
+    payload = {
+        "created_at": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "run_id": run_id,
+        "job_id": job_id,
+        "panel": panel,
+        "detail_surface": detail_surface,
+    }
+    path = os.path.join(root, "startup_context.json")
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    return path
