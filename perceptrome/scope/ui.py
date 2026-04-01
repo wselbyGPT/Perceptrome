@@ -14,6 +14,12 @@ except ImportError:  # pragma: no cover
 
 from ..encoding_main import compute_gc_from_encoded
 from ..model import get_device, load_or_init_model, vae_loss
+from .summary import (
+    ScopeSummaryAdapter,
+    build_gradient_row,
+    build_scope_summary_frame,
+    normalize_values,
+)
 
 
 class TerminalGradient:
@@ -76,6 +82,7 @@ def run_scope_ui(
     window_size: int,
     stride: int,
     fps: float,
+    adapter: ScopeSummaryAdapter | None = None,
 ) -> None:
     """
     Curses-based genome scope:
@@ -100,25 +107,29 @@ def run_scope_ui(
             f"gc_values length {gc_values.shape[0]} != errors length {num_windows}"
         )
 
-    palette = " .:-=+*#%@"
     start_idx = 0
+    adapter = adapter or ScopeSummaryAdapter()
 
     import time
     while True:
         stdscr.erase()
         h, w = stdscr.getmaxyx()
         width = max(10, w - 2)
-        end_idx = min(start_idx + width, num_windows)
-
-        min_e = float(errors.min())
-        max_e = float(errors.max())
-        span_e = max(max_e - min_e, 1e-8)
-        norm_err = (errors - min_e) / span_e
-
-        min_gc = float(gc_values.min())
-        max_gc = float(gc_values.max())
-        span_gc = max(max_gc - min_gc, 1e-8)
-        norm_gc = (gc_values - min_gc) / span_gc
+        frame = adapter.publish(
+            build_scope_summary_frame(
+                accession=accession,
+                errors=errors,
+                metric_values=gc_values,
+                window_size=window_size,
+                stride=stride,
+                start_idx=start_idx,
+                width=width,
+                status="STATIC",
+            )
+        )
+        norm_err = normalize_values(errors, frame.error_range)
+        norm_gc = normalize_values(gc_values, frame.metric_range)
+        end_idx = frame.end_idx
 
         header = (
             f"GenomeScope — {accession}  windows={num_windows} "
@@ -129,13 +140,16 @@ def run_scope_ui(
         if h > 1:
             info_err = (
                 f"ERROR  window_size={window_size} stride={stride} "
-                f"min={min_e:.3g} max={max_e:.3g} "
+                f"min={frame.error_range.min_value:.3g} max={frame.error_range.max_value:.3g} "
                 f"view={start_idx}-{end_idx - 1}"
             )
             stdscr.addstr(1, 0, info_err[: w - 1])
 
         if h > 2:
-            info_gc = f"METRIC min={min_gc:.3f} max={max_gc:.3f}"
+            info_gc = (
+                f"METRIC min={frame.metric_range.min_value:.3f} max={frame.metric_range.max_value:.3f} "
+                f"bands(L/M/H)={frame.metric_bands.low}/{frame.metric_bands.mid}/{frame.metric_bands.high}"
+            )
             stdscr.addstr(2, 0, info_gc[: w - 1])
 
         if h > 3:
@@ -146,28 +160,18 @@ def run_scope_ui(
         show_gc = h > line_err_y + 1
         line_gc_y = line_err_y + 1 if show_gc else None
 
-        for col, wi in enumerate(range(start_idx, end_idx)):
-            if col >= w - 1:
-                break
-            val = float(norm_err[wi])
-            idx = int(val * (len(palette) - 1))
-            ch = palette[idx]
-            try:
-                stdscr.addch(line_err_y, col, ch)
-            except curses.error:
-                pass
+        err_row = build_gradient_row(norm_err, start_idx=start_idx, end_idx=end_idx, width=w)
+        try:
+            stdscr.addstr(line_err_y, 0, err_row[: w - 1])
+        except curses.error:
+            pass
 
         if show_gc and line_gc_y is not None:
-            for col, wi in enumerate(range(start_idx, end_idx)):
-                if col >= w - 1:
-                    break
-                val = float(norm_gc[wi])
-                idx = int(val * (len(palette) - 1))
-                ch = palette[idx]
-                try:
-                    stdscr.addch(line_gc_y, col, ch)
-                except curses.error:
-                    pass
+            gc_row = build_gradient_row(norm_gc, start_idx=start_idx, end_idx=end_idx, width=w)
+            try:
+                stdscr.addstr(line_gc_y, 0, gc_row[: w - 1])
+            except curses.error:
+                pass
 
         stdscr.refresh()
 
