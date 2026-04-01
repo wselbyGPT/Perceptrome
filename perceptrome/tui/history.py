@@ -43,6 +43,31 @@ class IndexedJob:
     manifest_path: str | None = None
 
 
+@dataclass(slots=True)
+class ArtifactRow:
+    run_id: str
+    run_kind: str
+    role: str
+    path: str
+    exists: bool
+    created_at: str
+    source: str
+    manifest_path: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class ArtifactInspection:
+    path: str
+    exists: bool
+    mtime: str
+    run_id: str
+    run_kind: str
+    role: str
+    manifest_path: str | None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 class HistoryIndexer:
     """Merges persisted TUI job records with run manifests/artifact metadata."""
 
@@ -76,7 +101,7 @@ class HistoryIndexer:
                 run_id = _manifest_run_id(manifest, default=manifest_path.parent.name)
                 run_kind = _manifest_run_kind(manifest)
                 status = _manifest_status(manifest)
-                artifacts = _manifest_artifacts(manifest)
+                artifacts = _manifest_artifacts(manifest, manifest_path=manifest_path)
                 indexed = merged.get(run_id)
                 manifest_failure = _manifest_failure_summary(manifest)
                 failure = indexed.failure_summary if indexed else None
@@ -106,6 +131,75 @@ class HistoryIndexer:
 
         rows = sorted(merged.values(), key=lambda row: row.updated_at or row.created_at, reverse=True)
         return rows[:limit]
+
+    def artifacts_grouped(self, *, limit_runs: int = 100) -> dict[str, dict[str, list[ArtifactRow]]]:
+        grouped: dict[str, dict[str, list[ArtifactRow]]] = {}
+        for row in self.merged_jobs(limit=limit_runs):
+            by_role: dict[str, list[ArtifactRow]] = {}
+            for item in row.artifacts:
+                if not isinstance(item, dict):
+                    continue
+                path = str(item.get("path") or "")
+                if not path:
+                    continue
+                resolved = _resolve_artifact_path(path, run_id=row.run_id, runs_dir=self._runs_dir, manifest_path=row.manifest_path)
+                role = str(item.get("role") or "artifact")
+                by_role.setdefault(role, []).append(
+                    ArtifactRow(
+                        run_id=row.run_id,
+                        run_kind=row.kind,
+                        role=role,
+                        path=str(resolved),
+                        exists=resolved.exists(),
+                        created_at=str(item.get("created_at") or row.updated_at or row.created_at),
+                        source=str(item.get("source") or "history"),
+                        manifest_path=row.manifest_path,
+                        metadata=dict(item.get("metadata") or {}),
+                    )
+                )
+            if by_role:
+                grouped[row.run_id] = by_role
+        return grouped
+
+    def inspect_checkpoint(self, artifact_path: str | None = None) -> ArtifactInspection | None:
+        grouped = self.artifacts_grouped(limit_runs=150)
+        selected = str(artifact_path or "").strip() or self._state_store.get_session().selected_artifact_path or ""
+        candidate: ArtifactRow | None = None
+        for _run_id, by_role in grouped.items():
+            checkpoints = by_role.get("checkpoint", [])
+            for item in checkpoints:
+                if selected and item.path == selected:
+                    candidate = item
+                    break
+            if candidate is not None:
+                break
+        if candidate is None:
+            latest: tuple[float, ArtifactRow] | None = None
+            for _run_id, by_role in grouped.items():
+                for item in by_role.get("checkpoint", []):
+                    mtime = Path(item.path).stat().st_mtime if Path(item.path).exists() else -1.0
+                    if latest is None or mtime > latest[0]:
+                        latest = (mtime, item)
+            if latest is None:
+                return None
+            candidate = latest[1]
+
+        payload = _load_manifest(Path(candidate.manifest_path)) if candidate.manifest_path else None
+        manifest_metadata = _manifest_metadata(payload) if payload else {}
+        mtime_value = "missing"
+        target_path = Path(candidate.path)
+        if target_path.exists():
+            mtime_value = _fmt_mtime(target_path.stat().st_mtime)
+        return ArtifactInspection(
+            path=candidate.path,
+            exists=target_path.exists(),
+            mtime=mtime_value,
+            run_id=candidate.run_id,
+            run_kind=candidate.run_kind,
+            role=candidate.role,
+            manifest_path=candidate.manifest_path,
+            metadata=manifest_metadata,
+        )
 
 
 def _merge_artifacts(left: list[dict[str, Any]], right: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -146,7 +240,7 @@ def _manifest_run_kind(payload: dict[str, Any]) -> str:
     return str(payload.get("run_kind") or "unknown")
 
 
-def _manifest_artifacts(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def _manifest_artifacts(payload: dict[str, Any], *, manifest_path: Path) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     rows = payload.get("artifacts")
     if isinstance(rows, list):
@@ -157,6 +251,15 @@ def _manifest_artifacts(payload: dict[str, Any]) -> list[dict[str, Any]]:
         for key, value in checkpoints.items():
             if isinstance(value, str):
                 out.append({"id": f"checkpoint:{key}", "role": "checkpoint", "path": value})
+
+    run_id = _manifest_run_id(payload, default=manifest_path.parent.name)
+    for artifact in out:
+        path = str(artifact.get("path") or "")
+        if not path:
+            continue
+        resolved = _resolve_artifact_path(path, run_id=run_id, runs_dir=manifest_path.parent.parent, manifest_path=str(manifest_path))
+        artifact["path"] = str(resolved)
+        artifact.setdefault("source", "manifest")
     return out
 
 
@@ -197,6 +300,48 @@ def _merge_failure_summary(existing: FailureSummary | None, incoming: FailureSum
         traceback_path=existing.traceback_path or incoming.traceback_path,
         suggested_next_action=existing.suggested_next_action or incoming.suggested_next_action,
     )
+
+
+def _resolve_artifact_path(path: str, *, run_id: str, runs_dir: Path, manifest_path: str | None) -> Path:
+    candidate = Path(path)
+    if candidate.exists():
+        return candidate
+    run_root = runs_dir / run_id
+    if candidate.is_absolute():
+        return candidate
+    by_run = run_root / candidate
+    if by_run.exists():
+        return by_run
+    artifacts_variant = run_root / "artifacts" / candidate.name
+    if artifacts_variant.exists():
+        return artifacts_variant
+    if manifest_path:
+        manifest_parent = Path(manifest_path).parent
+        beside_manifest = manifest_parent / candidate
+        if beside_manifest.exists():
+            return beside_manifest
+    return by_run
+
+
+def _fmt_mtime(raw: float) -> str:
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(raw, tz=timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _manifest_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    run = payload.get("run") if isinstance(payload.get("run"), dict) else {}
+    provenance = payload.get("provenance_metadata") if isinstance(payload.get("provenance_metadata"), dict) else {}
+    config = provenance.get("config") if isinstance(provenance.get("config"), dict) else {}
+    software = provenance.get("software") if isinstance(provenance.get("software"), dict) else {}
+    return {
+        "run_created_at": run.get("created_at") or payload.get("created_at"),
+        "config_path": config.get("path"),
+        "config_sha": config.get("sha256"),
+        "git_sha": software.get("git_sha"),
+    }
 
 
 def to_job_record(indexed: IndexedJob) -> JobRecord:

@@ -92,6 +92,7 @@ DEFAULT_COMMANDS: tuple[LauncherCommand, ...] = (
     LauncherCommand("panel.train", "Jump: Train", "panel", panel_id="train", keywords=("fit", "training")),
     LauncherCommand("panel.generate", "Jump: Generate", "panel", panel_id="generate", keywords=("inference", "predict")),
     LauncherCommand("panel.history", "Jump: History", "panel", panel_id="history", keywords=("runs", "timeline")),
+    LauncherCommand("panel.artifacts", "Jump: Artifacts", "panel", panel_id="artifacts", keywords=("checkpoint", "manifest")),
     LauncherCommand("panel.jobs", "Jump: Jobs", "panel", panel_id="jobs", keywords=("queue", "active")),
     LauncherCommand("panel.metrics", "Jump: Metrics", "panel", panel_id="metrics", keywords=("loss", "signals")),
     LauncherCommand("panel.pipeline", "Jump: Pipeline", "panel", panel_id="pipeline", keywords=("stages", "flow")),

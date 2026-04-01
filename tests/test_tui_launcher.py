@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from perceptrome.tui.job_manager import JobStatus
-from perceptrome.tui.launcher import derive_context, rank_and_filter_commands, rank_commands
+from perceptrome.tui.launcher import DEFAULT_COMMANDS, derive_context, rank_and_filter_commands, rank_commands
 from perceptrome.tui.config_tools import apply_override, validate_effective
 
 
@@ -59,3 +59,8 @@ def test_config_override_and_validation() -> None:
     checks = validate_effective(config)
     assert all(not item.startswith("FAIL") for item in checks)
 
+
+
+def test_launcher_contains_artifacts_panel_command() -> None:
+    ids = {row.command_id for row in DEFAULT_COMMANDS}
+    assert "panel.artifacts" in ids

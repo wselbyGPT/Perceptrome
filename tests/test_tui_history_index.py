@@ -42,8 +42,8 @@ def test_history_index_reconciles_persisted_and_manifest_artifacts(tmp_path: Pat
     assert merged.run_id == "run_123"
     paths = {str(item.get("path")) for item in merged.artifacts}
     assert "outputs/persisted.fasta" in paths
-    assert "artifacts/model.pt" in paths
-    assert "artifacts/model_latest.pt" in paths
+    assert any(path.endswith("/runs/run_123/artifacts/model.pt") for path in paths)
+    assert any(path.endswith("/runs/run_123/artifacts/model_latest.pt") for path in paths)
     assert merged.failure_summary is not None
     assert merged.failure_summary.traceback_path == "artifacts/traceback.txt"
 
@@ -67,4 +67,36 @@ def test_history_index_includes_manifest_only_runs(tmp_path: Path) -> None:
     assert manifest_only.kind == "train_one"
     assert manifest_only.status == "healthy"
     assert manifest_only.manifest_path is not None
-    assert manifest_only.artifacts[0]["path"] == "artifacts/weights.pt"
+    assert manifest_only.artifacts[0]["path"].endswith("/runs/run_manifest_only/artifacts/weights.pt")
+
+
+def test_history_index_artifacts_group_and_checkpoint_inspector(tmp_path: Path) -> None:
+    store = StateStore(state_root=str(tmp_path / "state" / "tui"))
+    run_dir = tmp_path / "runs" / "run_x"
+    art_dir = run_dir / "artifacts"
+    art_dir.mkdir(parents=True)
+    ckpt = art_dir / "model_latest.pt"
+    ckpt.write_text("weights", encoding="utf-8")
+
+    manifest = {
+        "run": {"id": "run_x", "kind": "train_one", "created_at": "2026-03-31T00:00:00+00:00"},
+        "artifacts": [{"id": "legacy", "role": "checkpoint", "path": "model_latest.pt"}],
+        "provenance_metadata": {
+            "software": {"git_sha": "abc123"},
+            "config": {"path": "config/train.yaml", "sha256": "deadbeef"},
+        },
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    indexer = HistoryIndexer(store, runs_dir=str(tmp_path / "runs"))
+    grouped = indexer.artifacts_grouped()
+    assert "run_x" in grouped
+    checkpoint_rows = grouped["run_x"]["checkpoint"]
+    assert checkpoint_rows[0].exists
+    assert checkpoint_rows[0].path.endswith("runs/run_x/artifacts/model_latest.pt")
+
+    inspection = indexer.inspect_checkpoint(checkpoint_rows[0].path)
+    assert inspection is not None
+    assert inspection.exists
+    assert inspection.run_kind == "train_one"
+    assert inspection.metadata["git_sha"] == "abc123"
