@@ -74,6 +74,96 @@ class TerminalGradient:
                 pass
 
 
+@dataclass(frozen=True)
+class ScopeOverviewRenderModel:
+    frame: Any
+    header_line: str
+    error_info_line: str
+    metric_info_line: str
+    controls_line: str
+    error_row: str
+    metric_row: str
+    error_norm: np.ndarray
+    metric_norm: np.ndarray
+
+
+def compute_scope_overview_render_model(
+    *,
+    accession: str,
+    errors: np.ndarray,
+    metric_values: np.ndarray,
+    window_size: int,
+    stride: int,
+    start_idx: int,
+    width: int,
+    adapter: ScopeSummaryAdapter,
+) -> ScopeOverviewRenderModel:
+    """Pure helper to compute compact scope summary + row strings for rendering."""
+    frame = adapter.publish(
+        build_scope_summary_frame(
+            accession=accession,
+            errors=errors,
+            metric_values=metric_values,
+            window_size=window_size,
+            stride=stride,
+            start_idx=start_idx,
+            width=width,
+            status="STATIC",
+        )
+    )
+    error_norm = normalize_values(errors, frame.error_range)
+    metric_norm = normalize_values(metric_values, frame.metric_range)
+    error_row = build_gradient_row(
+        error_norm, start_idx=start_idx, end_idx=frame.end_idx, width=width + 1
+    )
+    metric_row = build_gradient_row(
+        metric_norm, start_idx=start_idx, end_idx=frame.end_idx, width=width + 1
+    )
+    return ScopeOverviewRenderModel(
+        frame=frame,
+        header_line=f"GenomeScope — {accession}  windows={frame.num_windows} [q] quit  [←/→] scroll",
+        error_info_line=(
+            f"ERROR  window_size={window_size} stride={stride} "
+            f"min={frame.error_range.min_value:.3g} max={frame.error_range.max_value:.3g} "
+            f"view={start_idx}-{frame.end_idx - 1}"
+        ),
+        metric_info_line=(
+            f"METRIC min={frame.metric_range.min_value:.3f} max={frame.metric_range.max_value:.3f} "
+            f"bands(L/M/H)={frame.metric_bands.low}/{frame.metric_bands.mid}/{frame.metric_bands.high}"
+        ),
+        controls_line="[q] quit   [←/→] scroll",
+        error_row=error_row,
+        metric_row=metric_row,
+        error_norm=error_norm,
+        metric_norm=metric_norm,
+    )
+
+
+def draw_scope_overview(stdscr: Any, model: ScopeOverviewRenderModel) -> None:
+    """Thin curses renderer for overview scope model."""
+    h, w = stdscr.getmaxyx()
+    stdscr.addstr(0, 0, model.header_line[: w - 1])
+    if h > 1:
+        stdscr.addstr(1, 0, model.error_info_line[: w - 1])
+    if h > 2:
+        stdscr.addstr(2, 0, model.metric_info_line[: w - 1])
+    if h > 3:
+        stdscr.addstr(3, 0, model.controls_line[: w - 1])
+
+    line_err_y = 5 if h > 5 else 0
+    show_metric = h > line_err_y + 1
+    line_metric_y = line_err_y + 1 if show_metric else None
+    try:
+        stdscr.addstr(line_err_y, 0, model.error_row[: w - 1])
+    except curses.error:
+        pass
+    if show_metric and line_metric_y is not None:
+        try:
+            stdscr.addstr(line_metric_y, 0, model.metric_row[: w - 1])
+        except curses.error:
+            pass
+
+
 def run_scope_ui(
     stdscr,
     accession: str,
@@ -115,63 +205,19 @@ def run_scope_ui(
         stdscr.erase()
         h, w = stdscr.getmaxyx()
         width = max(10, w - 2)
-        frame = adapter.publish(
-            build_scope_summary_frame(
-                accession=accession,
-                errors=errors,
-                metric_values=gc_values,
-                window_size=window_size,
-                stride=stride,
-                start_idx=start_idx,
-                width=width,
-                status="STATIC",
-            )
+        model = compute_scope_overview_render_model(
+            accession=accession,
+            errors=errors,
+            metric_values=gc_values,
+            window_size=window_size,
+            stride=stride,
+            start_idx=start_idx,
+            width=width,
+            adapter=adapter,
         )
-        norm_err = normalize_values(errors, frame.error_range)
-        norm_gc = normalize_values(gc_values, frame.metric_range)
+        frame = model.frame
         end_idx = frame.end_idx
-
-        header = (
-            f"GenomeScope — {accession}  windows={num_windows} "
-            f"[q] quit  [←/→] scroll"
-        )
-        stdscr.addstr(0, 0, header[: w - 1])
-
-        if h > 1:
-            info_err = (
-                f"ERROR  window_size={window_size} stride={stride} "
-                f"min={frame.error_range.min_value:.3g} max={frame.error_range.max_value:.3g} "
-                f"view={start_idx}-{end_idx - 1}"
-            )
-            stdscr.addstr(1, 0, info_err[: w - 1])
-
-        if h > 2:
-            info_gc = (
-                f"METRIC min={frame.metric_range.min_value:.3f} max={frame.metric_range.max_value:.3f} "
-                f"bands(L/M/H)={frame.metric_bands.low}/{frame.metric_bands.mid}/{frame.metric_bands.high}"
-            )
-            stdscr.addstr(2, 0, info_gc[: w - 1])
-
-        if h > 3:
-            controls = "[q] quit   [←/→] scroll"
-            stdscr.addstr(3, 0, controls[: w - 1])
-
-        line_err_y = 5 if h > 5 else 0
-        show_gc = h > line_err_y + 1
-        line_gc_y = line_err_y + 1 if show_gc else None
-
-        err_row = build_gradient_row(norm_err, start_idx=start_idx, end_idx=end_idx, width=w)
-        try:
-            stdscr.addstr(line_err_y, 0, err_row[: w - 1])
-        except curses.error:
-            pass
-
-        if show_gc and line_gc_y is not None:
-            gc_row = build_gradient_row(norm_gc, start_idx=start_idx, end_idx=end_idx, width=w)
-            try:
-                stdscr.addstr(line_gc_y, 0, gc_row[: w - 1])
-            except curses.error:
-                pass
+        draw_scope_overview(stdscr, model)
 
         stdscr.refresh()
 
