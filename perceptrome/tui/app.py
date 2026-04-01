@@ -185,6 +185,7 @@ class PerceptromeTUIApp(App[None]):
         super().__init__()
         self.state = StateStore()
         self.jobs = JobManager()
+        self._panel_registry = {panel_cls.PANEL_ID: panel_cls for panel_cls in ALL_PANELS}
         self.config_overrides: list[str] = []
         self._active_surface = ""
         self._job_subscription_token: int | None = None
@@ -193,8 +194,8 @@ class PerceptromeTUIApp(App[None]):
         yield Static("Perceptrome • ready", id="top-status")
         with Container(id="workspace"):
             with ContentSwitcher(initial="panel-overview", id="panel-switcher"):
-                for panel_cls in ALL_PANELS:
-                    with Container(id=f"panel-{panel_cls.PANEL_ID}"):
+                for panel_id, panel_cls in self._panel_registry.items():
+                    with Container(id=f"panel-{panel_id}"):
                         yield panel_cls()
             yield Container(id="detail-host")
         yield Static("No events yet", id="bottom-status")
@@ -212,6 +213,8 @@ class PerceptromeTUIApp(App[None]):
             self.jobs.unsubscribe(self._job_subscription_token)
 
     def _set_panel(self, panel_id: str) -> None:
+        if panel_id not in self._panel_registry:
+            panel_id = next(iter(self._panel_registry), "overview")
         self.query_one("#panel-switcher", ContentSwitcher).current = f"panel-{panel_id}"
         self.state.set_active_view(panel_id)
         self.query_one("#top-status", Static).update(f"Perceptrome • panel={panel_id}")
