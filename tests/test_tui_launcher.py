@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from perceptrome.tui.job_manager import JobStatus
-from perceptrome.tui.launcher import derive_context, rank_commands
+from perceptrome.tui.launcher import derive_context, rank_and_filter_commands, rank_commands
 from perceptrome.tui.config_tools import apply_override, validate_effective
 
 
@@ -34,6 +34,20 @@ def test_rank_commands_idle_prioritizes_start_and_rerun() -> None:
     assert "job.start" in top_ids
 
 
+def test_rank_and_filter_commands_uses_query_history_and_disabled_reasons() -> None:
+    context = derive_context(active_panel="overview", jobs=[])
+    ranked = rank_and_filter_commands(
+        context,
+        query="traceback failure",
+        launcher_history=[{"command": "failure.traceback"}, {"command": "failure.traceback"}, {"command": "view.traceback"}],
+    )
+    assert ranked
+    top = ranked[0]
+    assert top.command.command_id == "failure.traceback"
+    assert top.disabled_reason is not None
+    assert "failed jobs" in top.disabled_reason.lower()
+
+
 def test_config_override_and_validation() -> None:
     config = {
         "training": {"window_size": 9, "stride": 3, "batch_size": 16, "tokenizer": "codon"},
@@ -44,5 +58,4 @@ def test_config_override_and_validation() -> None:
     assert config["training"]["batch_size"] == 64
     checks = validate_effective(config)
     assert all(not item.startswith("FAIL") for item in checks)
-
 
