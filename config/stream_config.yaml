@@ -4,6 +4,16 @@ ncbi:
   max_retries: 3
   backoff_seconds: 2.0
 
+uniprot:
+  base_url: "https://rest.uniprot.org"
+  default_query: "reviewed:true AND fragment:false"
+  include_isoforms: false
+  request_timeout: 60
+  retries: 3
+  backoff_seconds: 2.0
+  records_per_shard: 50000
+  gzip_output: false
+
 training:
   # small, just to smoke-test
   steps_per_plasmid: 25
