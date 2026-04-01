@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from textual.app import App, ComposeResult
 from textual.containers import Container, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import ContentSwitcher, Input, ListItem, ListView, Static
 
 from .diagnostics import capture_diagnostics
-from .events import JobArtifactEmittedEvent, JobCompletedEvent, JobFailedEvent, JobStartedEvent, JobStageUpdatedEvent
+from .events import JobEventBase
 from .job_manager import JobStatus, JobManager
 from .launcher import DEFAULT_COMMANDS, RankedCommand, derive_context, rank_and_filter_commands
 from .panels import ALL_PANELS, BasePanel
-from .state_store import FailureSummary, JobRecord, StateStore
+from .state_store import StateStore
 
 
 class DetailSurface(Vertical):
@@ -226,6 +224,7 @@ class PerceptromeTUIApp(App[None]):
         host.remove_children()
         host.add_class("-active")
         self._active_surface = surface
+        self.state.set_active_detail_surface(surface)
         widget_cls = DETAIL_WIDGETS.get(surface)
         if widget_cls is None:
             return
@@ -236,6 +235,7 @@ class PerceptromeTUIApp(App[None]):
 
     def _close_detail_surface(self) -> None:
         self._active_surface = ""
+        self.state.set_active_detail_surface(None)
         host = self.query_one("#detail-host", Container)
         host.remove_class("-active")
         host.remove_children()
@@ -311,30 +311,9 @@ class PerceptromeTUIApp(App[None]):
         self._persist_job_event(event)
 
     def _persist_job_event(self, event: object) -> None:
-        job_id = getattr(event, "job_id", "")
-        if not job_id:
+        if not isinstance(event, JobEventBase):
             return
-        existing = {row.id: row for row in self.state.list_jobs()}
-        record = existing.get(job_id) or JobRecord(id=job_id, run_id=getattr(event, "run_id", job_id), kind="unknown", status="busy")
-        record.run_id = getattr(event, "run_id", record.run_id or job_id)
-        if isinstance(event, JobStartedEvent):
-            record.title = event.title
-            record.status = "busy"
-        elif isinstance(event, JobStageUpdatedEvent):
-            if event.message:
-                record.config["last_message"] = event.message
-            if event.stage == "error":
-                record.status = "failed"
-        elif isinstance(event, JobArtifactEmittedEvent):
-            record.artifacts.append({"path": event.path, "role": event.role, "created_at": datetime.now(timezone.utc).isoformat()})
-        elif isinstance(event, JobCompletedEvent):
-            record.status = "completed"
-            record.finished_at = datetime.now(timezone.utc).isoformat()
-        elif isinstance(event, JobFailedEvent):
-            record.status = "failed"
-            record.finished_at = datetime.now(timezone.utc).isoformat()
-            record.failure_summary = FailureSummary(latest_warning_or_error=event.error or event.message, stage="failed")
-        self.state.upsert_job(record)
+        self.state.apply_job_event(event)
 
     def action_show_launcher(self) -> None:
         self._dispatch_command("launcher.open")
