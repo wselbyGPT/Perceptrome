@@ -8,6 +8,7 @@ It provides a CLI-first workflow for:
 - training VAE-style models in streaming mode,
 - inspecting reconstruction/error dynamics with scope tools,
 - and generating candidate plasmid/protein sequences from trained models.
+- and folding protein FASTA inputs via ColabFold into run-tracked structure artifacts.
 
 The repository also includes **Perceptrome Web**, a browser-based React/FastAPI application for authenticated administration, dataset/runs views, and websocket-backed run monitoring. See [`perceptrome_web/README.md`](perceptrome_web/README.md) for setup details covering the client, API server, PostgreSQL, Alembic migrations, bootstrap admin flow, SPA/API wiring, and WebSocket expectations.
 
@@ -19,6 +20,7 @@ The repository also includes **Perceptrome Web**, a browser-based React/FastAPI 
 - **NCBI-integrated data acquisition** with local caching for FASTA/GenBank/encoded artifacts.
 - **Training + observability utilities** including TensorBoard launcher and scope visualizers.
 - **Generation + validation commands** for plasmid and protein candidates.
+- **Structure lane (ColabFold)** with normalized fold summaries and manifest-indexed artifacts.
 - **Web application companion** for authenticated API access, admin flows, and live run telemetry.
 
 ## Repository layout
@@ -176,6 +178,43 @@ perceptrome validate-plasmid \
   --output-json generated/validation.json
 ```
 
+### 6) Fold proteins with ColabFold (monomer, local install)
+
+Perceptrome assumes ColabFold is installed separately and available either via:
+
+- `--colabfold-bin /path/to/colabfold_batch`
+- `PERCEPTROME_COLABFOLD_BIN=/path/to/colabfold_batch`
+- `colabfold_batch` on `PATH`
+
+Single protein:
+
+```bash
+perceptrome fold-one proteins/my_target.fasta --num-recycle 3 --num-models 5
+```
+
+Batch directory:
+
+```bash
+perceptrome fold-batch proteins/ --min-protein-aa 50 --max-protein-aa 1200 --keep-going
+```
+
+Inspect and export:
+
+```bash
+perceptrome fold-inspect <run_id>
+perceptrome fold-export <run_id>
+```
+
+Outputs are written into the standard run layout:
+
+- `runs/<run_id>/inputs/` (copied FASTA inputs)
+- `runs/<run_id>/artifacts/fold/...` (raw ColabFold outputs)
+- `runs/<run_id>/outputs/summary.json|summary.tsv`
+- `runs/<run_id>/outputs/batch_summary.json|batch_summary.tsv` (batch runs)
+- `runs/<run_id>/provenance/*.log` (stdout/stderr logs)
+
+This milestone intentionally excludes: multimer orchestration, RFD3 integration, GUI molecular viewers, and direct training-loop coupling.
+
 ## CLI overview
 
 Global help:
@@ -196,6 +235,7 @@ Primary commands:
 - `scope-one`, `scope-stream`
 - `tensorboard`
 - `generate-plasmid`, `validate-plasmid`, `generate-protein`
+- `fold-one`, `fold-batch`, `fold-inspect`, `fold-export`
 
 Most commands accept `--config` to point at a YAML config file.
 
