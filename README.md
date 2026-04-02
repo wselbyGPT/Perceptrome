@@ -215,6 +215,79 @@ Outputs are written into the standard run layout:
 
 This milestone intentionally excludes: multimer orchestration, RFD3 integration, GUI molecular viewers, and direct training-loop coupling.
 
+## UniProt ingestion
+
+Use these commands to estimate query size, download shard FASTA files, and generate a Perceptrome-ready accession catalog.
+
+Count-only checks:
+
+```bash
+# Uses `uniprot.default_query` from config/stream_config.yaml
+perceptrome uniprot-count
+# Explicit query form
+perceptrome uniprot-count --query 'fragment:false' --json
+```
+
+Fetch reviewed proteins (Swiss-Prot only):
+
+```bash
+perceptrome uniprot-fetch \
+  --query 'reviewed:true AND taxonomy_id:9606 AND fragment:false' \
+  --output-dir cache/fasta/uniprot/human_reviewed \
+  --prefix hsap_reviewed \
+  --records-per-shard 25000
+```
+
+Fetch all proteins for a taxon, including isoforms, and gzip shards:
+
+```bash
+perceptrome uniprot-fetch \
+  --query 'taxonomy_id:83333 AND fragment:false' \
+  --include-isoforms \
+  --gzip-output \
+  --output-dir cache/fasta/uniprot/ecoli_all \
+  --prefix ecoli_all \
+  --records-per-shard 10000
+```
+
+Fetch all non-isoform records for a broad proteome pull:
+
+```bash
+perceptrome uniprot-fetch \
+  --query 'proteome:UP000005640 AND fragment:false' \
+  --output-dir cache/fasta/uniprot/human_proteome \
+  --prefix human_proteome \
+  --records-per-shard 50000
+```
+
+### UniProt output artifacts
+
+`uniprot-fetch` writes three artifact types under your selected output prefix:
+
+- **Shard FASTA files**: `<prefix>.part-00001.fasta` (or `.fasta.gz` when `--gzip-output` is enabled).
+- **Manifest JSON**: `<prefix>.manifest.json` with query metadata, shard paths/checksums, record counts, and accession preview.
+- **Generated catalog**: `<prefix>.catalog.txt` (the path printed as `catalog:` in CLI output), containing extracted UniProt accessions for downstream jobs.
+
+### Downstream integration (AA pipeline)
+
+After ingestion, use the generated catalog path directly with existing training/encoding flows. A common sequence is:
+
+```bash
+# 1) Create deterministic splits from the generated UniProt catalog
+perceptrome split-create \
+  --catalog cache/fasta/uniprot/human_reviewed/hsap_reviewed.catalog.txt \
+  --name uniprot_hsap
+
+# 2) Train in AA mode against the same catalog
+perceptrome stream \
+  --catalog cache/fasta/uniprot/human_reviewed/hsap_reviewed.catalog.txt \
+  --tokenizer aa \
+  --source fasta
+
+# 3) Encode a representative accession from that catalog
+perceptrome encode-one P12345 --tokenizer aa --source fasta
+```
+
 ## CLI overview
 
 Global help:
@@ -227,6 +300,7 @@ Primary commands:
 
 - `init`
 - `catalog-show`, `catalog-generate`
+- `uniprot-count`, `uniprot-fetch`
 - `split-create`, `split-show`
 - `fetch-one`
 - `encode-one`
@@ -246,8 +320,20 @@ Default config: `config/stream_config.yaml`.
 The config includes:
 
 - `ncbi`: email/api key and retry/backoff settings,
+- `uniprot`: UniProt API/query/download settings,
 - `training`: tokenizer/model/windowing/loss/logging parameters,
 - `io`: cache/model/log/state paths.
+
+Default `uniprot` keys in `config/stream_config.yaml`:
+
+- `base_url: "https://rest.uniprot.org"`
+- `default_query: "reviewed:true AND fragment:false"`
+- `include_isoforms: false`
+- `request_timeout: 60`
+- `retries: 3`
+- `backoff_seconds: 2.0`
+- `records_per_shard: 50000`
+- `gzip_output: false`
 
 You can override many `training` values at the command line (for example model type, tokenizer, window/stride, batch size, and training steps).
 
