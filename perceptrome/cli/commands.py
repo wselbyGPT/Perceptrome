@@ -58,6 +58,13 @@ from perceptrome.structure.fold_manifest import build_fold_manifest_update
 from perceptrome.structure.parsers import discover_colabfold_outputs
 from perceptrome.uniprot_api import build_count_query, fetch_uniprot_count
 from perceptrome.uniprot_dataset import fetch_uniprot_dataset
+from perceptrome.virus.catalog import (
+    build_catalog_from_args,
+    create_snapshot_bundle,
+    inspect_manifest_payload,
+    load_manifest,
+    rebuild_from_manifest,
+)
 
 from perceptrome.structure.summary import (
     FoldSummaryRecord,
@@ -468,6 +475,88 @@ def cmd_catalog_generate(args: argparse.Namespace) -> int:
     for category_name, quota in category_quotas:
         print(f"  - {category_name}: quota={quota}, candidates={len(category_candidates.get(category_name, []))}")
     return 0
+
+
+
+
+def cmd_virus_catalog_build(args: argparse.Namespace) -> int:
+    try:
+        result = build_catalog_from_args(args)
+        print(f"Wrote catalog: {result['catalog_path']}")
+        print(f"Manifest: {result['manifest_path']}")
+        print(f"Accessions: {result['accession_count']}")
+        print(f"SHA256: {result['accession_sha256']}")
+        if result.get("snapshot_references"):
+            print("Snapshots:")
+            for ref in result["snapshot_references"]:
+                print(f"  - {ref}")
+        return 0
+    except Exception as err:
+        print(f"[virus-catalog build] error: {err}")
+        return 1
+
+
+def cmd_virus_catalog_inspect(args: argparse.Namespace) -> int:
+    try:
+        manifest = load_manifest(str(args.manifest))
+        payload = inspect_manifest_payload(manifest, catalog_path=getattr(args, "catalog", None))
+        print(f"Manifest: {args.manifest}")
+        print(f"Catalog: {payload['catalog_path']} (exists={payload['catalog_exists']})")
+        print(f"Count expected/actual: {payload['expected_count']}/{payload['actual_count']}")
+        print(f"Hash expected: {payload['expected_hash']}")
+        print(f"Hash actual:   {payload['actual_hash'] or '<missing>'}")
+        print(f"Hash match:    {payload['hash_matches']}")
+        print(f"Query mode: {payload['query_mode']}")
+        print(f"Filters: {payload['filters'] if payload['filters'] else '[]'}")
+        print(f"Includes: {payload['includes'] if payload['includes'] else '[]'}")
+        print(f"Snapshot refs: {len(payload['snapshot_references'])}")
+        if payload["snapshot_references"]:
+            for ref in payload["snapshot_references"]:
+                print(f"  - {ref}")
+        if payload["accession_preview"]:
+            print("Accession preview:")
+            for acc in payload["accession_preview"]:
+                print(f"  - {acc}")
+        return 0
+    except Exception as err:
+        print(f"[virus-catalog inspect] error: {err}")
+        return 1
+
+
+def cmd_virus_catalog_rebuild(args: argparse.Namespace) -> int:
+    try:
+        result = rebuild_from_manifest(
+            manifest_path=str(args.manifest),
+            output_catalog=getattr(args, "output", None),
+            datasets_bin=getattr(args, "datasets_bin", None),
+        )
+        status = "MATCH" if result["match"] else "MISMATCH"
+        print(f"Manifest: {result['manifest_path']}")
+        print(f"Catalog: {result['catalog_path']}")
+        print(f"Stored count/hash: {result['stored_count']} / {result['stored_hash']}")
+        print(f"Actual count/hash: {result['actual_count']} / {result['actual_hash']}")
+        print(f"Rebuild status: {status}")
+        return 0 if result["match"] else 2
+    except Exception as err:
+        print(f"[virus-catalog rebuild] error: {err}")
+        return 1
+
+
+def cmd_virus_catalog_snapshot(args: argparse.Namespace) -> int:
+    try:
+        result = create_snapshot_bundle(
+            catalog_path=str(args.catalog),
+            manifest_path=str(args.manifest),
+            metadata_files=list(getattr(args, "metadata", None) or []),
+            snapshot_dir=getattr(args, "snapshot_dir", None),
+        )
+        print(f"Snapshot bundle: {result['bundle_dir']}")
+        print(f"Bundle manifest: {result['bundle_manifest_path']}")
+        print(f"Files captured: {len(result['files'])}")
+        return 0
+    except Exception as err:
+        print(f"[virus-catalog snapshot] error: {err}")
+        return 1
 
 
 def _default_split_path(io_cfg, split_name: str) -> str:
