@@ -116,6 +116,28 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--path", default=None, help="Optional explicit split json path")
     s.set_defaults(func=_lazy_cmd("cmd_split_show"))
 
+    s = sub.add_parser("virus-split-create", help="Create deterministic virus train/val/test splits")
+    s.add_argument("--catalog", required=True, help="Catalog file used to build splits")
+    s.add_argument("--name", default="default", help="Split set name")
+    s.add_argument(
+        "--strategy",
+        choices=["random", "taxon", "host", "completeness-reference", "family-heldout", "date-based"],
+        default="random",
+        help="Split strategy",
+    )
+    s.add_argument("--train-ratio", type=float, default=0.8, help="Train ratio (default: 0.8)")
+    s.add_argument("--val-ratio", type=float, default=0.1, help="Validation ratio (default: 0.1)")
+    s.add_argument("--seed", type=int, default=1337, help="Seed for deterministic split generation")
+    s.add_argument("--fetch-manifest", action="append", default=None, help="virus-fetch manifest JSON (repeatable)")
+    s.add_argument("--snapshot", action="append", default=None, help="Catalog snapshot dir or snapshot.bundle.json (repeatable)")
+    s.add_argument("--out", default=None, help="Optional output JSON path (default: <state_dir>/splits/<name>.json)")
+    s.set_defaults(func=_lazy_cmd("cmd_virus_split_create"))
+
+    s = sub.add_parser("virus-split-show", help="Show virus split metadata and partition preview")
+    s.add_argument("--name", default="default", help="Split set name")
+    s.add_argument("--path", default=None, help="Optional explicit split JSON path")
+    s.set_defaults(func=_lazy_cmd("cmd_virus_split_show"))
+
     s = sub.add_parser("fetch-one")
     s.add_argument("accession"); s.add_argument("--force", action="store_true")
     s.add_argument("--source", choices=["fasta","genbank"], default=None, help="Fetch record source (default: fasta)")

@@ -66,6 +66,7 @@ from perceptrome.virus.catalog import (
     rebuild_from_manifest,
 )
 from perceptrome.virus.fetch import fetch_virus_from_args
+from perceptrome.virus.splits import create_split_payload
 
 from perceptrome.structure.summary import (
     FoldSummaryRecord,
@@ -1276,6 +1277,69 @@ def _warn_if_encoded_manifest_incompatible(encoded_path: str, expected: Dict[str
     if mismatches:
         detail = ", ".join(f"{k}: have={a!r} want={b!r}" for (k, a, b) in mismatches)
         logging.warning("Encoded cache manifest mismatch for %s (%s).", encoded_path, detail)
+
+
+def cmd_virus_split_create(args: argparse.Namespace) -> int:
+    try:
+        cfg = load_full_config(args.config)
+        _, _, io_cfg = extract_configs(cfg)
+        io_cfg = _run_local_io_cfg(io_cfg)
+        ensure_dirs(io_cfg)
+
+        payload = create_split_payload(args)
+        out_path = str(args.out) if args.out else _default_split_path(io_cfg, str(args.name))
+        out_dir = os.path.dirname(out_path) or "."
+        os.makedirs(out_dir, exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+            f.write("\n")
+
+        counts = payload.get("counts") or {}
+        print(
+            f"[virus-split-create] name={payload.get('name')} strategy={payload.get('strategy')} "
+            f"total={counts.get('total', '?')} train={counts.get('train', '?')} "
+            f"val={counts.get('val', '?')} test={counts.get('test', '?')} -> {out_path}"
+        )
+        return 0
+    except Exception as err:
+        print(f"[virus-split-create] error: {err}")
+        return 1
+
+
+def cmd_virus_split_show(args: argparse.Namespace) -> int:
+    try:
+        cfg = load_full_config(args.config)
+        _, _, io_cfg = extract_configs(cfg)
+        io_cfg = _run_local_io_cfg(io_cfg)
+        ensure_dirs(io_cfg)
+
+        split_name = str(args.name)
+        split_path = str(args.path) if args.path else _default_split_path(io_cfg, split_name)
+        if not os.path.exists(split_path):
+            raise FileNotFoundError(f"Split file not found: {split_path}")
+
+        with open(split_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        counts = data.get("counts", {})
+        source = data.get("source") or {}
+        print(f"Split: {data.get('name', split_name)}")
+        print(f"  path: {split_path}")
+        print(f"  strategy: {data.get('strategy', '<unknown>')}")
+        print(f"  catalog: {source.get('catalog_path', data.get('catalog_path', '<unknown>'))}")
+        print(
+            f"  counts: total={counts.get('total', '?')} "
+            f"train={counts.get('train', '?')} val={counts.get('val', '?')} test={counts.get('test', '?')}"
+        )
+        for key in ("train", "val", "test"):
+            vals = list((data.get("splits") or {}).get(key, []))
+            head = ", ".join(vals[:5]) if vals else "<empty>"
+            suffix = " ..." if len(vals) > 5 else ""
+            print(f"  {key}: {head}{suffix}")
+        return 0
+    except Exception as err:
+        print(f"[virus-split-show] error: {err}")
+        return 1
 
 
 def cmd_split_create(args: argparse.Namespace) -> int:
