@@ -65,6 +65,7 @@ from perceptrome.virus.catalog import (
     load_manifest,
     rebuild_from_manifest,
 )
+from perceptrome.virus.fetch import fetch_virus_from_args
 
 from perceptrome.structure.summary import (
     FoldSummaryRecord,
@@ -421,6 +422,43 @@ def cmd_uniprot_fetch(args: argparse.Namespace) -> int:
             print(json.dumps({"ok": False, "error": str(err)}))
         else:
             print(f"[uniprot-fetch] error: {err}")
+        return 1
+
+
+def cmd_virus_fetch(args: argparse.Namespace) -> int:
+    try:
+        cfg = load_full_config(args.config)
+        _, _, io_cfg = extract_configs(cfg)
+        io_cfg = _run_local_io_cfg(io_cfg)
+        ensure_dirs(io_cfg)
+
+        setattr(args, "_argv", list(sys.argv))
+        result = fetch_virus_from_args(args, io_state_file=io_cfg.state_file)
+        payload = {
+            "ok": True,
+            "source": result["source"],
+            "run_dir": result["run_dir"],
+            "staged_dir": result["staged_dir"],
+            "manifest_path": result["manifest_path"],
+            "archive_count": result["archive_count"],
+            "indexed_file_count": result["indexed_file_count"],
+        }
+        if getattr(args, "json", False):
+            print(json.dumps(payload))
+        else:
+            print(f"[virus-fetch] source={payload['source']}")
+            print(f"[virus-fetch] run_dir={payload['run_dir']}")
+            print(f"[virus-fetch] staged_dir={payload['staged_dir']}")
+            print(f"[virus-fetch] manifest={payload['manifest_path']}")
+            print(
+                f"[virus-fetch] archives={payload['archive_count']} indexed_files={payload['indexed_file_count']}"
+            )
+        return 0
+    except Exception as err:
+        if getattr(args, "json", False):
+            print(json.dumps({"ok": False, "error": str(err)}))
+        else:
+            print(f"[virus-fetch] error: {err}")
         return 1
 
 

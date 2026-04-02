@@ -92,6 +92,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--json", action="store_true", help="Emit machine-readable JSON output")
     s.set_defaults(func=_lazy_cmd("cmd_uniprot_fetch"))
 
+    s = sub.add_parser("virus-fetch", help="Download and stage NCBI virus dataset package(s)")
+    s.add_argument("--catalog", default=None, help="Catalog text file of accessions")
+    s.add_argument("--manifest", default=None, help="Virus catalog manifest JSON")
+    s.add_argument("--taxon", default=None, help="Taxon query for direct datasets fetch")
+    s.add_argument("--include", action="append", default=None, help="datasets include selection (repeatable)")
+    s.add_argument("--filter", action="append", default=None, help="Raw datasets filter arg to append (repeatable)")
+    s.add_argument("--datasets-bin", default=None, help="Path to datasets executable")
+    s.add_argument("--json", action="store_true", help="Emit machine-readable JSON output")
+    s.set_defaults(func=_lazy_cmd("cmd_virus_fetch"))
+
     s = sub.add_parser("split-create")
     s.add_argument("--catalog", required=True, help="Catalog file used to build splits")
     s.add_argument("--name", default="default", help="Split set name")
