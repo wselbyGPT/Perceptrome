@@ -250,6 +250,8 @@ class JobManager:
             self._set_status(job_id, JobStatus.FAILED)
             with self._lock:
                 card.last_error = str(event.data.get("error") or event.message)
+                if isinstance(event.data, dict):
+                    card.status_metadata.update({k: v for k, v in event.data.items() if k in {"traceback_path", "manifest_path", "config_snapshot_path", "log_path"}})
             self._publish(JobErrorEvent(job_id=job_id, run_id=card.run_id, message=event.message, error=str(event.data.get("error") or "")))
 
         metric_loss = event.data.get("loss")
@@ -305,7 +307,7 @@ class JobManager:
             self._set_status(job_id, JobStatus.FAILED)
             with self._lock:
                 card.status_reason = "failed"
-                card.status_metadata = {}
+                card.status_metadata = dict(result.data or {})
                 card.last_error = result.message
             self._publish(JobFailedEvent(job_id=job_id, run_id=card.run_id, message=result.message, error=result.message))
         self._persist_registry()

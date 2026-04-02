@@ -4,6 +4,7 @@ from .artifacts import ArtifactsPanel
 from .base import BasePanel
 from .config import ConfigPanel
 from .data import DataPanel
+from .events import EventsPanel
 from .generate import GeneratePanel
 from .history import HistoryPanel
 from .jobs import JobsPanel
@@ -25,6 +26,7 @@ ALL_PANELS = [
     MetricsPanel,
     PipelinePanel,
     TroubleshootPanel,
+    EventsPanel,
 ]
 
 __all__ = [
@@ -41,4 +43,5 @@ __all__ = [
     "MetricsPanel",
     "PipelinePanel",
     "TroubleshootPanel",
+    "EventsPanel",
 ]
