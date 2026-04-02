@@ -230,6 +230,33 @@ class HistoryIndexer:
                     return path
         return None
 
+    def resolve_manifest_path(self, *, run_id: str | None = None) -> str | None:
+        for row in self.merged_jobs(limit=150):
+            if run_id and row.run_id != run_id:
+                continue
+            if row.manifest_path:
+                return row.manifest_path
+        return None
+
+    def resolve_config_snapshot_path(self, *, run_id: str | None = None) -> str | None:
+        for row in self.merged_jobs(limit=150):
+            if run_id and row.run_id != run_id:
+                continue
+            for item in row.artifacts:
+                role = str(item.get("role") or "")
+                if "config_snapshot" in role or str(item.get("path") or "").endswith("resolved_config.json"):
+                    return str(item.get("path") or "")
+        return None
+
+    def latest_artifact_path(self, *, run_id: str | None = None) -> str | None:
+        for row in self.merged_jobs(limit=150):
+            if run_id and row.run_id != run_id:
+                continue
+            paths = [str(item.get("path") or "") for item in row.artifacts if isinstance(item, dict) and item.get("path")]
+            if paths:
+                return paths[-1]
+        return None
+
     def _first_existing_log_path(self, row: IndexedJob) -> str | None:
         preferred = ("log", "stdout", "stderr")
         for item in row.artifacts:

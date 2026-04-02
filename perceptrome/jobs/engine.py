@@ -4,6 +4,7 @@ import json
 import os
 import random
 import threading
+import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Literal, Optional
@@ -322,8 +323,33 @@ class JobEngine:
             self._emit("canceled", "Job canceled")
             return JobResult(ok=False, exit_code=130, message="canceled", data={"canceled": True}, events=list(self._events))
         except Exception as exc:  # noqa: BLE001
-            self._emit("error", f"Job failed: {exc}", error=repr(exc))
-            return JobResult(ok=False, exit_code=1, message=str(exc), events=list(self._events))
+            tb_text = traceback.format_exc()
+            layout = ensure_run_layout()
+            traceback_path = path_in_run(layout, "artifacts", "traceback.txt")
+            os.makedirs(os.path.dirname(traceback_path) or ".", exist_ok=True)
+            with open(traceback_path, "w", encoding="utf-8") as handle:
+                handle.write(tb_text)
+            manifest_path = path_in_run(layout, "root", "manifest.json")
+            config_snapshot_path = path_in_run(layout, "artifacts", "resolved_config.json")
+            self._emit(
+                "error",
+                f"Job failed: {exc}",
+                error=repr(exc),
+                traceback_path=traceback_path,
+                manifest_path=manifest_path,
+                config_snapshot_path=config_snapshot_path,
+            )
+            return JobResult(
+                ok=False,
+                exit_code=1,
+                message=str(exc),
+                data={
+                    "traceback_path": traceback_path,
+                    "manifest_path": manifest_path,
+                    "config_snapshot_path": config_snapshot_path,
+                },
+                events=list(self._events),
+            )
 
     @staticmethod
     def _pick_window_stride(params: Dict[str, Any], train_cfg: Any, tok: str) -> tuple[int, int]:

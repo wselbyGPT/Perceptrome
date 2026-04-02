@@ -67,6 +67,11 @@ AA_PROFILE_PRESETS = {
 }
 
 
+def tui_state_root() -> str:
+    """Shared state root used by TUI state + TUI job persistence."""
+    return os.environ.get("PERCEPTROME_TUI_STATE_ROOT", "state/tui")
+
+
 def _get_aa_profile(args) -> dict[str, Any] | None:
     name = getattr(args, "aa_profile", None)
     if not name:

@@ -13,6 +13,7 @@ from .history import HistoryIndexer
 from .job_manager import JobStatus, JobManager
 from .launcher import DEFAULT_COMMANDS, RankedCommand, derive_context, rank_and_filter_commands
 from .panels import ALL_PANELS, BasePanel
+from .spec_builders import build_generate_plasmid_spec, build_train_one_spec
 from .state_store import StateStore
 
 
@@ -223,13 +224,17 @@ class PerceptromeTUIApp(App[None]):
         ("ctrl+p", "show_launcher", "Launcher"),
         ("ctrl+l", "show_logs", "Logs"),
         ("ctrl+d", "show_diagnostics", "Diagnostics"),
+        ("ctrl+t", "show_traceback", "Traceback"),
+        ("tab", "focus_next", "Next"),
+        ("shift+tab", "focus_previous", "Prev"),
+        ("escape", "close_surface", "Close"),
         ("q", "quit", "Quit"),
     ]
 
     def __init__(self) -> None:
         super().__init__()
         self.state = StateStore()
-        self.jobs = JobManager()
+        self.jobs = JobManager(persist_path=str(self.state.root / "tui_jobs.json"))
         self.history_indexer = HistoryIndexer(self.state)
         self._panel_registry = {panel_cls.PANEL_ID: panel_cls for panel_cls in ALL_PANELS}
         self.config_overrides: list[str] = []
@@ -314,10 +319,30 @@ class PerceptromeTUIApp(App[None]):
             self.jobs.cancel(active.id)
             self._set_event_strip(f"Stop requested for {active.id}")
         elif action == "start_job":
-            self._set_event_strip("Start requested (use CLI job spec entrypoint).")
+            draft = self.state.get_draft_job_spec()
+            if draft.get("kind") == "generate_plasmid":
+                spec = build_generate_plasmid_spec(
+                    output=str(draft.get("output") or "generated.fasta"),
+                    length=int(draft.get("length") or 256),
+                    config_path=str(draft.get("config_path") or "config/stream_config.yaml"),
+                    num_candidates=int(draft.get("num_candidates") or 1),
+                    top_k=int(draft.get("top_k") or 4),
+                    seed=draft.get("seed"),
+                    temperature=float(draft.get("temperature") or 1.0),
+                )
+            else:
+                spec = build_train_one_spec(
+                    accession=str(draft.get("accession") or "NC_000913"),
+                    config_path=str(draft.get("config_path") or "config/stream_config.yaml"),
+                    catalog=draft.get("catalog"),
+                    tokenizer=draft.get("tokenizer"),
+                    source=draft.get("source"),
+                )
+            job_id = self.submit_job_spec(spec, title=str(draft.get("title") or ""))
+            self._set_event_strip(f"Submitted {spec.kind} ({job_id})")
         elif action == "rerun_job":
-            rerun = self.state.rerun_last_job()
-            self._set_event_strip(f"Rerun prepared for {rerun['job_id']}" if rerun else "No recent job to rerun")
+            ok = self.rerun_selected_job()
+            self._set_event_strip("Rerun submitted" if ok else "No recent job to rerun")
         elif action in {"inspect_active", "show_logs", "toggle_logs"}:
             self._show_detail_surface("logs", "")
         elif action in {"toggle_diagnostics"}:
@@ -378,6 +403,70 @@ class PerceptromeTUIApp(App[None]):
 
     def action_show_diagnostics(self) -> None:
         self._dispatch_command("view.diagnostics")
+
+    def action_show_traceback(self) -> None:
+        self._dispatch_command("view.traceback")
+
+    def action_close_surface(self) -> None:
+        self._close_detail_surface()
+
+    def action_focus_next(self) -> None:
+        self.focus_next()
+
+    def action_focus_previous(self) -> None:
+        self.focus_previous()
+
+    def submit_job_spec(self, spec, title: str | None = None) -> str:
+        job_id = self.jobs.submit(spec, title=title or None)
+        self.state.set_selected_job(job_id)
+        self.state.set_active_focus(self.state.get_session().active_focus, active_job_id=job_id)
+        self.state.append_event(TUIEvent(kind="job", message="submitted", payload={"job_id": job_id, "kind": getattr(spec, "kind", "")}))
+        return job_id
+
+    def _selected_job_card(self):
+        session = self.state.get_session()
+        selected = session.selected_job_id or session.active_job_id
+        return next((job for job in self.jobs.list_jobs() if job.id == selected), None)
+
+    def rerun_selected_job(self) -> bool:
+        selected = self._selected_job_card()
+        if selected is None:
+            return False
+        if selected.kind.startswith("generate"):
+            spec = build_generate_plasmid_spec(output="rerun_generated.fasta", length=256)
+            self.state.set_draft_job_spec({"kind": "generate_plasmid", "output": "rerun_generated.fasta", "length": 256})
+        else:
+            spec = build_train_one_spec(accession="NC_000913")
+            self.state.set_draft_job_spec({"kind": "train_one", "accession": "NC_000913"})
+        self.submit_job_spec(spec, title=f"Rerun {selected.id}")
+        return True
+
+    def clone_selected_job_to_draft(self) -> bool:
+        selected = self._selected_job_card()
+        if selected is None:
+            return False
+        draft = {"kind": selected.kind, "title": f"Clone of {selected.title}"}
+        if selected.kind.startswith("generate"):
+            draft.update({"output": "clone_generated.fasta", "length": 256})
+        else:
+            draft.update({"accession": "NC_000913"})
+        self.state.set_draft_job_spec(draft)
+        return True
+
+    def cancel_selected_job(self) -> bool:
+        selected = self._selected_job_card()
+        return bool(selected and self.jobs.cancel(selected.id))
+
+    def open_artifact(self, path: str | None = None) -> None:
+        if path:
+            self.state.set_selected_artifact_path(path)
+        selected = self.state.get_session().selected_artifact_path or "none"
+        self._show_detail_surface("artifact", f"Selected artifact: {selected}")
+
+    def open_manifest_for_selected(self) -> None:
+        run_id = self.state.get_session().selected_job_id
+        path = self.history_indexer.resolve_manifest_path(run_id=run_id)
+        self._show_detail_surface("artifact", f"Manifest: {path or 'not found'}")
 
     def resolve_log_source_path(self) -> str | None:
         selected_job = self.state.get_session().selected_job_id

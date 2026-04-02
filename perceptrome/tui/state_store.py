@@ -25,7 +25,7 @@ from .events import (
     TUIEvent,
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 @dataclass(slots=True)
@@ -68,6 +68,7 @@ class SessionState:
     active_detail_surface: str | None = None
     panel_scroll_positions: dict[str, int] = field(default_factory=dict)
     detail_scroll_positions: dict[str, int] = field(default_factory=dict)
+    draft_job_spec: dict[str, Any] = field(default_factory=dict)
 
 
 class StateStore:
@@ -87,6 +88,11 @@ class StateStore:
 
         self._session = self._load_session()
         self._apply_startup_context_if_present()
+
+
+    @property
+    def root(self) -> Path:
+        return self._root
 
     @property
     def active_view(self) -> str:
@@ -130,6 +136,18 @@ class StateStore:
 
     def set_detail_scroll_position(self, surface: str, offset: int) -> None:
         self._session.detail_scroll_positions[surface] = max(0, int(offset))
+        self._save_session()
+
+
+    def set_draft_job_spec(self, draft: dict[str, Any]) -> None:
+        self._session.draft_job_spec = dict(draft or {})
+        self._save_session()
+
+    def get_draft_job_spec(self) -> dict[str, Any]:
+        return dict(self._session.draft_job_spec or {})
+
+    def clear_draft_job_spec(self) -> None:
+        self._session.draft_job_spec = {}
         self._save_session()
 
     def get_session(self) -> SessionState:
@@ -208,6 +226,7 @@ class StateStore:
         elif isinstance(event, JobErrorEvent):
             record.status = "failed"
             record.failure_summary = FailureSummary(latest_warning_or_error=event.error or event.message, stage="error")
+            record.config["last_error"] = event.error or event.message
         elif isinstance(event, JobCompletedEvent):
             record.status = "completed"
             record.finished_at = _utc_now()
@@ -215,6 +234,7 @@ class StateStore:
             record.status = "failed"
             record.finished_at = _utc_now()
             record.failure_summary = FailureSummary(latest_warning_or_error=event.error or event.message, stage="failed")
+            record.config["last_error"] = event.error or event.message
         elif isinstance(event, JobCanceledEvent):
             record.status = "canceled"
             record.finished_at = _utc_now()
@@ -223,6 +243,13 @@ class StateStore:
             if record.status == "failed":
                 record.status = "busy"
 
+        if isinstance(event, JobStageUpdatedEvent):
+            data = dict(event.data or {})
+            if data.get("traceback_path") and record.failure_summary is not None:
+                record.failure_summary.traceback_path = str(data.get("traceback_path"))
+            for key in ("manifest_path", "config_snapshot_path", "log_path"):
+                if data.get(key):
+                    record.config[key] = str(data.get(key))
         self.upsert_job(record)
         self.set_selected_job(record.id)
         self.set_active_focus(self._session.active_focus, active_job_id=record.id)
@@ -342,6 +369,7 @@ class StateStore:
                 "active_detail_surface": None,
                 "panel_scroll_positions": {},
                 "detail_scroll_positions": {},
+                "draft_job_spec": {},
             },
         )
         return SessionState(
@@ -354,6 +382,7 @@ class StateStore:
             active_detail_surface=payload.get("active_detail_surface"),
             panel_scroll_positions={str(k): int(v) for k, v in dict(payload.get("panel_scroll_positions") or {}).items()},
             detail_scroll_positions={str(k): int(v) for k, v in dict(payload.get("detail_scroll_positions") or {}).items()},
+            draft_job_spec=dict(payload.get("draft_job_spec") or {}),
         )
 
     def _save_session(self) -> None:
@@ -399,9 +428,9 @@ class StateStore:
         if version == SCHEMA_VERSION:
             return payload
         migrations: dict[str, dict[int, Any]] = {
-            "session.json": {1: _migrate_session_v1_to_v2, 2: _migrate_passthrough_v2_to_v3},
-            "jobs.json": {1: _migrate_passthrough_v1_to_v2, 2: _migrate_passthrough_v2_to_v3},
-            "launcher_history.json": {1: _migrate_passthrough_v1_to_v2, 2: _migrate_passthrough_v2_to_v3},
+            "session.json": {1: _migrate_session_v1_to_v2, 2: _migrate_passthrough_v2_to_v3, 3: _migrate_session_v3_to_v4},
+            "jobs.json": {1: _migrate_passthrough_v1_to_v2, 2: _migrate_passthrough_v2_to_v3, 3: _migrate_passthrough_v3_to_v4},
+            "launcher_history.json": {1: _migrate_passthrough_v1_to_v2, 2: _migrate_passthrough_v2_to_v3, 3: _migrate_passthrough_v3_to_v4},
         }
         current = dict(payload)
         migrators = migrations.get(path.name, {})
@@ -492,4 +521,17 @@ def _migrate_session_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
     migrated.setdefault("panel_scroll_positions", {})
     migrated.setdefault("detail_scroll_positions", {})
     migrated["schema_version"] = 2
+    return migrated
+
+
+def _migrate_passthrough_v3_to_v4(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated["schema_version"] = 4
+    return migrated
+
+
+def _migrate_session_v3_to_v4(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated.setdefault("draft_job_spec", {})
+    migrated["schema_version"] = 4
     return migrated

@@ -97,6 +97,7 @@ DEFAULT_COMMANDS: tuple[LauncherCommand, ...] = (
     LauncherCommand("panel.metrics", "Jump: Metrics", "panel", panel_id="metrics", keywords=("loss", "signals")),
     LauncherCommand("panel.pipeline", "Jump: Pipeline", "panel", panel_id="pipeline", keywords=("stages", "flow")),
     LauncherCommand("panel.troubleshoot", "Jump: Troubleshoot", "panel", panel_id="troubleshoot", keywords=("debug", "failure")),
+    LauncherCommand("panel.events", "Jump: Events", "panel", panel_id="events", keywords=("event", "history")),
     LauncherCommand("job.start", "Job: Start", "job", action="start_job", rank_hint=_rank_for_idle, enabled_when=_enabled_idle, requires_confirm=True),
     LauncherCommand("job.stop", "Job: Stop Active", "job", action="stop_job", rank_hint=_rank_for_running, enabled_when=_enabled_running, requires_confirm=True),
     LauncherCommand("job.rerun", "Job: Rerun Last", "job", action="rerun_job", rank_hint=lambda ctx: 22 if ctx.has_recent_job else -8, enabled_when=_enabled_recent),

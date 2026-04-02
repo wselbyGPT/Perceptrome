@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from textual.widgets import Static
+from textual.containers import Horizontal
+from textual.widgets import Button, Static
 
 from .base import BasePanel
 
@@ -12,6 +13,12 @@ class TroubleshootPanel(BasePanel):
     TITLE = "Troubleshoot"
 
     def compose(self):
+        with Horizontal():
+            yield Button("Open traceback", id="tb-open", variant="warning")
+            yield Button("Open logs", id="tb-logs")
+            yield Button("Rerun", id="tb-rerun")
+            yield Button("Clone to draft", id="tb-clone")
+            yield Button("Jump artifacts", id="tb-artifacts")
         yield Static(id="troubleshoot-body")
 
     def on_mount(self) -> None:
@@ -22,6 +29,18 @@ class TroubleshootPanel(BasePanel):
         if hasattr(event, "job_id"):
             self.schedule_throttled_render("troubleshoot", self._render_troubleshoot)
 
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "tb-open":
+            self.app.action_show_traceback()
+        elif event.button.id == "tb-logs":
+            self.app.action_show_logs()
+        elif event.button.id == "tb-rerun":
+            self.app.rerun_selected_job()
+        elif event.button.id == "tb-clone":
+            self.app.clone_selected_job_to_draft()
+        elif event.button.id == "tb-artifacts":
+            self.app._set_panel("artifacts")
+
     def _render_troubleshoot(self) -> None:
         body = self.query_one("#troubleshoot-body", Static)
         failed = self.app.state.open_last_failed_job()
@@ -30,36 +49,21 @@ class TroubleshootPanel(BasePanel):
             return
 
         summary = failed.failure_summary
-        if summary is None:
-            body.update(f"Failed job {failed.id} has no persisted failure summary yet.")
-            return
-
-        traceback_path = summary.traceback_path or self._guess_traceback_path(failed)
+        traceback_path = summary.traceback_path if summary else None
         preview = self._traceback_preview(traceback_path)
-        body.update(
-            "\n".join(
-                [
-                    f"Job: {failed.id}",
-                    f"Status: {failed.status}",
-                    f"Failure stage: {summary.stage or 'unknown'}",
-                    f"Error: {summary.latest_warning_or_error or 'n/a'}",
-                    f"Suggested action: {summary.suggested_next_action}",
-                    f"Traceback path: {traceback_path or 'not available'}",
-                    "",
-                    "Traceback preview:",
-                    preview,
-                ]
-            )
-        )
-
-    def _guess_traceback_path(self, failed_job: object) -> str | None:
-        for artifact in getattr(failed_job, "artifacts", []) or []:
-            if not isinstance(artifact, dict):
-                continue
-            path = str(artifact.get("path") or "")
-            if path.endswith(".traceback.txt") or "traceback" in path.lower():
-                return path
-        return None
+        lines = [
+            f"Job: {failed.id}",
+            f"Status: {failed.status}",
+            f"Failure stage: {(summary.stage if summary else 'unknown')}",
+            f"Error: {(summary.latest_warning_or_error if summary else failed.config.get('last_error', 'n/a'))}",
+            f"Traceback path: {traceback_path or 'n/a'}",
+            f"Log path: {failed.config.get('log_path', 'n/a')}",
+            f"Manifest: {failed.config.get('manifest_path', 'n/a')}",
+            "",
+            "Traceback preview:",
+            preview,
+        ]
+        body.update("\n".join(lines))
 
     def _traceback_preview(self, path: str | None) -> str:
         if not path:
@@ -71,6 +75,4 @@ class TroubleshootPanel(BasePanel):
             lines = candidate.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception as exc:
             return f"Unable to read traceback: {exc}"
-        if not lines:
-            return "Traceback file is empty."
-        return "\n".join(lines[:12])
+        return "\n".join(lines[:14]) if lines else "Traceback file is empty."
