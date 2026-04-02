@@ -66,6 +66,7 @@ from perceptrome.virus.catalog import (
     rebuild_from_manifest,
 )
 from perceptrome.virus.fetch import fetch_virus_from_args
+from perceptrome.virus.training import normalize_virus_training_input
 
 from perceptrome.structure.summary import (
     FoldSummaryRecord,
@@ -786,17 +787,21 @@ def _build_encoded_manifest_payload(
     min_orf: int,
     pol: Dict[str, Any],
     protein_opts: Dict[str, Any],
+    virus_provenance: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    dataset_manifest: Dict[str, Any] = {
+        "accession": accession,
+        "source": source,
+        "artifact_path": encoded_path,
+        "encoded_at": iso_now(),
+    }
+    if isinstance(virus_provenance, dict):
+        dataset_manifest["virus"] = dict(virus_provenance)
     return {
         "run_kind": "encode_windows",
         "config_path": cfg_path,
         "config_hash_value": cfg_hash,
-        "dataset_catalog_manifest": {
-            "accession": accession,
-            "source": source,
-            "artifact_path": encoded_path,
-            "encoded_at": iso_now(),
-        },
+        "dataset_catalog_manifest": dataset_manifest,
         "tokenizer_encoding_config": {
             "tokenizer": tok,
             "window_size": int(window_size),
@@ -1506,6 +1511,7 @@ def cmd_encode_one(args: argparse.Namespace) -> int:
         min_orf=min_orf,
         pol=pol,
         protein_opts=protein_opts,
+        virus_provenance=getattr(args, "virus_provenance", None),
     )
     write_sidecar_run_manifest(target_path=out_path, **payload)
     update_run_manifest(
@@ -1611,6 +1617,7 @@ def cmd_scope_one(args: argparse.Namespace) -> int:
                 min_orf=min_orf,
                 pol=pol,
                 protein_opts=protein_opts,
+                virus_provenance=getattr(args, "virus_provenance", None),
             ),
         )
 
@@ -1844,6 +1851,72 @@ def cmd_stream(args: argparse.Namespace) -> int:
     if not result.ok:
         raise RuntimeError(result.message)
     print("[stream] Training complete.")
+    return 0
+
+
+def cmd_virus_stream(args: argparse.Namespace) -> int:
+    normalized = normalize_virus_training_input(
+        catalog=getattr(args, "catalog", None),
+        catalog_manifest=getattr(args, "catalog_manifest", None),
+        fetch_manifest=getattr(args, "fetch_manifest", None),
+        sequence_source=getattr(args, "sequence_source", None),
+        segmented_policy=getattr(args, "segmented_policy", None),
+        dedupe=getattr(args, "dedupe", None),
+        metadata_path=getattr(args, "metadata_path", None),
+        complete_only=bool(getattr(args, "complete_only", False)),
+        refseq_only=bool(getattr(args, "refseq_only", False)),
+    )
+    params = _job_params(args)
+    params["catalog"] = normalized.catalog_path
+    params["source"] = normalized.record_source
+    params["virus_provenance"] = normalized.provenance
+
+    spec = JobSpec(kind="stream", config_path=str(args.config), params=params)
+    result = JobEngine().run(spec)
+    if not result.ok:
+        raise RuntimeError(result.message)
+    print(f"[virus-stream] catalog={normalized.catalog_path}")
+    return 0
+
+
+def cmd_virus_encode_one(args: argparse.Namespace) -> int:
+    normalized = normalize_virus_training_input(
+        catalog=getattr(args, "catalog", None),
+        catalog_manifest=getattr(args, "catalog_manifest", None),
+        fetch_manifest=getattr(args, "fetch_manifest", None),
+        sequence_source=getattr(args, "sequence_source", None),
+        segmented_policy=getattr(args, "segmented_policy", None),
+        dedupe=getattr(args, "dedupe", None),
+        metadata_path=getattr(args, "metadata_path", None),
+        complete_only=bool(getattr(args, "complete_only", False)),
+        refseq_only=bool(getattr(args, "refseq_only", False)),
+    )
+    setattr(args, "source", normalized.record_source)
+    setattr(args, "virus_provenance", normalized.provenance)
+    return cmd_encode_one(args)
+
+
+def cmd_virus_train_one(args: argparse.Namespace) -> int:
+    normalized = normalize_virus_training_input(
+        catalog=getattr(args, "catalog", None),
+        catalog_manifest=getattr(args, "catalog_manifest", None),
+        fetch_manifest=getattr(args, "fetch_manifest", None),
+        sequence_source=getattr(args, "sequence_source", None),
+        segmented_policy=getattr(args, "segmented_policy", None),
+        dedupe=getattr(args, "dedupe", None),
+        metadata_path=getattr(args, "metadata_path", None),
+        complete_only=bool(getattr(args, "complete_only", False)),
+        refseq_only=bool(getattr(args, "refseq_only", False)),
+    )
+    params = _job_params(args)
+    params["source"] = normalized.record_source
+    params["virus_provenance"] = normalized.provenance
+    spec = JobSpec(kind="train_one", config_path=str(args.config), params=params)
+    result = JobEngine().run(spec)
+    if not result.ok:
+        raise RuntimeError(result.message)
+    data = result.data
+    print(f"[virus-train-one] {data.get('accession', args.accession)} loss={data.get('last_total_loss')}")
     return 0
 
 def cmd_generate_plasmid(args: argparse.Namespace) -> int:

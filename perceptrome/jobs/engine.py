@@ -202,6 +202,23 @@ class JobEngine:
         JobEngine._write_json_artifact(summary_json, payload)
 
     @staticmethod
+    def _dataset_catalog_manifest(base: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(base)
+        virus = params.get("virus_provenance")
+        if isinstance(virus, dict):
+            payload["virus"] = {
+                "catalog_manifest_path": virus.get("catalog_manifest_path"),
+                "fetch_manifest_path": virus.get("fetch_manifest_path"),
+                "sequence_source": virus.get("sequence_source"),
+                "segmented_policy": virus.get("segmented_policy"),
+                "dedupe_mode": virus.get("dedupe_mode"),
+                "metadata_path": virus.get("metadata_path"),
+                "complete_only": bool(virus.get("complete_only", False)),
+                "refseq_only": bool(virus.get("refseq_only", False)),
+            }
+        return payload
+
+    @staticmethod
     def _safe_parse_fasta(path: str) -> str | None:
         if not path or not os.path.exists(path):
             return None
@@ -452,7 +469,10 @@ class JobEngine:
             io_cfg=io_cfg,
             spec=spec,
             run_id=run_id,
-            dataset_catalog_manifest={"accession": accession, "source": src, "encoded_path": enc_path},
+            dataset_catalog_manifest=self._dataset_catalog_manifest(
+                {"accession": accession, "source": src, "encoded_path": enc_path},
+                params,
+            ),
             tokenizer_encoding_config={
                 "tokenizer": tok,
                 "window_size": int(window_size),
@@ -551,7 +571,10 @@ class JobEngine:
             io_cfg=io_cfg,
             spec=spec,
             run_id=run_id,
-            dataset_catalog_manifest={"catalog": str(params["catalog"]), "source": src, "num_accessions": len(accessions)},
+            dataset_catalog_manifest=self._dataset_catalog_manifest(
+                {"catalog": str(params["catalog"]), "source": src, "num_accessions": len(accessions)},
+                params,
+            ),
             tokenizer_encoding_config={
                 "tokenizer": tok,
                 "window_size": int(window_size),
