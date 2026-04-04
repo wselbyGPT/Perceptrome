@@ -45,6 +45,7 @@ class FoldBatchSummary:
     skipped_count: int
     started_at: str
     completed_at: str
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 def _utc_now() -> str:
@@ -163,18 +164,30 @@ def write_summary_tsv(path: str, rows: List[FoldSummaryRecord]) -> str:
     return path
 
 
-def build_batch_summary(run_id: str, engine: str, rows: List[FoldSummaryRecord], started_at: str) -> FoldBatchSummary:
+def build_batch_summary(
+    run_id: str,
+    engine: str,
+    rows: List[FoldSummaryRecord],
+    started_at: str,
+    *,
+    total_inputs: Optional[int] = None,
+    skipped_count: Optional[int] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> FoldBatchSummary:
     failed = sum(1 for row in rows if row.engine_status != "ok")
     folded = sum(1 for row in rows if row.engine_status == "ok")
+    resolved_total_inputs = int(total_inputs) if total_inputs is not None else len(rows)
+    resolved_skipped = int(skipped_count) if skipped_count is not None else max(resolved_total_inputs - len(rows), 0)
     return FoldBatchSummary(
         run_id=str(run_id),
         engine=str(engine),
-        total_inputs=len(rows),
+        total_inputs=resolved_total_inputs,
         folded_count=folded,
         failed_count=failed,
-        skipped_count=0,
+        skipped_count=resolved_skipped,
         started_at=str(started_at),
         completed_at=_utc_now(),
+        metadata=dict(metadata or {}),
     )
 
 

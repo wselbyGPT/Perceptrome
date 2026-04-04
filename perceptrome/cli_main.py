@@ -375,6 +375,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--colabfold-bin", default=None, help="Path to colabfold_batch executable")
     s.add_argument("--min-protein-aa", type=int, default=None, help="Skip proteins shorter than this")
     s.add_argument("--max-protein-aa", type=int, default=None, help="Skip proteins longer than this")
+    s.add_argument("--resume", action="store_true", help="Reuse existing successful fold outputs under runs/<run_id>/artifacts/fold/<protein_id>")
     s.add_argument("--keep-going", action="store_true", help="Continue batch when a fold item fails")
     s.set_defaults(func=_lazy_cmd("cmd_fold_batch"))
 
