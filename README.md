@@ -215,6 +215,8 @@ Outputs are written into the standard run layout:
 
 This milestone intentionally excludes: multimer orchestration, RFD3 integration, GUI molecular viewers, and direct training-loop coupling.
 
+For a WSL-first, command-by-command protein lane walkthrough (including ColabFold discovery checks, run layout contracts, and resume/retry troubleshooting), see [`docs/protein_lane_wsl.md`](docs/protein_lane_wsl.md).
+
 ## UniProt ingestion
 
 Use these commands to estimate query size, download shard FASTA files, and generate a Perceptrome-ready accession catalog.
