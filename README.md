@@ -219,6 +219,8 @@ This milestone intentionally excludes: multimer orchestration, RFD3 integration,
 
 Use these commands to estimate query size, download shard FASTA files, and generate a Perceptrome-ready accession catalog.
 
+`uniprot-fetch` resolves shard size with **CLI override > config**. If `--records-per-shard` is omitted, it uses `uniprot.records_per_shard` from `config/stream_config.yaml` (default `50000`).
+
 Count-only checks:
 
 ```bash
@@ -250,14 +252,13 @@ perceptrome uniprot-fetch \
   --records-per-shard 10000
 ```
 
-Fetch all non-isoform records for a broad proteome pull:
+Fetch all non-isoform records for a broad proteome pull (using config default shard size):
 
 ```bash
 perceptrome uniprot-fetch \
   --query 'proteome:UP000005640 AND fragment:false' \
   --output-dir cache/fasta/uniprot/human_proteome \
-  --prefix human_proteome \
-  --records-per-shard 50000
+  --prefix human_proteome
 ```
 
 ### UniProt output artifacts
