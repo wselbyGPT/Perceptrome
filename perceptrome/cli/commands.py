@@ -304,6 +304,33 @@ def _run_fold_one_internal(
     return record, stdout_log, stderr_log
 
 
+def _resume_fold_record_if_available(
+    *,
+    fasta_path: str,
+    layout,
+    engine: str,
+) -> Optional[FoldSummaryRecord]:
+    protein_id = os.path.splitext(os.path.basename(fasta_path))[0]
+    fold_output_dir = path_in_run(layout, "artifacts", os.path.join("fold", protein_id))
+    if not os.path.isdir(fold_output_dir):
+        return None
+    artifacts = discover_colabfold_outputs(fold_output_dir)
+    if not artifacts.structures_pdb and not artifacts.structures_cif:
+        return None
+    started_at = iso_now()
+    return build_fold_summary_record(
+        protein_id=protein_id,
+        source_input_path=str(fasta_path),
+        engine=engine,
+        engine_status="ok",
+        artifacts=artifacts,
+        warnings=["resumed_from_existing_outputs"],
+        errors=[],
+        started_at=started_at,
+        completed_at=iso_now(),
+    )
+
+
 # -----------------------------
 # Commands
 # -----------------------------
@@ -1000,13 +1027,29 @@ def cmd_fold_batch(args: argparse.Namespace) -> int:
     min_len = getattr(args, "min_protein_aa", None)
     max_len = getattr(args, "max_protein_aa", None)
     keep_going = bool(getattr(args, "keep_going", False))
+    resume = bool(getattr(args, "resume", False))
+    skipped_by_length_min = 0
+    skipped_by_length_max = 0
+    resumed_success_count = 0
 
     for fasta_path in files:
         seq = parse_fasta_sequence(fasta_path)
         if min_len is not None and len(seq) < int(min_len):
+            skipped_by_length_min += 1
             continue
         if max_len is not None and len(seq) > int(max_len):
+            skipped_by_length_max += 1
             continue
+        if resume:
+            resumed_record = _resume_fold_record_if_available(
+                fasta_path=fasta_path,
+                layout=layout,
+                engine=str(getattr(args, "engine", "colabfold")),
+            )
+            if resumed_record is not None:
+                resumed_success_count += 1
+                records.append(resumed_record)
+                continue
         record, stdout_log, stderr_log = _run_fold_one_internal(
             fasta_path=fasta_path,
             layout=layout,
@@ -1030,7 +1073,26 @@ def cmd_fold_batch(args: argparse.Namespace) -> int:
     batch_tsv = path_in_run(layout, "outputs", "batch_summary.tsv")
     write_summary_json(summary_json, records)
     write_summary_tsv(summary_tsv, records)
-    batch = build_batch_summary(layout.run_id, str(getattr(args, "engine", "colabfold")), records, started_at)
+    skipped_count = skipped_by_length_min + skipped_by_length_max
+    batch = build_batch_summary(
+        layout.run_id,
+        str(getattr(args, "engine", "colabfold")),
+        records,
+        started_at,
+        total_inputs=len(files),
+        skipped_count=skipped_count,
+        metadata={
+            "attempted_count": len(records) - resumed_success_count,
+            "successful_folds": sum(1 for row in records if row.engine_status == "ok"),
+            "failed_attempts": sum(1 for row in records if row.engine_status != "ok"),
+            "skip_reasons": {
+                "length_below_min": skipped_by_length_min,
+                "length_above_max": skipped_by_length_max,
+            },
+            "resumed_success_count": resumed_success_count,
+            "resume_enabled": resume,
+        },
+    )
     write_batch_summary_json(batch_json, batch, records)
     write_batch_summary_tsv(batch_tsv, batch)
 
