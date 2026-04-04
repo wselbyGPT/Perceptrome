@@ -75,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     vs.set_defaults(func=_lazy_cmd("cmd_virus_catalog_snapshot"))
 
     s = sub.add_parser("uniprot-count")
-    s.add_argument("--query", required=True, help="UniProt query expression")
+    s.add_argument("--query", help="UniProt query expression")
     s.add_argument("--mode", choices=["all", "reviewed", "unreviewed"], default="all", help="Record subset filter (default: all)")
     s.add_argument("--json", action="store_true", help="Emit machine-readable JSON output")
     s.set_defaults(func=_lazy_cmd("cmd_uniprot_count"))
