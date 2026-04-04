@@ -58,6 +58,7 @@ class UniProtCliTests(unittest.TestCase):
     def _base_patches(self, td):
         io_cfg = SimpleNamespace(cache_fasta_dir=td)
         uniprot_cfg = SimpleNamespace(
+            base_url="https://rest.uniprot.org",
             default_query="taxonomy_id:2",
             records_per_shard=100,
             gzip_output=False,
@@ -186,7 +187,13 @@ class UniProtCliTests(unittest.TestCase):
                 rc = cmd_uniprot_count(args)
 
             self.assertEqual(rc, 0)
-            fetch_count.assert_called_once_with("taxonomy_id:2", timeout=5.0, max_retries=2, backoff_seconds=0.0)
+            fetch_count.assert_called_once_with(
+                "taxonomy_id:2",
+                timeout=5.0,
+                max_retries=2,
+                backoff_seconds=0.0,
+                base_url="https://rest.uniprot.org",
+            )
             self.assertIn("[uniprot-count] mode=reviewed count=23", out.getvalue())
 
     def test_cmd_uniprot_count_falls_back_to_config_query_json(self):
