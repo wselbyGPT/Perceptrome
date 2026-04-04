@@ -51,7 +51,7 @@ if "requests" not in sys.modules:
     requests_stub.request = lambda *a, **k: None
     sys.modules["requests"] = requests_stub
 
-from perceptrome.cli.commands import cmd_uniprot_fetch
+from perceptrome.cli.commands import cmd_uniprot_count, cmd_uniprot_fetch
 
 
 class UniProtCliTests(unittest.TestCase):
@@ -169,6 +169,48 @@ class UniProtCliTests(unittest.TestCase):
             printed = out.getvalue()
             self.assertIn("[uniprot-fetch] query count=1 downloaded=1", printed)
             self.assertIn("manifest:", printed)
+
+    def test_cmd_uniprot_count_falls_back_to_config_query_plaintext(self):
+        with tempfile.TemporaryDirectory() as td:
+            args = SimpleNamespace(
+                config="config/stream_config.yaml",
+                query=None,
+                mode="reviewed",
+                json=False,
+            )
+            out = io.StringIO()
+            patches = self._base_patches(td) + [
+                patch("perceptrome.cli.commands.fetch_uniprot_count", return_value={"count": 23}),
+            ]
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as fetch_count, redirect_stdout(out):
+                rc = cmd_uniprot_count(args)
+
+            self.assertEqual(rc, 0)
+            fetch_count.assert_called_once_with("taxonomy_id:2", timeout=5.0, max_retries=2, backoff_seconds=0.0)
+            self.assertIn("[uniprot-count] mode=reviewed count=23", out.getvalue())
+
+    def test_cmd_uniprot_count_falls_back_to_config_query_json(self):
+        with tempfile.TemporaryDirectory() as td:
+            args = SimpleNamespace(
+                config="config/stream_config.yaml",
+                query=None,
+                mode="reviewed",
+                json=True,
+            )
+            out = io.StringIO()
+            patches = self._base_patches(td) + [
+                patch("perceptrome.cli.commands.fetch_uniprot_count", return_value={"count": 31}),
+            ]
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], redirect_stdout(out):
+                rc = cmd_uniprot_count(args)
+
+            self.assertEqual(rc, 0)
+            payload = json.loads(out.getvalue())
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["query"], "taxonomy_id:2")
+            self.assertEqual(payload["mode"], "reviewed")
+            self.assertEqual(payload["effective_query"], "taxonomy_id:2")
+            self.assertEqual(payload["count"], 31)
 
 
 if __name__ == "__main__":
