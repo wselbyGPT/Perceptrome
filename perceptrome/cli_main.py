@@ -85,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--include-isoforms", action="store_true", help="Include isoform records in FASTA output")
     s.add_argument("--output-dir", default=None, help="Output directory for shard FASTA files (default: <cache_fasta_dir>/uniprot)")
     s.add_argument("--prefix", default="uniprot", help="Output shard filename prefix (default: uniprot)")
-    s.add_argument("--records-per-shard", type=int, default=1000, help="Max records per output shard (default: 1000)")
+    s.add_argument("--records-per-shard", type=int, default=None, help="Max records per output shard (default: uniprot.records_per_shard from config; 50000 in config/stream_config.yaml)")
     s.add_argument("--gzip-output", action="store_true", help="Write .gz compressed shard outputs")
     s.add_argument("--resume", action="store_true", help="Skip work if output shards already exist for this query")
     s.add_argument("--count-only", action="store_true", help="Query count only; do not download FASTA shards")
