@@ -86,7 +86,7 @@ class UniProtDatasetTests(unittest.TestCase):
             ])
 
             with patch("perceptrome.uniprot_dataset.fetch_uniprot_count", return_value={"count": 3, "count_source": "header:x-total-results"}), patch(
-                "perceptrome.uniprot_dataset.request_with_retry", return_value=fake_stream
+                "perceptrome.uniprot_dataset.stream_uniprot_fasta", return_value=fake_stream.iter_lines()
             ):
                 result = uniprot_dataset.fetch_uniprot_dataset(
                     query="taxonomy_id:2",

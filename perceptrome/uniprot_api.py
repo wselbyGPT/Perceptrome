@@ -5,11 +5,27 @@ from typing import Any, Dict, Iterator, Optional
 
 import requests
 
-UNIPROT_SEARCH_URL = "https://rest.uniprot.org/uniprotkb/search"
-UNIPROT_STREAM_URL = "https://rest.uniprot.org/uniprotkb/stream"
+UNIPROT_BASE_URL = "https://rest.uniprot.org"
+UNIPROT_SEARCH_URL = f"{UNIPROT_BASE_URL}/uniprotkb/search"
+UNIPROT_STREAM_URL = f"{UNIPROT_BASE_URL}/uniprotkb/stream"
 
 _TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 _ACCESSION_RE = re.compile(r"^>(?:sp|tr)\|([^|]+)\|")
+
+
+def _normalize_base_url(base_url: Optional[str]) -> str:
+    if base_url is None:
+        return UNIPROT_BASE_URL
+    normalized = str(base_url).strip().rstrip("/")
+    return normalized or UNIPROT_BASE_URL
+
+
+def build_uniprot_search_url(base_url: Optional[str] = None) -> str:
+    return f"{_normalize_base_url(base_url)}/uniprotkb/search"
+
+
+def build_uniprot_stream_url(base_url: Optional[str] = None) -> str:
+    return f"{_normalize_base_url(base_url)}/uniprotkb/stream"
 
 
 def build_count_query(
@@ -123,6 +139,7 @@ def fetch_uniprot_count(
     max_retries: int = 3,
     backoff_seconds: float = 1.0,
     session: Optional[requests.Session] = None,
+    base_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Fetch live UniProtKB count for a query using `size=0`.
 
@@ -133,9 +150,10 @@ def fetch_uniprot_count(
         "size": 0,
         "format": "json",
     }
+    search_url = build_uniprot_search_url(base_url)
     response = request_with_retry(
         "GET",
-        UNIPROT_SEARCH_URL,
+        search_url,
         params=params,
         timeout=timeout,
         max_retries=max_retries,
@@ -183,7 +201,7 @@ def fetch_uniprot_count(
 
     return {
         "provider": "uniprot",
-        "endpoint": UNIPROT_SEARCH_URL,
+        "endpoint": search_url,
         "query": query,
         "count": parsed_count,
         "count_source": count_source,
@@ -199,6 +217,7 @@ def stream_uniprot_fasta(
     max_retries: int = 3,
     backoff_seconds: float = 1.0,
     session: Optional[requests.Session] = None,
+    base_url: Optional[str] = None,
 ) -> Iterator[str]:
     """Stream FASTA from UniProt incrementally without full buffering."""
     params: Dict[str, Any] = {
@@ -206,9 +225,10 @@ def stream_uniprot_fasta(
         "format": "fasta",
         "includeIsoform": str(include_isoform).lower(),
     }
+    stream_url = build_uniprot_stream_url(base_url)
     response = request_with_retry(
         "GET",
-        UNIPROT_STREAM_URL,
+        stream_url,
         params=params,
         timeout=timeout,
         max_retries=max_retries,

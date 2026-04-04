@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Iterator, List, Optional
 
 from perceptrome.io_utils import write_catalog
-from perceptrome.uniprot_api import UNIPROT_STREAM_URL, fetch_uniprot_count, parse_accession_from_fasta_header, request_with_retry
+from perceptrome.uniprot_api import fetch_uniprot_count, parse_accession_from_fasta_header, stream_uniprot_fasta
 
 _FASTA_HEADER_RE = re.compile(r"^>\S+")
 _FASTA_SEQ_RE = re.compile(r"^[A-Za-z*.-]+$")
@@ -245,12 +245,13 @@ def write_accession_catalog(path: str, *, accessions: List[str], query: str) -> 
     write_catalog(path, accessions, header=header)
 
 
-def fetch_uniprot_dataset(*, query: str, include_isoforms: bool, prefix_path: str, records_per_shard: int, use_gzip: bool, resume: bool, timeout: float, max_retries: int, backoff_seconds: float, count_only: bool = False) -> Dict[str, Any]:
+def fetch_uniprot_dataset(*, query: str, include_isoforms: bool, prefix_path: str, records_per_shard: int, use_gzip: bool, resume: bool, timeout: float, max_retries: int, backoff_seconds: float, count_only: bool = False, base_url: Optional[str] = None) -> Dict[str, Any]:
     live_count = fetch_uniprot_count(
         query,
         timeout=timeout,
         max_retries=max_retries,
         backoff_seconds=backoff_seconds,
+        base_url=base_url,
     )
     if count_only:
         return {
@@ -283,22 +284,16 @@ def fetch_uniprot_dataset(*, query: str, include_isoforms: bool, prefix_path: st
     preview: List[str] = []
     all_accessions: List[str] = []
 
-    params = {
-        "query": query,
-        "format": "fasta",
-        "includeIsoform": str(bool(include_isoforms)).lower(),
-    }
-    response = request_with_retry(
-        "GET",
-        UNIPROT_STREAM_URL,
-        params=params,
+    fasta_lines = stream_uniprot_fasta(
+        query,
+        include_isoform=include_isoforms,
         timeout=timeout,
         max_retries=max_retries,
         backoff_seconds=backoff_seconds,
-        stream=True,
+        base_url=base_url,
     )
 
-    for record in iter_fasta_records(response.iter_lines(decode_unicode=True)):
+    for record in iter_fasta_records(fasta_lines):
         writer.add_record(record)
         accession = parse_accession_from_fasta_header(record.header)
         if accession:

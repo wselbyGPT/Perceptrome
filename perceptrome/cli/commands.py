@@ -325,6 +325,7 @@ def cmd_uniprot_count(args: argparse.Namespace) -> int:
             timeout=float(uniprot_cfg.request_timeout),
             max_retries=int(uniprot_cfg.retries),
             backoff_seconds=float(uniprot_cfg.backoff_seconds),
+            base_url=str(uniprot_cfg.base_url),
         )
         total = int(count_payload["count"])
     except Exception as err:
@@ -375,6 +376,7 @@ def cmd_uniprot_fetch(args: argparse.Namespace) -> int:
             max_retries=int(uniprot_cfg.retries),
             backoff_seconds=float(uniprot_cfg.backoff_seconds),
             count_only=count_only,
+            base_url=str(uniprot_cfg.base_url),
         )
 
         live_count = result.get("live_count") or {}

@@ -44,6 +44,20 @@ class FakeSession:
 
 
 class UniProtApiTests(unittest.TestCase):
+    def test_build_uniprot_urls_use_default_base(self):
+        self.assertEqual(uniprot_api.build_uniprot_search_url(), uniprot_api.UNIPROT_SEARCH_URL)
+        self.assertEqual(uniprot_api.build_uniprot_stream_url(), uniprot_api.UNIPROT_STREAM_URL)
+
+    def test_build_uniprot_urls_allow_custom_base(self):
+        self.assertEqual(
+            uniprot_api.build_uniprot_search_url("https://example.test/api/"),
+            "https://example.test/api/uniprotkb/search",
+        )
+        self.assertEqual(
+            uniprot_api.build_uniprot_stream_url("https://example.test/api/"),
+            "https://example.test/api/uniprotkb/stream",
+        )
+
     def test_build_count_query_modes(self):
         self.assertEqual(
             uniprot_api.build_count_query("all", None, "taxonomy_id:2"),
@@ -66,9 +80,10 @@ class UniProtApiTests(unittest.TestCase):
         session = FakeSession(
             [FakeResponse(status_code=200, headers={"x-total-results": "123"}, json_payload={"totalResults": 9})]
         )
-        payload = uniprot_api.fetch_uniprot_count("q", session=session)
+        payload = uniprot_api.fetch_uniprot_count("q", session=session, base_url="https://example.test")
         self.assertEqual(payload["count"], 123)
         self.assertEqual(payload["count_source"], "header:x-total-results")
+        self.assertEqual(payload["endpoint"], "https://example.test/uniprotkb/search")
 
     def test_fetch_uniprot_count_falls_back_to_body(self):
         session = FakeSession([FakeResponse(status_code=200, headers={}, json_payload={"hits": {"total": {"value": 77}}})])
