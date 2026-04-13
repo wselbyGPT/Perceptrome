@@ -1,0 +1,18 @@
+{
+  "current_index": 0,
+  "total_steps": 0,
+  "plasmid_visit_counts": {},
+  "epoch": 0,
+  "last_checkpoint": null,
+  "genome": {
+    "genes": {
+      "tokenizer": "base",
+      "window_size": 512,
+      "stride": 256,
+      "learning_rate": 0.001,
+      "beta_kl": 0.001,
+      "model_type": "mlp",
+      "transformer_layers": 4
+    }
+  }
+}
