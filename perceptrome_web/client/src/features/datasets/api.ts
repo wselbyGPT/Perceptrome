@@ -25,8 +25,14 @@ export type DatasetPreview = {
   total_rows: number;
 };
 
+export type DatasetCreatePayload = {
+  dataset_id: string;
+  accessions: string[];
+};
+
 export const datasetsApi = {
   list: () => apiRequest<DatasetCatalogItem[]>("/api/datasets"),
   detail: (datasetId: string) => apiRequest<DatasetDetail>(`/api/datasets/${encodeURIComponent(datasetId)}`),
   preview: (datasetId: string, limit = 25) => apiRequest<DatasetPreview>(`/api/datasets/${encodeURIComponent(datasetId)}/preview?limit=${limit}`),
+  create: (payload: DatasetCreatePayload) => apiRequest<DatasetDetail>("/api/datasets", { method: "POST", body: payload }),
 };

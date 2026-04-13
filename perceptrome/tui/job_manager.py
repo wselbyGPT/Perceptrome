@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from perceptrome.jobs.engine import JobEvent, JobResult, JobSpec
+    from perceptrome.jobs.spec import JobEvent, JobResult, JobSpec
 
 from .events import (
     JobArtifactEmittedEvent,
@@ -72,6 +72,8 @@ class Job:
     last_warning: str = ""
     last_error: str = ""
     status_reason: str = ""
+    spec_params: dict[str, Any] = field(default_factory=dict)
+    config_path: str = "config/stream_config.yaml"
     status_metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -95,7 +97,14 @@ class JobManager:
 
     def submit(self, spec: "JobSpec", *, run_id: str | None = None, title: str | None = None) -> str:
         job_id = str(run_id or f"job-{datetime.now(timezone.utc).timestamp()}")
-        card = Job(id=job_id, run_id=job_id, title=title or spec.kind.replace("_", " ").title(), kind=spec.kind)
+        card = Job(
+            id=job_id,
+            run_id=job_id,
+            title=title or spec.kind.replace("_", " ").title(),
+            kind=spec.kind,
+            spec_params=dict(spec.params),
+            config_path=spec.config_path or "config/stream_config.yaml",
+        )
         cancel_event = threading.Event()
 
         worker = threading.Thread(
@@ -362,6 +371,8 @@ class JobManager:
             "progress": asdict(job.progress),
             "last_warning": job.last_warning,
             "last_error": job.last_error,
+            "spec_params": dict(job.spec_params),
+            "config_path": job.config_path,
             "status_reason": job.status_reason,
             "status_metadata": dict(job.status_metadata),
         }
@@ -403,6 +414,8 @@ class JobManager:
                 ),
                 last_warning=str(payload.get("last_warning") or ""),
                 last_error=str(payload.get("last_error") or ""),
+                spec_params=payload.get("spec_params") if isinstance(payload.get("spec_params"), dict) else {},
+                config_path=str(payload.get("config_path") or "config/stream_config.yaml"),
                 status_reason=str(payload.get("status_reason") or ""),
                 status_metadata=payload.get("status_metadata") if isinstance(payload.get("status_metadata"), dict) else {},
             )

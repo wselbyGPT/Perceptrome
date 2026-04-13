@@ -49,3 +49,10 @@ model/
 # Perceptrome web database files
 perceptrome_web/server/*.db
 perceptrome_web/server/*.sqlite3
+
+# Nginx TLS certs (never commit)
+perceptrome_web/nginx/certs/*.pem
+perceptrome_web/nginx/certs/*.key
+
+# Docker volumes
+pgdata_dev/

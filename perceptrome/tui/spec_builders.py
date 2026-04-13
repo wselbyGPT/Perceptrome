@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from perceptrome.jobs.engine import JobSpec
+from perceptrome.jobs.spec import JobSpec
 
 
 class SpecValidationError(ValueError):

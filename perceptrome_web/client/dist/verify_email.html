@@ -3,30 +3,27 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Verify Email</title>
-    <script type="module" crossorigin src="/assets/verify_email-MX_shQeQ.js"></script>
-    <link rel="modulepreload" crossorigin href="/assets/auth_api-C3j5QkHe.js">
-    <link rel="stylesheet" crossorigin href="/assets/auth_api-BqHYb5Pl.css">
+    <title>Perceptrome</title>
+    <script>
+      (function () {
+        var target = '/';
+        var map = {
+          runs: '/runs',
+          login: '/login',
+          admin_users: '/admin/users',
+          datasets: '/datasets',
+          change_password: '/profile/change-password',
+          verify_email: '/verify-email',
+          forgot_password: '/forgot-password',
+          reset_password: '/reset-password'
+        };
+        var page = 'verify_email';
+        var next = map[page] || target;
+        window.location.replace(next + window.location.search + window.location.hash);
+      })();
+    </script>
   </head>
-  <body class="auth-page">
-    <div class="panel auth-card">
-      <h1>Email verification</h1>
-      <p class="auth-sub">Paste the token from your email or open this page via the email link.</p>
-
-      <label for="token">Verification token</label>
-      <input id="token" class="input" type="text" placeholder="Paste token" />
-      <button id="verify-btn" class="btn" type="button">Verify email</button>
-      <div id="verify-msg" class="msg"></div>
-
-      <hr />
-      <p class="auth-sub">If your token expired, request a fresh verification email.</p>
-      <label for="email">Email</label>
-      <input id="email" class="input" type="email" placeholder="you@example.com" />
-      <button id="resend-btn" class="btn" type="button">Resend verification</button>
-      <div id="resend-msg" class="msg"></div>
-
-      <p class="auth-hint"><a href="/login.html">Back to login</a></p>
-    </div>
-
+  <body>
+    <p>Redirecting…</p>
   </body>
 </html>

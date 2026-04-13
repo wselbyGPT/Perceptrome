@@ -20,6 +20,10 @@ export function DashboardPage() {
   const summary = summaryQuery.data;
   const datasets = datasetsQuery.data ?? [];
 
+  if (!summary) {
+    return <LoadingState title="Loading dashboard" message="Pulling run and dataset summaries." />;
+  }
+
   return (
     <div className="page-section stack-lg">
       <section className="hero-card panel">

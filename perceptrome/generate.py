@@ -17,8 +17,23 @@ from .config import TrainingConfig, IOConfig
 from .model import get_device, load_or_init_model
 from .encoding_main import tokenizer_meta, IDX_TO_CODON, CODON_VOCAB_SIZE, GC_COUNT_PER_TOKEN, IDX_TO_AA, AA_VOCAB_SIZE
 from .jobs.provenance import collect_and_write_provenance, resolve_seed, set_global_seeds
+from .latent_strategies import (
+    LatentConfig,
+    default_latent_config,
+    encode_sequence,
+    generate_latent_vectors,
+    gradient_optimize_latent,
+    inpaint_latent,
+    create_inpaint_mask,
+    random_latent,
+)
 from .run_layout import ensure_run_layout, path_in_run, update_run_manifest
 from .encoding.bio_ast_builder import BioASTBuilder
+from .sampling import (
+    SamplingConfig,
+    default_sampling_config,
+    sample_window,
+)
 from .scorecard import (
     build_plasmid_scorecard,
     build_protein_scorecard,
@@ -454,6 +469,8 @@ def generate_plasmid_sequence(
     scorecard_reference_top_n: int = 5,
     scorecard_motifs: Optional[Dict[str, str]] = None,
     ast_template_validation: Optional[AstTemplateValidationConfig] = None,
+    sampling_config: Optional[SamplingConfig] = None,
+    latent_config: Optional[LatentConfig] = None,
 ) -> str:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -522,31 +539,74 @@ def generate_plasmid_sequence(
     ast_details = _load_ast_conditioning_payload(ast_conditioning) if ast_conditioning is not None else None
     ast_vocab_mask = _build_ast_guided_mask(vocab_size=vocab_size, conditioning=ast_conditioning, details=ast_details)
 
+    # Build combined bias weights (GC + AST) for the sampling module
+    def _build_bias_weights() -> np.ndarray:
+        bw = ast_vocab_mask.copy()
+        if gc_bias != 1.0:
+            if tok == "base":
+                bw[1] *= gc_bias
+                bw[2] *= gc_bias
+            else:
+                bw[:len(GC_COUNT_PER_TOKEN)] *= (gc_bias ** GC_COUNT_PER_TOKEN[:bw.shape[0]])
+        return bw
+
+    bias_weights = _build_bias_weights()
+
+    # Configure sampling
+    s_cfg = sampling_config or default_sampling_config()
+    # Override temperature from function arg if using default config
+    if sampling_config is None:
+        s_cfg = SamplingConfig(strategy=s_cfg.strategy, temperature=temperature,
+                               top_k=s_cfg.top_k, top_p=s_cfg.top_p,
+                               beam_width=s_cfg.beam_width,
+                               anneal_start=s_cfg.anneal_start, anneal_end=s_cfg.anneal_end)
+
+    # Configure latent strategy
+    l_cfg = latent_config or default_latent_config()
+    if latent_config is None:
+        l_cfg = LatentConfig(strategy=l_cfg.strategy, latent_scale=latent_scale)
+
+    idx_to_base = ["A", "C", "G", "T"]
+
+    def _tokens_to_seq(tokens: List[int]) -> str:
+        if tok == "base":
+            return "".join(idx_to_base[t] for t in tokens)
+        else:
+            return "".join(IDX_TO_CODON[t] for t in tokens)
+
     def _sample_once() -> str:
         seq_parts: List[str] = []
         with torch.no_grad():
             for _ in range(n_windows):
-                z = torch.randn(1, latent_dim, device=device) * latent_scale
+                z = random_latent(latent_dim, device, l_cfg.latent_scale)
                 logits_flat = model.decode(z)
                 logits = logits_flat.view(seq_len, vocab_size).cpu().numpy()
-                if tok == "base":
-                    idx_to_base = ["A", "C", "G", "T"]
-                    for j in range(seq_len):
-                        w = 1.0 / (1.0 + np.exp(-logits[j]))
-                        if gc_bias != 1.0:
-                            w[1] *= gc_bias
-                            w[2] *= gc_bias
-                        w = w * ast_vocab_mask[: w.shape[0]]
-                        idx = _sample_from_logits(np.log(np.clip(w, 1e-9, None)), temperature)
-                        seq_parts.append(idx_to_base[idx])
-                else:
-                    for j in range(seq_len):
-                        w = 1.0 / (1.0 + np.exp(-logits[j]))
-                        if gc_bias != 1.0:
-                            w *= (gc_bias ** GC_COUNT_PER_TOKEN[: w.shape[0]])
-                        w = w * ast_vocab_mask[: w.shape[0]]
-                        idx = _sample_from_logits(np.log(np.clip(w, 1e-9, None)), temperature)
-                        seq_parts.append(IDX_TO_CODON[idx])
+                tokens = sample_window(logits, s_cfg, bias_weights=bias_weights)
+                seq_parts.append(_tokens_to_seq(tokens))
+        return "".join(seq_parts)[:target_bp]
+
+    def _sample_with_latent_strategy() -> str:
+        """Generate using the configured latent strategy."""
+        strategy = l_cfg.strategy.lower()
+        if strategy == "random":
+            return _sample_once()
+
+        # For non-random strategies, generate latent vectors then decode them
+        latent_vectors = generate_latent_vectors(
+            cfg=l_cfg,
+            model=model,
+            latent_dim=latent_dim,
+            device=device,
+        )
+        # Decode each latent vector into a window
+        seq_parts: List[str] = []
+        with torch.no_grad():
+            for i in range(n_windows):
+                z = latent_vectors[i % len(latent_vectors)]
+                logits_flat = model.decode(z)
+                logits = logits_flat.view(seq_len, vocab_size).cpu().numpy()
+                tokens = sample_window(logits, s_cfg, bias_weights=bias_weights)
+                seq_parts.append(_tokens_to_seq(tokens))
         return "".join(seq_parts)[:target_bp]
 
     nc = max(1, int(num_candidates))
@@ -556,7 +616,7 @@ def generate_plasmid_sequence(
 
     candidates: List[Dict[str, object]] = []
     for i in range(nc):
-        seq = _sample_once()
+        seq = _sample_with_latent_strategy()
         recon = _roundtrip_recon_score(model, seq, tok, seq_len, vocab_size, device) if roundtrip_score else None
         scorecard = build_plasmid_scorecard(
             seq,
@@ -715,6 +775,8 @@ def generate_protein_sequence(
     scorecard_similarity_references: Optional[Sequence[Dict[str, str]]] = None,
     scorecard_reference_top_n: int = 5,
     ast_template_validation: Optional[AstTemplateValidationConfig] = None,
+    sampling_config: Optional[SamplingConfig] = None,
+    latent_config: Optional[LatentConfig] = None,
 ) -> str:
     if torch is None:
         raise RuntimeError("PyTorch not installed.")
@@ -778,31 +840,59 @@ def generate_protein_sequence(
     ast_details = _load_ast_conditioning_payload(ast_conditioning) if ast_conditioning is not None else None
     ast_vocab_mask = _build_ast_guided_mask(vocab_size=vocab_size, conditioning=ast_conditioning, details=ast_details)
 
+    # Configure sampling and latent strategies
+    s_cfg = sampling_config or default_sampling_config()
+    if sampling_config is None:
+        s_cfg = SamplingConfig(strategy=s_cfg.strategy, temperature=temperature,
+                               top_k=s_cfg.top_k, top_p=s_cfg.top_p,
+                               beam_width=s_cfg.beam_width,
+                               anneal_start=s_cfg.anneal_start, anneal_end=s_cfg.anneal_end)
+    l_cfg = latent_config or default_latent_config()
+    if latent_config is None:
+        l_cfg = LatentConfig(strategy=l_cfg.strategy, latent_scale=latent_scale)
+
     def _sample_once() -> str:
         aa_chars: List[str] = []
         with torch.no_grad():
             for _ in range(n_windows):
-                z = torch.randn(1, latent_dim, device=device) * latent_scale
+                z = random_latent(latent_dim, device, l_cfg.latent_scale)
                 logits_flat = model.decode(z)
                 logits = logits_flat.view(seq_len, vocab_size).cpu().numpy()
-                for j in range(seq_len):
-                    idx = _sample_from_logits(logits[j] + np.log(np.clip(ast_vocab_mask[: logits[j].shape[0]], 1e-9, None)), temperature)
-                    aa_chars.append(IDX_TO_AA[idx])
+                tokens = sample_window(logits, s_cfg, bias_weights=ast_vocab_mask)
+                aa_chars.extend(IDX_TO_AA[t] for t in tokens)
+        return "".join(aa_chars)[:target_aa]
+
+    def _sample_with_latent_strategy() -> str:
+        strategy = l_cfg.strategy.lower()
+        if strategy == "random":
+            return _sample_once()
+        latent_vectors = generate_latent_vectors(
+            cfg=l_cfg, model=model, latent_dim=latent_dim, device=device,
+        )
+        aa_chars: List[str] = []
+        with torch.no_grad():
+            for i in range(n_windows):
+                z = latent_vectors[i % len(latent_vectors)]
+                logits_flat = model.decode(z)
+                logits = logits_flat.view(seq_len, vocab_size).cpu().numpy()
+                tokens = sample_window(logits, s_cfg, bias_weights=ast_vocab_mask)
+                aa_chars.extend(IDX_TO_AA[t] for t in tokens)
         return "".join(aa_chars)[:target_aa]
 
     def _sample_candidate() -> str:
+        sampler = _sample_with_latent_strategy
         if not reject:
-            return _sample_once()
+            return sampler()
         tries = max(1, int(reject_tries))
         candidate = ""
         for t in range(tries):
-            candidate = _sample_once()
+            candidate = sampler()
             if _passes_protein_filters(candidate, max_run=int(reject_max_run), max_x_frac=float(reject_max_x_frac)):
                 return candidate
             if (t + 1) % 10 == 0:
                 logging.info(f"[generate-protein] rejection: {t+1}/{tries} rejected")
         logging.warning("[generate-protein] rejection-sampling exhausted tries; using last sample")
-        return candidate if candidate else _sample_once()
+        return candidate if candidate else sampler()
 
     nc = max(1, int(num_candidates))
     top_k = max(1, min(int(top_k), nc))

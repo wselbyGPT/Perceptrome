@@ -67,7 +67,7 @@ export type BioASTTreeNode = {
   children: BioASTTreeNode[];
 };
 
-export const bioAstTreeNodeSchema: z.ZodType<BioASTTreeNode> = z.lazy(() =>
+export const bioAstTreeNodeSchema: z.ZodType<BioASTTreeNode, z.ZodTypeDef, unknown> = z.lazy(() =>
   z.object({
     id: z.string(),
     label: z.string(),

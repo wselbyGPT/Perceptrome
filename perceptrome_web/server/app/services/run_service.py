@@ -14,9 +14,18 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from perceptrome.jobs import JobEngine, JobEvent, JobSpec
+# Import lightweight spec types directly so run_service (and therefore the
+# whole FastAPI app) can boot without torch installed. JobEngine, which pulls
+# in the full ML stack, is lazy-imported inside the functions that actually
+# execute jobs — see _get_job_engine().
+from perceptrome.jobs.spec import JobEvent, JobSpec
 
 from perceptrome.encoding.bio_ast_export import export_filenames
+
+
+def _get_job_engine():
+    from perceptrome.jobs.engine import JobEngine
+    return JobEngine
 
 from ..core.db import SessionLocal
 from ..models import Run, RunArtifact, User
@@ -24,7 +33,7 @@ from ..schemas import BioASTVisualizationBundleOut, LineageEdgeOut, LineageNodeO
 from . import audit_service
 
 RunState = Literal["queued", "running", "completed", "failed", "canceled"]
-VALID_JOB_KINDS = {"train_one", "stream", "generate_plasmid", "generate_protein", "validate_plasmid", "pretrain"}
+VALID_JOB_KINDS = {"train_one", "stream", "generate_plasmid", "generate_protein", "validate_plasmid", "pretrain", "design_loop"}
 REPLAY_DESCRIPTOR_VERSION = 1
 
 
@@ -296,13 +305,37 @@ def stop_run_record(run_id: str) -> bool:
     return True
 
 
+def _record_output_artifacts(db: Session, run_id: str, kind: str, result_data: dict[str, Any]) -> None:
+    """Register downloadable output files (FASTA, JSON, scorecard, etc.) as artifacts."""
+    _artifact_keys = [
+        ("output", "output", "Generated sequence"),
+        ("summary_path", "output", "Summary JSON"),
+        ("scorecard_path", "output", "Scorecard"),
+        ("output_json", "output", "Validation results"),
+        ("machine_artifact_json", "output", "Validation results (machine)"),
+        ("best_fasta", "output", "Best candidate FASTA"),
+        ("summary_json", "output", "Design loop summary"),
+        ("lineage_json", "output", "Evolution lineage"),
+    ]
+    seen: set[str] = set()
+    for key, phase, label in _artifact_keys:
+        path_value = result_data.get(key)
+        if not isinstance(path_value, str) or not path_value:
+            continue
+        resolved = Path(path_value).expanduser().resolve()
+        if str(resolved) in seen or not resolved.exists() or not resolved.is_file():
+            continue
+        seen.add(str(resolved))
+        record_artifact(db, run_id, str(resolved), phase=phase, label=label)
+
+
 def execute_run(*, cfg: dict[str, Any], user: User, db: Session, manifest_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     run_id, spec = parse_job_spec(cfg)
     record = upsert_run(run_id, spec)
     save_run_submission(db, user, run_id, spec, cfg)
     record.state = "running"
     mark_run_started(db, run_id)
-    result = JobEngine(cancel_event=record.cancel_event).run(spec)
+    result = _get_job_engine()(cancel_event=record.cancel_event).run(spec)
     final_state: RunState = "completed" if result.ok else ("canceled" if result.exit_code == 130 else "failed")
     result_data = dict(result.data or {})
     manifest_path = result_data.get("manifest_path") if isinstance(result_data.get("manifest_path"), str) else None
@@ -316,6 +349,7 @@ def execute_run(*, cfg: dict[str, Any], user: User, db: Session, manifest_metada
         record_artifact(db, run_id, manifest_path, phase="manifest", label="Run manifest")
     if descriptor_path:
         record_artifact(db, run_id, descriptor_path, phase="provenance", label="Replay descriptor")
+    _record_output_artifacts(db, run_id, spec.kind, result_data)
     if manifest_path and manifest_metadata:
         update_manifest_metadata(manifest_path, manifest_metadata)
     finalize_run(db, run_id, final_state, final_payload, result.message)
@@ -606,7 +640,7 @@ async def websocket_run_loop(websocket: WebSocket, user: User, db: Session):
                     payload = {"type": "validation-summary", "run_id": run_id, "phase": ev.stage, "summary": ev.data}
                 if "progress" in ev.data and isinstance(ev.data.get("progress"), (int, float)):
                     payload = {"type": "progress", "run_id": run_id, "state": "running", "phase": ev.stage, "progress": float(ev.data["progress"])}
-                elif ev.stage in {"start", "done", "stream_step", "generate", "validate", "pretrain", "encode", "train", "manifest"}:
+                elif ev.stage in {"start", "done", "stream_step", "generate", "validate", "pretrain", "encode", "train", "manifest", "design_loop"}:
                     payload = {"type": "phase", "run_id": run_id, "state": "running", "phase": ev.stage, "status": ev.message, "data": ev.data}
                 if "path" in ev.data and isinstance(ev.data.get("path"), str):
                     with SessionLocal() as tx:
@@ -631,7 +665,8 @@ async def websocket_run_loop(websocket: WebSocket, user: User, db: Session):
             record.state = "running"
             mark_run_started(db, run_id)
             await websocket.send_text(json.dumps({"type": "status", "run_id": run_id, "state": "running", "status": "running", "phase": "start", "progress": 0.01}))
-            run_task = asyncio.create_task(asyncio.to_thread(lambda: JobEngine(event_sink=sink, cancel_event=record.cancel_event).run(spec)))
+            _JobEngine = _get_job_engine()
+            run_task = asyncio.create_task(asyncio.to_thread(lambda: _JobEngine(event_sink=sink, cancel_event=record.cancel_event).run(spec)))
             forward_task = asyncio.create_task(forward_events(run_task))
             result = await run_task
             await forward_task
@@ -645,6 +680,7 @@ async def websocket_run_loop(websocket: WebSocket, user: User, db: Session):
                 record.result = final_result
             if manifest_path:
                 record_artifact(db, run_id, manifest_path, phase="manifest", label="Run manifest")
+            _record_output_artifacts(db, run_id, spec.kind, result_data)
             finalize_run(db, run_id, final_state, final_result, result.message)
             await websocket.send_text(json.dumps({"type": "result", "run_id": run_id, "state": final_state, "result": final_result}))
             await websocket.send_text(json.dumps({"type": "status", "run_id": run_id, "state": final_state, "status": final_state, "phase": "done", "progress": (1.0 if final_state == "completed" else 0.0)}))
