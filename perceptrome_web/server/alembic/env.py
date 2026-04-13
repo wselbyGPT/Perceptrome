@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+import sys
 from logging.config import fileConfig
+from pathlib import Path
+
+# Make `app` importable regardless of CWD (e.g. when run from the repo root
+# via `python -m alembic -c perceptrome_web/server/alembic.ini` inside Docker).
+_SERVER_DIR = Path(__file__).resolve().parent.parent
+if str(_SERVER_DIR) not in sys.path:
+    sys.path.insert(0, str(_SERVER_DIR))
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool

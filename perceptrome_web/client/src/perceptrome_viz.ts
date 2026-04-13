@@ -269,21 +269,118 @@ export function setupPerceptromeViz(root: HTMLDivElement, ws: WebSocket) {
     return Number.isFinite(value) ? value : fallback;
   }
 
+  function readOptionalNumeric(id: string): number | undefined {
+    const el = root.querySelector<HTMLInputElement>(`#${id}`);
+    if (!el || !el.value.trim()) return undefined;
+    const value = Number(el.value);
+    return Number.isFinite(value) ? value : undefined;
+  }
+
+  function readOptionalString(id: string): string | undefined {
+    const el = root.querySelector<HTMLInputElement | HTMLSelectElement>(`#${id}`);
+    const v = el?.value?.trim();
+    return v || undefined;
+  }
+
   function readRunConfigFromForm(): RunConfig {
     const kind = getById<HTMLSelectElement>(root, "run-kind").value;
     const configPath = getById<HTMLInputElement>(root, "config-path").value.trim();
-    const dataset = getById<HTMLSelectElement>(root, "dataset").value;
-    const modelFamily = getById<HTMLSelectElement>(root, "model-family").value;
     if (!configPath) throw new Error("Config path is required");
+
+    const dataset = readOptionalString("dataset");
+    const modelFamily = readOptionalString("model-family");
+    const params: Record<string, unknown> = {};
+
+    // Catalog / dataset (for stream, validate_plasmid, design_loop)
+    if (dataset) {
+      params.catalog = `config/${dataset}.txt`;
+    }
+
+    // Model family
+    if (modelFamily) params.model_family = modelFamily;
+
+    // Per-kind parameters
+    switch (kind) {
+      case "generate_plasmid": {
+        params.length_bp = readNumericInput("length-bp", 10000);
+        params.temperature = readNumericInput("temperature", 1.0);
+        params.latent_scale = readNumericInput("latent-scale", 1.0);
+        params.target_gc = readOptionalNumeric("target-gc") ?? 0.5;
+        params.gc_bias = readOptionalNumeric("gc-bias") ?? 1.0;
+        const seed = readOptionalNumeric("seed");
+        if (seed !== undefined) params.seed = seed;
+        const numCandidates = readOptionalNumeric("num-candidates");
+        if (numCandidates !== undefined && numCandidates > 1) params.num_candidates = numCandidates;
+        const topK = readOptionalNumeric("top-k");
+        if (topK !== undefined && topK > 1) params.top_k = topK;
+        const name = readOptionalString("output-name");
+        if (name) params.name = name;
+        break;
+      }
+      case "generate_protein": {
+        params.length_aa = readNumericInput("length-aa", 600);
+        params.temperature = readNumericInput("temperature", 1.0);
+        params.latent_scale = readNumericInput("latent-scale", 1.0);
+        const seed = readOptionalNumeric("seed");
+        if (seed !== undefined) params.seed = seed;
+        const numCandidates = readOptionalNumeric("num-candidates");
+        if (numCandidates !== undefined && numCandidates > 1) params.num_candidates = numCandidates;
+        const topK = readOptionalNumeric("top-k");
+        if (topK !== undefined && topK > 1) params.top_k = topK;
+        const name = readOptionalString("output-name");
+        if (name) params.name = name;
+        break;
+      }
+      case "validate_plasmid": {
+        const generatedFasta = readOptionalString("generated-fasta");
+        if (generatedFasta) params.generated_fasta = generatedFasta;
+        params.top_n = readNumericInput("top-n", 5);
+        break;
+      }
+      case "train_one": {
+        const accession = readOptionalString("accession");
+        if (accession) params.accession = accession;
+        params.steps = readOptionalNumeric("steps") ?? 25;
+        params.batch_size = readOptionalNumeric("batch-size") ?? 32;
+        const tokenizer = readOptionalString("tokenizer");
+        if (tokenizer) params.tokenizer = tokenizer;
+        break;
+      }
+      case "stream": {
+        params.steps_per_plasmid = readOptionalNumeric("steps") ?? 25;
+        params.max_epochs = readOptionalNumeric("max-epochs") ?? 10;
+        params.batch_size = readOptionalNumeric("batch-size") ?? 32;
+        const tokenizer = readOptionalString("tokenizer");
+        if (tokenizer) params.tokenizer = tokenizer;
+        break;
+      }
+      case "pretrain": {
+        const pretrainDataset = readOptionalString("pretrain-dataset");
+        if (pretrainDataset) params.dataset = pretrainDataset;
+        params.batch_size = readOptionalNumeric("batch-size") ?? 16;
+        params.epochs = readOptionalNumeric("pretrain-epochs") ?? 1;
+        params.hidden_size = readOptionalNumeric("hidden-size") ?? 256;
+        params.learning_rate = readOptionalNumeric("learning-rate") ?? 0.0001;
+        params.vocab_size = readOptionalNumeric("vocab-size") ?? 32;
+        break;
+      }
+      case "design_loop": {
+        params.rounds = readOptionalNumeric("rounds") ?? 5;
+        params.population_size = readOptionalNumeric("population-size") ?? 8;
+        params.survivor_count = readOptionalNumeric("survivor-count") ?? 3;
+        params.length_bp = readOptionalNumeric("length-bp") ?? 4000;
+        params.target_gc = readOptionalNumeric("target-gc") ?? 0.5;
+        params.mutation_rate = readOptionalNumeric("mutation-rate") ?? 0.05;
+        const seed = readOptionalNumeric("seed");
+        if (seed !== undefined) params.seed = seed;
+        break;
+      }
+    }
 
     return {
       kind,
       config_path: configPath,
-      dataset,
-      model_family: modelFamily,
-      temperature: readNumericInput("temperature", 1.0),
-      length_bp: readNumericInput("length-bp", 10000),
-      params: { dataset, model_family: modelFamily },
+      params,
     } as RunConfig;
   }
 

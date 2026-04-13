@@ -12,7 +12,7 @@ from .auth import (
     UpdateProfileRequest,
     VerifyEmailRequest,
 )
-from .datasets import DatasetCatalogItemOut, DatasetDetailOut, DatasetPreviewOut, DatasetSplitOut
+from .datasets import DatasetCatalogItemOut, DatasetCreateRequest, DatasetDetailOut, DatasetPreviewOut, DatasetSplitOut
 from .invitations import UserInvitationActionOut, UserInvitationCreateRequest, UserInvitationListOut, UserInvitationOut
 from .runs import (
     ConfigSnapshotOut,

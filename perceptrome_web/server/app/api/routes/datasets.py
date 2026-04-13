@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 
 from ...deps import get_current_user_strict
 from ...models import User
-from ...schemas import DatasetCatalogItemOut, DatasetDetailOut, DatasetPreviewOut
+from ...schemas import DatasetCatalogItemOut, DatasetCreateRequest, DatasetDetailOut, DatasetPreviewOut
 from ...services import dataset_service
 
 router = APIRouter(prefix='/api/datasets', tags=['datasets'])
@@ -12,6 +12,12 @@ router = APIRouter(prefix='/api/datasets', tags=['datasets'])
 def list_datasets(user: User = Depends(get_current_user_strict)):
     _ = user
     return dataset_service.load_dataset_catalog()
+
+
+@router.post('', response_model=DatasetDetailOut, status_code=201)
+def create_dataset(payload: DatasetCreateRequest, user: User = Depends(get_current_user_strict)):
+    _ = user
+    return dataset_service.create_dataset_catalog(payload)
 
 
 @router.get('/{dataset_id}', response_model=DatasetDetailOut)

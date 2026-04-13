@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from textual.app import App, ComposeResult
-from textual.containers import Container, Vertical
+from textual.containers import Container, Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import ContentSwitcher, Input, ListItem, ListView, Static
+from textual.widgets import ContentSwitcher, Footer, Header, Input, ListItem, ListView, Static, Tab, Tabs
 
 from .diagnostics import capture_diagnostics
 from .events import JobEventBase, TUIEvent
@@ -13,8 +13,28 @@ from .history import HistoryIndexer
 from .job_manager import JobStatus, JobManager
 from .launcher import DEFAULT_COMMANDS, RankedCommand, derive_context, rank_and_filter_commands
 from .panels import ALL_PANELS, BasePanel
+from perceptrome.jobs.spec import JobSpec
 from .spec_builders import build_generate_plasmid_spec, build_train_one_spec
 from .state_store import StateStore
+
+# Ordered list of (panel_id, short_label) for the tab bar
+_PANEL_TABS: tuple[tuple[str, str], ...] = (
+    ("overview",    "Overview"),
+    ("config",      "Config"),
+    ("data",        "Catalogs"),
+    ("train",       "Train"),
+    ("generate",    "Generate"),
+    ("history",     "History"),
+    ("artifacts",   "Outputs"),
+    ("models",      "Models"),
+    ("jobs",        "Jobs"),
+    ("metrics",     "Metrics"),
+    ("pipeline",    "Pipeline"),
+    ("troubleshoot","Trouble"),
+    ("events",      "Events"),
+    ("diagnostics", "Diag"),
+    ("settings",    "Settings"),
+)
 
 
 class DetailSurface(Vertical):
@@ -168,67 +188,230 @@ class LauncherModal(ModalScreen[str | None]):
 
 
 class PerceptromeTUIApp(App[None]):
-    """Main Perceptrome text UI shell with thin status strips and active center panel."""
+    """Main Perceptrome text UI shell."""
+
+    TITLE = "Perceptrome"
+    SUB_TITLE = "Genomic ML Toolkit"
 
     CSS = """
     Screen {
         layout: vertical;
+        background: $background;
     }
-    #top-status, #bottom-status {
+
+    /* ── Top status bar ────────────────────────────────────────── */
+    #top-status {
         height: 1;
-        background: $boost;
+        background: $primary-darken-2;
         color: $text;
+        padding: 0 2;
+        text-style: bold;
+    }
+
+    /* ── Tab navigation bar ────────────────────────────────────── */
+    #main-tabs {
+        height: 3;
+        background: $surface;
+        border-bottom: tall $primary-darken-3;
         padding: 0 1;
     }
+    #main-tabs Tab {
+        color: $text-muted;
+        padding: 1 2;
+    }
+    #main-tabs Tab.-active {
+        color: $text;
+        text-style: bold;
+    }
+
+    /* ── Main workspace ────────────────────────────────────────── */
     #workspace {
         height: 1fr;
+        layout: horizontal;
     }
+
+    /* Panel switcher fills remaining width */
+    #panel-switcher {
+        width: 1fr;
+        height: 100%;
+    }
+
+    /* Each panel container */
+    #panel-switcher > Container {
+        height: 100%;
+        padding: 1 2;
+        overflow-y: auto;
+    }
+
+    /* ── Detail surface (right drawer) ─────────────────────────── */
     #detail-host {
         dock: right;
         width: 46;
         min-width: 36;
         max-width: 60;
-        border-left: solid $panel;
+        border-left: tall $primary-darken-3;
         background: $surface;
         display: none;
+        padding: 0;
     }
     #detail-host.-active {
         display: block;
     }
     .detail-surface {
-        padding: 1;
+        padding: 1 2;
+        height: 100%;
+        overflow-y: auto;
     }
+    .detail-title {
+        text-style: bold;
+        color: $accent;
+        margin-bottom: 1;
+        border-bottom: solid $panel;
+        padding-bottom: 1;
+    }
+    .detail-body {
+        color: $text-muted;
+    }
+
+    /* ── Command palette modal ─────────────────────────────────── */
     #launcher-modal {
         width: 80%;
         max-width: 90;
         height: 70%;
         border: heavy $accent;
         background: $surface;
-        padding: 1;
+        padding: 1 2;
     }
     .launcher-title {
         text-style: bold;
+        color: $accent;
         margin-bottom: 1;
     }
     #launcher-list {
         height: 1fr;
         margin-top: 1;
     }
-    .detail-title {
+
+    /* ── Bottom status bar ─────────────────────────────────────── */
+    #bottom-status {
+        height: 1;
+        background: $primary-darken-2;
+        color: $text-muted;
+        padding: 0 2;
+    }
+
+    /* ── Panel-specific styles ─────────────────────────────────── */
+    .panel-title {
         text-style: bold;
+        color: $accent;
         margin-bottom: 1;
+        border-bottom: solid $panel;
+        padding-bottom: 0;
+    }
+
+    /* ── Overview stat cards ───────────────────────────────────── */
+    #overview-top-row {
+        height: auto;
+        margin-bottom: 1;
+    }
+    .overview-stat {
+        width: 1fr;
+        height: auto;
+        padding: 0 2;
+        border: round $panel;
+        margin: 0 1;
+    }
+    .stat-label {
+        color: $text-muted;
+    }
+    .stat-value {
+        text-style: bold;
+        color: $accent;
+    }
+
+    /* ── DataTable styling ─────────────────────────────────────── */
+    DataTable {
+        height: auto;
+        max-height: 20;
+        margin: 1 0;
+    }
+
+    /* ── Sparkline ─────────────────────────────────────────────── */
+    Sparkline {
+        height: 3;
+        margin: 1 0;
+    }
+
+    /* ── ProgressBar ───────────────────────────────────────────── */
+    ProgressBar {
+        height: auto;
+        margin: 0 0 1 0;
+    }
+
+    /* ── Form layouts ──────────────────────────────────────────── */
+    #train-form-r1, #train-form-r2, #train-form-r3,
+    #gen-form-r1, #gen-form-r2,
+    #data-form-row, #config-form-row,
+    #metrics-stats-row {
+        height: auto;
+        margin-bottom: 1;
+    }
+    #train-form-r1 > Vertical,
+    #train-form-r2 > Vertical,
+    #train-form-r3 > Vertical,
+    #gen-form-r1 > Vertical,
+    #gen-form-r2 > Vertical,
+    #data-form-row > Vertical,
+    #config-form-row > Vertical {
+        width: 1fr;
+        height: auto;
+        padding: 0 1;
+    }
+
+    /* ── Button rows ───────────────────────────────────────────── */
+    #train-btn-row, #gen-btn-row, #data-btn-row,
+    #config-btn-row, #jobs-action-row {
+        height: auto;
+        margin: 1 0;
+    }
+    #train-btn-row > Button, #gen-btn-row > Button,
+    #data-btn-row > Button, #config-btn-row > Button,
+    #jobs-action-row > Button {
+        margin: 0 1 0 0;
+    }
+
+    /* ── Metric cards ──────────────────────────────────────────── */
+    .metric-card {
+        width: 1fr;
+        height: auto;
+        padding: 0 1;
+        border: round $panel;
+        margin: 0 1;
+    }
+
+    /* ── Rule styling ──────────────────────────────────────────── */
+    Rule {
+        margin: 1 0;
+    }
+
+    /* ── Label styling ─────────────────────────────────────────── */
+    Label {
+        color: $text-muted;
+        margin-bottom: 0;
     }
     """
 
     BINDINGS = [
-        ("ctrl+p", "show_launcher", "Launcher"),
-        ("ctrl+l", "show_logs", "Logs"),
-        ("ctrl+d", "show_diagnostics", "Diagnostics"),
-        ("ctrl+t", "show_traceback", "Traceback"),
-        ("tab", "focus_next", "Next"),
-        ("shift+tab", "focus_previous", "Prev"),
-        ("escape", "close_surface", "Close"),
-        ("q", "quit", "Quit"),
+        ("ctrl+p",      "show_launcher",   "Launcher"),
+        ("ctrl+l",      "show_logs",       "Logs"),
+        ("ctrl+d",      "show_diagnostics","Diagnostics"),
+        ("ctrl+t",      "show_traceback",  "Traceback"),
+        ("tab",         "focus_next",      "Next"),
+        ("shift+tab",   "focus_previous",  "Prev"),
+        ("escape",      "close_surface",   "Close"),
+        ("[",           "prev_panel",      "Prev panel"),
+        ("]",           "next_panel",      "Next panel"),
+        ("q",           "quit",            "Quit"),
     ]
 
     def __init__(self) -> None:
@@ -237,19 +420,34 @@ class PerceptromeTUIApp(App[None]):
         self.jobs = JobManager(persist_path=str(self.state.root / "tui_jobs.json"))
         self.history_indexer = HistoryIndexer(self.state)
         self._panel_registry = {panel_cls.PANEL_ID: panel_cls for panel_cls in ALL_PANELS}
+        self._panel_order: list[str] = [p for p, _ in _PANEL_TABS if p in {pc.PANEL_ID for pc in ALL_PANELS}]
         self.config_overrides: list[str] = []
         self._active_surface = ""
         self._job_subscription_token: int | None = None
+        self._syncing_tab = False  # guard against tab⇄panel sync loops
 
     def compose(self) -> ComposeResult:
-        yield Static("Perceptrome • ready", id="top-status")
+        # Top status bar
+        yield Static("Perceptrome  •  ready", id="top-status")
+
+        # Tab navigation bar — one tab per panel
+        tab_widgets = [
+            Tab(label, id=f"tab-{pid}")
+            for pid, label in _PANEL_TABS
+            if pid in self._panel_registry
+        ]
+        yield Tabs(*tab_widgets, id="main-tabs")
+
+        # Main workspace: panel switcher + optional detail drawer
         with Container(id="workspace"):
             with ContentSwitcher(initial="panel-overview", id="panel-switcher"):
                 for panel_id, panel_cls in self._panel_registry.items():
                     with Container(id=f"panel-{panel_id}"):
                         yield panel_cls()
             yield Container(id="detail-host")
-        yield Static("No events yet", id="bottom-status")
+
+        # Bottom event strip
+        yield Static("Ctrl+P launcher  •  [ / ] cycle panels  •  q quit", id="bottom-status")
 
     def on_mount(self) -> None:
         diagnostics = capture_diagnostics()
@@ -259,7 +457,8 @@ class PerceptromeTUIApp(App[None]):
         self.jobs.reconnect_on_startup()
         self._job_subscription_token = self.jobs.subscribe(self._on_job_event)
         session = self.state.get_session()
-        self._set_panel(session.last_panel if session.last_panel else "overview")
+        start_panel = session.last_panel if session.last_panel else "overview"
+        self._set_panel(start_panel)
         if session.active_detail_surface:
             self._show_detail_surface(str(session.active_detail_surface), "")
 
@@ -267,15 +466,57 @@ class PerceptromeTUIApp(App[None]):
         if self._job_subscription_token is not None:
             self.jobs.unsubscribe(self._job_subscription_token)
 
-    def _set_panel(self, panel_id: str) -> None:
+    # ── Tab ↔ Panel synchronisation ─────────────────────────────────────────
+
+    def on_tabs_tab_activated(self, event: Tabs.TabActivated) -> None:
+        """Switch content panel when user clicks a tab."""
+        if self._syncing_tab or not event.tab or not event.tab.id:
+            return
+        panel_id = event.tab.id.removeprefix("tab-")
+        if panel_id in self._panel_registry and panel_id != self.state.active_view:
+            self._set_panel(panel_id, _sync_tab=False)
+
+    def _set_panel(self, panel_id: str, *, _sync_tab: bool = True) -> None:
         if panel_id not in self._panel_registry:
             panel_id = next(iter(self._panel_registry), "overview")
         self.query_one("#panel-switcher", ContentSwitcher).current = f"panel-{panel_id}"
         self.state.set_active_view(panel_id)
-        self.query_one("#top-status", Static).update(f"Perceptrome • panel={panel_id}")
+        self.query_one("#top-status", Static).update(
+            f"Perceptrome  •  {panel_id}"
+        )
+        if _sync_tab:
+            self._syncing_tab = True
+            try:
+                self.query_one("#main-tabs", Tabs).active = f"tab-{panel_id}"
+            except Exception:
+                pass
+            finally:
+                self._syncing_tab = False
+
+    # ── Panel cycling ────────────────────────────────────────────────────────
+
+    def action_prev_panel(self) -> None:
+        current = self.state.active_view
+        if current in self._panel_order:
+            idx = (self._panel_order.index(current) - 1) % len(self._panel_order)
+        else:
+            idx = 0
+        self._set_panel(self._panel_order[idx])
+
+    def action_next_panel(self) -> None:
+        current = self.state.active_view
+        if current in self._panel_order:
+            idx = (self._panel_order.index(current) + 1) % len(self._panel_order)
+        else:
+            idx = 0
+        self._set_panel(self._panel_order[idx])
+
+    # ── Status / event strip ─────────────────────────────────────────────────
 
     def _set_event_strip(self, message: str) -> None:
         self.query_one("#bottom-status", Static).update(message)
+
+    # ── Detail surface (right drawer) ────────────────────────────────────────
 
     def _show_detail_surface(self, surface: str, body: str) -> None:
         host = self.query_one("#detail-host", Container)
@@ -290,7 +531,7 @@ class PerceptromeTUIApp(App[None]):
         host.mount(card)
         if body:
             card.set_body(body)
-        self._set_event_strip(f"Opened {surface} details")
+        self._set_event_strip(f"Opened {surface}  •  Esc to close")
 
     def _close_detail_surface(self) -> None:
         self._active_surface = ""
@@ -298,6 +539,9 @@ class PerceptromeTUIApp(App[None]):
         host = self.query_one("#detail-host", Container)
         host.remove_class("-active")
         host.remove_children()
+        self._set_event_strip("Ctrl+P launcher  •  [ / ] cycle panels  •  q quit")
+
+    # ── Launcher ─────────────────────────────────────────────────────────────
 
     def _execute_launcher_command(self, command_id: str) -> None:
         by_id = {entry.command_id: entry for entry in DEFAULT_COMMANDS}
@@ -382,6 +626,8 @@ class PerceptromeTUIApp(App[None]):
         context = derive_context(active_panel=self.state.active_view, jobs=self.jobs.list_jobs())
         return rank_and_filter_commands(context, query=query, launcher_history=self.state.launcher_history(limit=25))
 
+    # ── Job event plumbing ───────────────────────────────────────────────────
+
     def _on_job_event(self, event: object) -> None:
         self.call_from_thread(self._handle_job_event, event)
 
@@ -394,6 +640,8 @@ class PerceptromeTUIApp(App[None]):
         if not isinstance(event, JobEventBase):
             return
         self.state.apply_job_event(event)
+
+    # ── Keybinding actions ───────────────────────────────────────────────────
 
     def action_show_launcher(self) -> None:
         self._dispatch_command("launcher.open")
@@ -408,13 +656,16 @@ class PerceptromeTUIApp(App[None]):
         self._dispatch_command("view.traceback")
 
     def action_close_surface(self) -> None:
-        self._close_detail_surface()
+        if self._active_surface:
+            self._close_detail_surface()
 
     def action_focus_next(self) -> None:
         self.focus_next()
 
     def action_focus_previous(self) -> None:
         self.focus_previous()
+
+    # ── Job helpers (called by panels) ───────────────────────────────────────
 
     def submit_job_spec(self, spec, title: str | None = None) -> str:
         job_id = self.jobs.submit(spec, title=title or None)
@@ -428,16 +679,21 @@ class PerceptromeTUIApp(App[None]):
         selected = session.selected_job_id or session.active_job_id
         return next((job for job in self.jobs.list_jobs() if job.id == selected), None)
 
+    def _rebuild_spec_from_card(self, card) -> JobSpec:
+        """Reconstruct a JobSpec from a Job card's stored params."""
+        return JobSpec(
+            kind=card.kind,
+            config_path=card.config_path or "config/stream_config.yaml",
+            params=dict(card.spec_params),
+        )
+
     def rerun_selected_job(self) -> bool:
         selected = self._selected_job_card()
         if selected is None:
             return False
-        if selected.kind.startswith("generate"):
-            spec = build_generate_plasmid_spec(output="rerun_generated.fasta", length=256)
-            self.state.set_draft_job_spec({"kind": "generate_plasmid", "output": "rerun_generated.fasta", "length": 256})
-        else:
-            spec = build_train_one_spec(accession="NC_000913")
-            self.state.set_draft_job_spec({"kind": "train_one", "accession": "NC_000913"})
+        spec = self._rebuild_spec_from_card(selected)
+        draft = {"kind": selected.kind, **selected.spec_params}
+        self.state.set_draft_job_spec(draft)
         self.submit_job_spec(spec, title=f"Rerun {selected.id}")
         return True
 
@@ -445,11 +701,7 @@ class PerceptromeTUIApp(App[None]):
         selected = self._selected_job_card()
         if selected is None:
             return False
-        draft = {"kind": selected.kind, "title": f"Clone of {selected.title}"}
-        if selected.kind.startswith("generate"):
-            draft.update({"output": "clone_generated.fasta", "length": 256})
-        else:
-            draft.update({"accession": "NC_000913"})
+        draft = {"kind": selected.kind, "title": f"Clone of {selected.title}", **selected.spec_params}
         self.state.set_draft_job_spec(draft)
         return True
 
@@ -473,14 +725,13 @@ class PerceptromeTUIApp(App[None]):
         return self.history_indexer.resolve_log_path(run_id=selected_job) or self.history_indexer.resolve_log_path()
 
     def resolve_traceback_source_path(self) -> str | None:
-        selected_job = self.state.get_session().selected_job_id
         failed = self.state.open_last_failed_job()
         if failed and failed.failure_summary and failed.failure_summary.traceback_path:
             from pathlib import Path
-
             candidate = Path(failed.failure_summary.traceback_path)
             if candidate.exists():
                 return str(candidate)
+        selected_job = self.state.get_session().selected_job_id
         return self.history_indexer.resolve_traceback_path(run_id=selected_job) or self.history_indexer.resolve_traceback_path()
 
     def record_diagnostics_snapshot(self, snapshot: object) -> None:
@@ -500,7 +751,7 @@ def _tail_file(path: str | None, *, lines: int = 40, fallback: str) -> str:
         content = target.read_text(encoding="utf-8", errors="replace").splitlines()
     except Exception as exc:
         return f"{path}\n\n(unable to read: {exc})"
-    tail = content[-max(1, lines) :] if content else ["(empty file)"]
+    tail = content[-max(1, lines):] if content else ["(empty file)"]
     return f"{path}\n\n" + "\n".join(tail)
 
 

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
@@ -48,6 +49,16 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = False
     email_verification_base_url: str = "http://localhost:5173/verify_email.html"
     password_reset_base_url: str = "http://localhost:5173/reset_password.html"
+
+    @field_validator("cookie_domain", mode="before")
+    @classmethod
+    def _empty_cookie_domain_to_none(cls, v):
+        # An empty COOKIE_DOMAIN in .env means "no Domain attribute" — the
+        # browser will scope the cookie to the exact host. Passing "" to
+        # Response.set_cookie would emit a literal `Domain=` which is invalid.
+        if v == "":
+            return None
+        return v
 
 
 settings = Settings()

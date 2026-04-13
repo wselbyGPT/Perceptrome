@@ -29,7 +29,9 @@ export function createBioAstSelectionStore() {
     subscribe(listener: (state: BioASTSelectionState) => void) {
       listeners.add(listener);
       listener(state);
-      return () => listeners.delete(listener);
+      return () => {
+        listeners.delete(listener);
+      };
     },
     selectNode(nodeId: string | null) {
       state = { ...state, selectedNodeId: nodeId, selectedEdgeId: null };

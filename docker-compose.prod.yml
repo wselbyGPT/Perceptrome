@@ -1,0 +1,52 @@
+# Production deployment: Nginx reverse proxy + API (built client baked in)
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml build
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# The .env file at perceptrome_web/server/.env must be configured for production
+# (run `python setup_web.py` and choose "production (AWS)").
+#
+# Database: uses an external PostgreSQL (e.g. RDS) via DATABASE_URL in .env.
+# TLS: terminate at your load balancer (ALB) or add certs to the nginx config.
+
+services:
+  migrate:
+    build:
+      context: .
+      dockerfile: perceptrome_web/Dockerfile
+    command: >
+      python -m alembic -c perceptrome_web/server/alembic.ini upgrade head
+    env_file: perceptrome_web/server/.env
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: perceptrome_web/Dockerfile
+    ports:
+      - "8000:8000"
+    env_file: perceptrome_web/server/.env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./perceptrome_web/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./perceptrome_web/nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped

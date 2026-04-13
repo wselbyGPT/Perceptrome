@@ -1,0 +1,78 @@
+# Local development: PostgreSQL + API (hot-reload) + Vite dev server
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up
+#   docker compose -f docker-compose.dev.yml up postgres   # DB only
+#
+# The API and Vite containers mount the source tree so edits reload live.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: perceptrome
+      POSTGRES_USER: perceptrome
+      POSTGRES_PASSWORD: perceptrome
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U perceptrome"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  migrate:
+    build:
+      context: .
+      dockerfile: perceptrome_web/Dockerfile
+      target: runtime
+    command: >
+      python -m alembic -c perceptrome_web/server/alembic.ini upgrade head
+    env_file: perceptrome_web/server/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://perceptrome:perceptrome@postgres:5432/perceptrome
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # One-shot: run migrations then exit
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: perceptrome_web/Dockerfile
+      target: runtime
+    command: >
+      uvicorn perceptrome_web.server.app.main:app
+      --reload --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    env_file: perceptrome_web/server/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://perceptrome:perceptrome@postgres:5432/perceptrome
+      APP_ENV: dev
+    volumes:
+      - ./perceptrome:/app/perceptrome
+      - ./perceptrome_web/server:/app/perceptrome_web/server
+      - ./config:/app/config
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  client:
+    image: node:22-slim
+    working_dir: /app/client
+    command: npm run dev -- --host 0.0.0.0
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./perceptrome_web/client:/app/client
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+
+volumes:
+  pgdata_dev:

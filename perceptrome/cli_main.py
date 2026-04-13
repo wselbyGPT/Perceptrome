@@ -308,6 +308,25 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--ast-graph-mask", choices=["none", "neighbors", "successors"], default="none", help="Graph-guided token masking mode")
     s.add_argument("--ast-graph-hop-limit", type=int, default=1, help="Graph hop limit for AST mask expansion")
     s.add_argument("--ast-mask-strength", type=float, default=0.0, help="Mask strength [0..1] for AST-guided token preferences")
+    # Advanced sampling strategies
+    s.add_argument("--sampling-strategy", choices=["temperature", "top_k", "top_p", "beam", "anneal"], default=None,
+                   help="Token sampling strategy (default: temperature)")
+    s.add_argument("--top-k-tokens", type=int, default=0, help="Top-k sampling: keep only k highest-probability tokens (0=off)")
+    s.add_argument("--top-p", type=float, default=1.0, help="Nucleus sampling: cumulative probability threshold (1.0=off)")
+    s.add_argument("--beam-width", type=int, default=1, help="Beam search width (1=greedy)")
+    s.add_argument("--anneal-start", type=float, default=1.2, help="Starting temperature for anneal strategy")
+    s.add_argument("--anneal-end", type=float, default=0.5, help="Ending temperature for anneal strategy")
+    # Latent space strategies
+    s.add_argument("--latent-strategy", choices=["random", "interpolate", "arithmetic", "gradient", "walk"], default=None,
+                   help="Latent vector generation strategy (default: random)")
+    s.add_argument("--interpolate-steps", type=int, default=10, help="Number of SLERP interpolation points")
+    s.add_argument("--interpolate-method", choices=["slerp", "lerp"], default="slerp", help="Interpolation method")
+    s.add_argument("--optimize-property", choices=["gc", "reconstruction"], default="gc", help="Property to optimize via gradient descent")
+    s.add_argument("--optimize-target", type=float, default=0.5, help="Target value for gradient optimization")
+    s.add_argument("--optimize-steps", type=int, default=50, help="Gradient optimization steps")
+    s.add_argument("--walk-steps", type=int, default=10, help="Number of latent walk points")
+    s.add_argument("--walk-dim", type=int, default=0, help="Latent dimension to walk along")
+    s.add_argument("--walk-range", type=float, default=3.0, help="Walk range in standard deviations")
     add_tok_args(s)
     add_ast_template_args(s)
     add_model_args(s)
@@ -353,6 +372,25 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--ast-graph-mask", choices=["none", "neighbors", "successors"], default="none", help="Graph-guided token masking mode")
     s.add_argument("--ast-graph-hop-limit", type=int, default=1, help="Graph hop limit for AST mask expansion")
     s.add_argument("--ast-mask-strength", type=float, default=0.0, help="Mask strength [0..1] for AST-guided token preferences")
+    # Advanced sampling strategies
+    s.add_argument("--sampling-strategy", choices=["temperature", "top_k", "top_p", "beam", "anneal"], default=None,
+                   help="Token sampling strategy (default: temperature)")
+    s.add_argument("--top-k-tokens", type=int, default=0, help="Top-k sampling: keep only k highest-probability tokens (0=off)")
+    s.add_argument("--top-p", type=float, default=1.0, help="Nucleus sampling: cumulative probability threshold (1.0=off)")
+    s.add_argument("--beam-width", type=int, default=1, help="Beam search width (1=greedy)")
+    s.add_argument("--anneal-start", type=float, default=1.2, help="Starting temperature for anneal strategy")
+    s.add_argument("--anneal-end", type=float, default=0.5, help="Ending temperature for anneal strategy")
+    # Latent space strategies
+    s.add_argument("--latent-strategy", choices=["random", "interpolate", "arithmetic", "gradient", "walk"], default=None,
+                   help="Latent vector generation strategy (default: random)")
+    s.add_argument("--interpolate-steps", type=int, default=10, help="Number of SLERP interpolation points")
+    s.add_argument("--interpolate-method", choices=["slerp", "lerp"], default="slerp", help="Interpolation method")
+    s.add_argument("--optimize-property", choices=["gc", "reconstruction"], default="gc", help="Property to optimize via gradient descent")
+    s.add_argument("--optimize-target", type=float, default=0.5, help="Target value for gradient optimization")
+    s.add_argument("--optimize-steps", type=int, default=50, help="Gradient optimization steps")
+    s.add_argument("--walk-steps", type=int, default=10, help="Number of latent walk points")
+    s.add_argument("--walk-dim", type=int, default=0, help="Latent dimension to walk along")
+    s.add_argument("--walk-range", type=float, default=3.0, help="Walk range in standard deviations")
     add_ast_template_args(s)
     add_model_args(s)
     s.set_defaults(func=_lazy_cmd("cmd_generate_protein"))

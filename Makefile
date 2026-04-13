@@ -13,21 +13,25 @@ ALEMBIC := $(VENV)/bin/python -m alembic -c $(WEB_SERVER_DIR)/alembic.ini
 
 .DEFAULT_GOAL := help
 
-.PHONY: help venv setup-core setup-web setup-dev setup-gpu init run web-migrate web-api web-client clean
+.PHONY: help venv setup-core setup-web setup-web-interactive setup-dev setup-gpu init run web-migrate web-api web-client docker-dev docker-prod docker-build clean
 
 help:
 	@printf '%s\n' \
 	  'Perceptrome bootstrap targets:' \
-	  '  make setup-core   - install lean CLI/core dependencies into $(VENV)' \
-	  '  make setup-web    - install web server deps and client node modules' \
-	  '  make setup-dev    - install combined dev/test deps and client node modules' \
-	  '  make setup-gpu    - install optional CUDA 12 / GPU training deps' \
-	  '  make init         - initialize default local state directories' \
-	  '  make run          - run the default CLI command' \
-	  '  make web-migrate  - apply Alembic migrations for the web server' \
-	  '  make web-api      - start the FastAPI dev server on :8000' \
-	  '  make web-client   - start the Vite dev server on :5173' \
-	  '  make clean        - remove $(VENV)'
+	  '  make setup-core            - install lean CLI/core dependencies into $(VENV)' \
+	  '  make setup-web             - install web server deps and client node modules' \
+	  '  make setup-web-interactive - interactive setup wizard (dev or AWS prod)' \
+	  '  make setup-dev             - install combined dev/test deps and client node modules' \
+	  '  make setup-gpu             - install optional CUDA 12 / GPU training deps' \
+	  '  make init                  - initialize default local state directories' \
+	  '  make run                   - run the default CLI command' \
+	  '  make web-migrate           - apply Alembic migrations for the web server' \
+	  '  make web-api               - start the FastAPI dev server on :8000' \
+	  '  make web-client            - start the Vite dev server on :5173' \
+	  '  make docker-dev            - start local dev stack via Docker Compose' \
+	  '  make docker-prod           - build and start production stack' \
+	  '  make docker-build          - build production Docker image only' \
+	  '  make clean                 - remove $(VENV)'
 
 venv:
 	$(PYTHON) -m venv $(VENV)
@@ -62,6 +66,18 @@ web-api:
 
 web-client:
 	npm run dev --prefix $(WEB_CLIENT_DIR)
+
+setup-web-interactive:
+	$(PYTHON) setup_web.py
+
+docker-dev:
+	docker compose -f docker-compose.dev.yml up
+
+docker-prod:
+	docker compose -f docker-compose.prod.yml up -d
+
+docker-build:
+	docker compose -f docker-compose.prod.yml build
 
 clean:
 	rm -rf $(VENV)

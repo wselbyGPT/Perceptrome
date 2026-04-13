@@ -5,9 +5,8 @@ import os
 import random
 import threading
 import traceback
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Literal, Optional
+from typing import Any, Callable, Dict, Optional
 
 import numpy as np
 
@@ -39,6 +38,8 @@ from perceptrome.generate import (
     parse_ast_conditioning_config,
     parse_ast_template_validation_config,
 )
+from perceptrome.sampling import SamplingConfig
+from perceptrome.latent_strategies import LatentConfig
 from perceptrome.jobs.artifact_index import build_artifact_entry
 from perceptrome.jobs.manifest_writer import config_hash, write_experiment_run_manifest
 from perceptrome.pretrain import PretrainPipelineConfig, run_pretraining
@@ -46,34 +47,9 @@ from perceptrome.run_layout import ensure_run_layout, path_in_run, update_run_ma
 from perceptrome.scoring import reference_score
 from perceptrome.scorecard import build_plasmid_scorecard, build_protein_scorecard
 
-JobKind = Literal["train_one", "stream", "generate_plasmid", "generate_protein", "validate_plasmid", "pretrain", "design_loop"]
+from perceptrome.jobs.spec import JobCancelledError, JobEvent, JobKind, JobResult, JobSpec
 
-
-@dataclass(slots=True)
-class JobSpec:
-    kind: JobKind
-    config_path: str = "config/stream_config.yaml"
-    params: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class JobEvent:
-    stage: str
-    message: str
-    data: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class JobResult:
-    ok: bool
-    exit_code: int
-    message: str
-    data: Dict[str, Any] = field(default_factory=dict)
-    events: list[JobEvent] = field(default_factory=list)
-
-
-class JobCancelledError(Exception):
-    pass
+__all__ = ["JobCancelledError", "JobEvent", "JobKind", "JobResult", "JobSpec"]
 
 
 class JobEngine:
@@ -93,6 +69,41 @@ class JobEngine:
         self._events.append(event)
         if self._event_sink:
             self._event_sink(event)
+
+    @staticmethod
+    def _build_sampling_config(p: Dict[str, Any]) -> Optional[SamplingConfig]:
+        strategy = str(p.get("sampling_strategy") or "").strip().lower()
+        if not strategy:
+            return None
+        return SamplingConfig(
+            strategy=strategy,
+            temperature=float(p.get("temperature", 1.0)),
+            top_k=int(p.get("top_k_tokens", 0)),
+            top_p=float(p.get("top_p", 1.0)),
+            beam_width=int(p.get("beam_width", 1)),
+            anneal_start=float(p.get("anneal_start", 1.2)),
+            anneal_end=float(p.get("anneal_end", 0.5)),
+        )
+
+    @staticmethod
+    def _build_latent_config(p: Dict[str, Any]) -> Optional[LatentConfig]:
+        strategy = str(p.get("latent_strategy") or "").strip().lower()
+        if not strategy:
+            return None
+        return LatentConfig(
+            strategy=strategy,
+            latent_scale=float(p.get("latent_scale", 1.0)),
+            interpolate_steps=int(p.get("interpolate_steps", 10)),
+            interpolate_method=str(p.get("interpolate_method", "slerp")),
+            optimize_steps=int(p.get("optimize_steps", 50)),
+            optimize_lr=float(p.get("optimize_lr", 0.01)),
+            optimize_property=str(p.get("optimize_property", "gc")),
+            optimize_target=float(p.get("optimize_target", 0.5)),
+            walk_steps=int(p.get("walk_steps", 10)),
+            walk_dim=int(p.get("walk_dim", 0)),
+            walk_range=float(p.get("walk_range", 3.0)),
+            inpaint_mask_ratio=float(p.get("inpaint_mask_ratio", 0.3)),
+        )
 
     @staticmethod
     def _artifact_entry(*, artifact_id: str, role: str, path: str, artifact_type: str | None = None, mime_type: str | None = None, metadata: Optional[Dict[str, Any]] = None, parents: Optional[list[Dict[str, Any]]] = None) -> Dict[str, Any]:
@@ -609,7 +620,7 @@ class JobEngine:
             ("conditioning.ast", ast_artifact_path, "consumed.ast_artifact"),
         ])
         similarity_refs = self._collect_similarity_references(params=p, io_cfg=io_cfg, ncbi_cfg=None, sequence_kind="plasmid")
-        seq = generate_plasmid_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_bp=int(p.get("length_bp", 10000)), num_windows=p.get("num_windows"), window_size_bp=int(p.get("window_size") or train_cfg.window_size), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), gc_bias=float(p.get("gc_bias", 1.0)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), target_gc=float(p.get("target_gc", 0.5)), max_homopolymer=p.get("max_homopolymer"), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), name=str(p.get("name", "perceptrome_plasmid_1")), output_path=output, tokenizer=tokenizer, provenance_inputs={"config": str(spec.config_path)}, ast_conditioning=ast_conditioning, scorecard_reference_neighbors=similarity_refs, scorecard_reference_top_n=int(p.get("scorecard_reference_top_n", 5)), scorecard_motifs=p.get("scorecard_motifs"), ast_template_validation=ast_template_validation)
+        seq = generate_plasmid_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_bp=int(p.get("length_bp", 10000)), num_windows=p.get("num_windows"), window_size_bp=int(p.get("window_size") or train_cfg.window_size), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), gc_bias=float(p.get("gc_bias", 1.0)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), target_gc=float(p.get("target_gc", 0.5)), max_homopolymer=p.get("max_homopolymer"), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), name=str(p.get("name", "perceptrome_plasmid_1")), output_path=output, tokenizer=tokenizer, provenance_inputs={"config": str(spec.config_path)}, ast_conditioning=ast_conditioning, scorecard_reference_neighbors=similarity_refs, scorecard_reference_top_n=int(p.get("scorecard_reference_top_n", 5)), scorecard_motifs=p.get("scorecard_motifs"), ast_template_validation=ast_template_validation, sampling_config=self._build_sampling_config(p), latent_config=self._build_latent_config(p))
         self._emit("generate", "plasmid generated", output=output, length=len(seq))
         card_context = {
             "reference_neighbors": similarity_refs,
@@ -728,7 +739,7 @@ class JobEngine:
             ("conditioning.ast", ast_artifact_path, "consumed.ast_artifact"),
         ])
         similarity_refs = self._collect_similarity_references(params=p, io_cfg=io_cfg, ncbi_cfg=None, sequence_kind="protein")
-        seq = generate_protein_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_aa=int(p.get("length_aa", 600)), num_windows=p.get("num_windows"), window_aa=int(p.get("window_aa") or train_cfg.protein_window_aa), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), name=str(p.get("name", "perceptrome_protein_1")), output_path=output, reject=bool(p.get("reject", False)), reject_tries=int(p.get("reject_tries", 40)), reject_max_run=int(p.get("reject_max_run", 10)), reject_max_x_frac=float(p.get("reject_max_x_frac", 0.15)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), max_homopolymer=p.get("max_homopolymer"), max_x_frac=p.get("max_x_frac"), max_internal_stops=int(p.get("max_internal_stops", 0)), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), provenance_inputs={"config": str(spec.config_path)}, ast_conditioning=ast_conditioning, scorecard_similarity_references=similarity_refs, scorecard_reference_top_n=int(p.get("scorecard_reference_top_n", 5)), ast_template_validation=ast_template_validation)
+        seq = generate_protein_sequence(train_cfg=train_cfg, io_cfg=io_cfg, length_aa=int(p.get("length_aa", 600)), num_windows=p.get("num_windows"), window_aa=int(p.get("window_aa") or train_cfg.protein_window_aa), seed=p.get("seed"), latent_scale=float(p.get("latent_scale", 1.0)), temperature=float(p.get("temperature", 1.0)), name=str(p.get("name", "perceptrome_protein_1")), output_path=output, reject=bool(p.get("reject", False)), reject_tries=int(p.get("reject_tries", 40)), reject_max_run=int(p.get("reject_max_run", 10)), reject_max_x_frac=float(p.get("reject_max_x_frac", 0.15)), num_candidates=int(p.get("num_candidates", 1)), top_k=int(p.get("top_k", 1)), max_homopolymer=p.get("max_homopolymer"), max_x_frac=p.get("max_x_frac"), max_internal_stops=int(p.get("max_internal_stops", 0)), summary_path=p.get("summary_path"), top_k_output_path=p.get("top_k_output"), roundtrip_score=bool(p.get("roundtrip_score", False)), recon_weight=float(p.get("recon_weight", 0.1)), provenance_inputs={"config": str(spec.config_path)}, ast_conditioning=ast_conditioning, scorecard_similarity_references=similarity_refs, scorecard_reference_top_n=int(p.get("scorecard_reference_top_n", 5)), ast_template_validation=ast_template_validation, sampling_config=self._build_sampling_config(p), latent_config=self._build_latent_config(p))
         self._emit("generate", "protein generated", output=output, length=len(seq))
         card_context = {
             "similarity_references": similarity_refs,

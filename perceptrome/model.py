@@ -103,10 +103,25 @@ class BioASTEmbeddingAPI(nn.Module):  # type: ignore[misc]
 def _normalize_model_type(model_type: str) -> str:
     mt = str(model_type).lower()
     return {
-        "rnn": "mlp",
+        "rnn": "recurrent",
+        "gru": "recurrent",
+        "lstm": "recurrent",
+        "bigru": "recurrent",
+        "bilstm": "recurrent",
+        "cnn": "conv",
+        "resnet": "conv",
+        "residual_conv": "conv",
         "moe": "mlp",
         "gnn": "mlp",
-        "tcn": "mlp",
+        "tcn": "wavenet",
+        "dilated": "wavenet",
+        "causal_conv": "wavenet",
+        "ssm_mamba": "mamba",
+        "selective_ssm": "mamba",
+        "s4": "mamba",
+        "attn_pool": "attention_pool",
+        "perceiver": "attention_pool",
+        "cross_attn": "attention_pool",
         "hier": "hierarchical",
     }.get(mt, mt)
 
@@ -448,6 +463,643 @@ class StateSpaceVAE(nn.Module):  # type: ignore[misc]
         recon_logits = self.decode(z)
         return recon_logits, mu, logvar
 
+
+# ---------------------------------------------------------------------------
+# ConvResVAE – multi-scale residual CNN for local motif detection
+# ---------------------------------------------------------------------------
+
+class _ResConvBlock(nn.Module):  # type: ignore[misc]
+    """Residual 1-D convolution block with multi-kernel fusion."""
+
+    def __init__(self, channels: int, kernels: Tuple[int, ...], dropout: float):
+        super().__init__()
+        branches = []
+        for k in kernels:
+            branches.append(nn.Sequential(
+                nn.Conv1d(channels, channels, kernel_size=k, padding=k // 2, groups=1),
+                nn.GELU(),
+            ))
+        self.branches = nn.ModuleList(branches)
+        self.mix = nn.Conv1d(channels * len(kernels), channels, kernel_size=1)
+        self.norm = nn.LayerNorm(channels)
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+        # x: (B, C, L)
+        parts = [branch(x) for branch in self.branches]
+        cat = torch.cat(parts, dim=1)  # (B, C*K, L)
+        out = self.mix(cat)  # (B, C, L)
+        out = out + x  # residual
+        # LayerNorm over channel dim
+        out = self.norm(out.transpose(1, 2)).transpose(1, 2)
+        return self.drop(out)
+
+
+class ConvResVAE(nn.Module):  # type: ignore[misc]
+    """Multi-scale residual CNN VAE.
+
+    Uses parallel convolution branches with different kernel sizes (3, 7, 15)
+    to capture genomic motifs at codon, motif, and domain scales simultaneously.
+    """
+
+    def __init__(
+        self,
+        seq_len: int,
+        vocab_size: int,
+        hidden_dim: int,
+        num_layers: int,
+        dropout: float,
+        kernels: Tuple[int, ...] = (3, 7, 15),
+    ):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for ConvResVAE.")
+        super().__init__()
+        self.seq_len = int(seq_len)
+        self.vocab_size = int(vocab_size)
+        self.hidden_dim = int(hidden_dim)
+
+        self.input_proj = nn.Linear(self.vocab_size, self.hidden_dim)
+        self.encoder_blocks = nn.ModuleList([
+            _ResConvBlock(self.hidden_dim, kernels, dropout)
+            for _ in range(int(num_layers))
+        ])
+        self.fc_mu = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.fc_logvar = nn.Linear(self.hidden_dim, self.hidden_dim)
+
+        self.z_to_seq = nn.Linear(self.hidden_dim, self.seq_len * self.hidden_dim)
+        self.decoder_blocks = nn.ModuleList([
+            _ResConvBlock(self.hidden_dim, kernels, dropout)
+            for _ in range(int(num_layers))
+        ])
+        self.out_proj = nn.Linear(self.hidden_dim, self.vocab_size)
+
+    def _ensure_seq(self, x: "torch.Tensor") -> "torch.Tensor":
+        if x.dim() == 2:
+            return x.view(x.size(0), self.seq_len, self.vocab_size)
+        return x
+
+    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+        x_seq = self._ensure_seq(x)
+        h = self.input_proj(x_seq).transpose(1, 2)  # (B, H, L)
+        for blk in self.encoder_blocks:
+            h = blk(h)
+        pooled = h.mean(dim=2)  # (B, H)
+        return self.fc_mu(pooled), self.fc_logvar(pooled)
+
+    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
+        std = torch.exp(0.5 * logvar)
+        return mu + torch.randn_like(std) * std
+
+    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
+        h = self.z_to_seq(z).view(z.size(0), self.hidden_dim, self.seq_len)
+        for blk in self.decoder_blocks:
+            h = blk(h)
+        logits = self.out_proj(h.transpose(1, 2))  # (B, L, V)
+        return logits.reshape(z.size(0), self.seq_len * self.vocab_size)
+
+    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
+        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
+        return F.softmax(logits, dim=-1) if str(loss_type).lower() == "ce" else torch.sigmoid(logits)
+
+    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar
+
+
+# ---------------------------------------------------------------------------
+# RecurrentVAE – bidirectional GRU for sequential dependencies
+# ---------------------------------------------------------------------------
+
+class RecurrentVAE(nn.Module):  # type: ignore[misc]
+    """Bidirectional GRU VAE.
+
+    GRUs capture long-range sequential dependencies in genomic sequences,
+    naturally modeling reading-frame continuity and ORF boundaries.
+    """
+
+    def __init__(
+        self,
+        seq_len: int,
+        vocab_size: int,
+        hidden_dim: int,
+        num_layers: int,
+        dropout: float,
+        bidirectional: bool = True,
+    ):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for RecurrentVAE.")
+        super().__init__()
+        self.seq_len = int(seq_len)
+        self.vocab_size = int(vocab_size)
+        self.hidden_dim = int(hidden_dim)
+        self.bidirectional = bool(bidirectional)
+        self.num_directions = 2 if self.bidirectional else 1
+
+        self.input_proj = nn.Linear(self.vocab_size, self.hidden_dim)
+        self.encoder_gru = nn.GRU(
+            input_size=self.hidden_dim,
+            hidden_size=self.hidden_dim,
+            num_layers=int(num_layers),
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+            bidirectional=self.bidirectional,
+        )
+        enc_out_dim = self.hidden_dim * self.num_directions
+        self.fc_mu = nn.Linear(enc_out_dim, self.hidden_dim)
+        self.fc_logvar = nn.Linear(enc_out_dim, self.hidden_dim)
+
+        self.z_proj = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.decoder_gru = nn.GRU(
+            input_size=self.hidden_dim,
+            hidden_size=self.hidden_dim,
+            num_layers=int(num_layers),
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+            bidirectional=False,
+        )
+        self.out_proj = nn.Linear(self.hidden_dim, self.vocab_size)
+        self.drop = nn.Dropout(dropout)
+
+    def _ensure_seq(self, x: "torch.Tensor") -> "torch.Tensor":
+        if x.dim() == 2:
+            return x.view(x.size(0), self.seq_len, self.vocab_size)
+        return x
+
+    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+        x_seq = self._ensure_seq(x)
+        h = self.drop(self.input_proj(x_seq))
+        output, _ = self.encoder_gru(h)  # (B, L, H*dirs)
+        pooled = output.mean(dim=1)  # (B, H*dirs)
+        return self.fc_mu(pooled), self.fc_logvar(pooled)
+
+    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
+        std = torch.exp(0.5 * logvar)
+        return mu + torch.randn_like(std) * std
+
+    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
+        h = F.gelu(self.z_proj(z))  # (B, H)
+        h = h.unsqueeze(1).expand(-1, self.seq_len, -1)  # (B, L, H)
+        output, _ = self.decoder_gru(h)  # (B, L, H)
+        logits = self.out_proj(output)  # (B, L, V)
+        return logits.reshape(z.size(0), self.seq_len * self.vocab_size)
+
+    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
+        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
+        return F.softmax(logits, dim=-1) if str(loss_type).lower() == "ce" else torch.sigmoid(logits)
+
+    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar
+
+
+# ---------------------------------------------------------------------------
+# WaveNetVAE – dilated causal convolutions for long-range dependencies
+# ---------------------------------------------------------------------------
+
+class _DilatedResBlock(nn.Module):  # type: ignore[misc]
+    """Single dilated residual block with gated activation (WaveNet-style)."""
+
+    def __init__(self, channels: int, kernel_size: int, dilation: int, dropout: float):
+        super().__init__()
+        pad = (kernel_size - 1) * dilation  # causal padding
+        self.conv_filter = nn.Conv1d(channels, channels, kernel_size, dilation=dilation, padding=pad)
+        self.conv_gate = nn.Conv1d(channels, channels, kernel_size, dilation=dilation, padding=pad)
+        self.mix = nn.Conv1d(channels, channels, kernel_size=1)
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+        # x: (B, C, L)
+        L = x.size(2)
+        f = torch.tanh(self.conv_filter(x)[:, :, :L])
+        g = torch.sigmoid(self.conv_gate(x)[:, :, :L])
+        out = self.drop(self.mix(f * g))
+        return out + x
+
+
+class WaveNetVAE(nn.Module):  # type: ignore[misc]
+    """WaveNet-style VAE with exponentially dilated causal convolutions.
+
+    Exponentially growing dilations (1, 2, 4, 8, ...) give a receptive field
+    that covers the entire genome window, ideal for capturing regulatory
+    elements and long-distance codon correlations.
+    """
+
+    def __init__(
+        self,
+        seq_len: int,
+        vocab_size: int,
+        hidden_dim: int,
+        num_layers: int,
+        kernel_size: int,
+        dropout: float,
+    ):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for WaveNetVAE.")
+        super().__init__()
+        self.seq_len = int(seq_len)
+        self.vocab_size = int(vocab_size)
+        self.hidden_dim = int(hidden_dim)
+
+        self.input_proj = nn.Conv1d(self.vocab_size, self.hidden_dim, kernel_size=1)
+        self.encoder_blocks = nn.ModuleList([
+            _DilatedResBlock(self.hidden_dim, int(kernel_size), dilation=2 ** (i % 8), dropout=dropout)
+            for i in range(int(num_layers))
+        ])
+        self.fc_mu = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.fc_logvar = nn.Linear(self.hidden_dim, self.hidden_dim)
+
+        self.z_to_seq = nn.Linear(self.hidden_dim, self.seq_len * self.hidden_dim)
+        self.decoder_blocks = nn.ModuleList([
+            _DilatedResBlock(self.hidden_dim, int(kernel_size), dilation=2 ** (i % 8), dropout=dropout)
+            for i in range(int(num_layers))
+        ])
+        self.out_proj = nn.Conv1d(self.hidden_dim, self.vocab_size, kernel_size=1)
+
+    def _ensure_seq(self, x: "torch.Tensor") -> "torch.Tensor":
+        if x.dim() == 2:
+            return x.view(x.size(0), self.seq_len, self.vocab_size)
+        return x
+
+    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+        x_seq = self._ensure_seq(x)
+        h = self.input_proj(x_seq.transpose(1, 2))  # (B, H, L)
+        for blk in self.encoder_blocks:
+            h = blk(h)
+        pooled = h.mean(dim=2)
+        return self.fc_mu(pooled), self.fc_logvar(pooled)
+
+    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
+        std = torch.exp(0.5 * logvar)
+        return mu + torch.randn_like(std) * std
+
+    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
+        h = self.z_to_seq(z).view(z.size(0), self.hidden_dim, self.seq_len)
+        for blk in self.decoder_blocks:
+            h = blk(h)
+        logits = self.out_proj(h).transpose(1, 2)  # (B, L, V)
+        return logits.reshape(z.size(0), self.seq_len * self.vocab_size)
+
+    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
+        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
+        return F.softmax(logits, dim=-1) if str(loss_type).lower() == "ce" else torch.sigmoid(logits)
+
+    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar
+
+
+# ---------------------------------------------------------------------------
+# MambaVAE – selective state space model
+# ---------------------------------------------------------------------------
+
+class _SelectiveSSMBlock(nn.Module):  # type: ignore[misc]
+    """Simplified selective state-space block (Mamba-style).
+
+    Implements input-dependent gating over a structured state transition,
+    using a short local convolution for causal context and a learned
+    selection mechanism that controls information flow.
+    """
+
+    def __init__(self, hidden_dim: int, d_state: int, d_conv: int, dropout: float):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.d_state = d_state
+
+        # Input projection doubles channels for gate split
+        self.in_proj = nn.Linear(hidden_dim, hidden_dim * 2)
+        # Short causal convolution
+        self.conv = nn.Conv1d(hidden_dim, hidden_dim, kernel_size=d_conv, padding=d_conv - 1, groups=hidden_dim)
+        # Selection parameters: input-dependent B, C, delta
+        self.x_proj = nn.Linear(hidden_dim, d_state * 2 + 1)  # B, C, delta
+        # Structured state matrix A (log-space for stability)
+        self.A_log = nn.Parameter(torch.log(torch.arange(1, d_state + 1, dtype=torch.float32).unsqueeze(0).expand(hidden_dim, -1)))
+        self.D = nn.Parameter(torch.ones(hidden_dim))
+        self.out_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.norm = nn.LayerNorm(hidden_dim)
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+        # x: (B, L, H)
+        B, L, H = x.shape
+        residual = x
+
+        xz = self.in_proj(x)  # (B, L, 2H)
+        x_branch, z = xz.chunk(2, dim=-1)  # each (B, L, H)
+
+        # Causal convolution
+        x_conv = self.conv(x_branch.transpose(1, 2))[:, :, :L].transpose(1, 2)
+        x_conv = F.silu(x_conv)
+
+        # Selection mechanism
+        sel = self.x_proj(x_conv)  # (B, L, 2*d_state + 1)
+        B_sel = sel[:, :, :self.d_state]  # (B, L, N)
+        C_sel = sel[:, :, self.d_state:2 * self.d_state]  # (B, L, N)
+        delta = F.softplus(sel[:, :, -1])  # (B, L)
+
+        # Discretize: A_bar = exp(delta * A)
+        A = -torch.exp(self.A_log)  # (H, N)
+        # Selective scan (simplified parallel version)
+        delta_A = torch.exp(delta.unsqueeze(-1).unsqueeze(-1) * A.unsqueeze(0).unsqueeze(0))  # (B, L, H, N)
+        delta_B_x = delta.unsqueeze(-1).unsqueeze(-1) * B_sel.unsqueeze(2) * x_conv.unsqueeze(-1)  # (B, L, H, N)
+
+        # Sequential scan
+        h_state = torch.zeros(B, H, self.d_state, device=x.device, dtype=x.dtype)
+        outputs = []
+        for t in range(L):
+            h_state = delta_A[:, t] * h_state + delta_B_x[:, t]
+            y_t = (h_state * C_sel[:, t].unsqueeze(1)).sum(dim=-1)  # (B, H)
+            outputs.append(y_t)
+        y = torch.stack(outputs, dim=1)  # (B, L, H)
+
+        y = y + x_conv * self.D.unsqueeze(0).unsqueeze(0)
+        y = y * F.silu(z)  # gated
+        y = self.out_proj(y)
+        y = self.drop(self.norm(y + residual))
+        return y
+
+
+class MambaVAE(nn.Module):  # type: ignore[misc]
+    """Selective State-Space VAE (Mamba-style).
+
+    Input-dependent gating and structured state transitions give
+    linear-time sequence processing with strong long-range modeling.
+    Particularly effective for long genomic windows where attention
+    becomes expensive.
+    """
+
+    def __init__(
+        self,
+        seq_len: int,
+        vocab_size: int,
+        hidden_dim: int,
+        num_layers: int,
+        d_state: int,
+        d_conv: int,
+        dropout: float,
+    ):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for MambaVAE.")
+        super().__init__()
+        self.seq_len = int(seq_len)
+        self.vocab_size = int(vocab_size)
+        self.hidden_dim = int(hidden_dim)
+
+        self.input_proj = nn.Linear(self.vocab_size, self.hidden_dim)
+        self.encoder_blocks = nn.ModuleList([
+            _SelectiveSSMBlock(self.hidden_dim, d_state, d_conv, dropout)
+            for _ in range(int(num_layers))
+        ])
+        self.fc_mu = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.fc_logvar = nn.Linear(self.hidden_dim, self.hidden_dim)
+
+        self.z_to_seq = nn.Linear(self.hidden_dim, self.seq_len * self.hidden_dim)
+        self.decoder_blocks = nn.ModuleList([
+            _SelectiveSSMBlock(self.hidden_dim, d_state, d_conv, dropout)
+            for _ in range(int(num_layers))
+        ])
+        self.out_proj = nn.Linear(self.hidden_dim, self.vocab_size)
+
+    def _ensure_seq(self, x: "torch.Tensor") -> "torch.Tensor":
+        if x.dim() == 2:
+            return x.view(x.size(0), self.seq_len, self.vocab_size)
+        return x
+
+    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+        x_seq = self._ensure_seq(x)
+        h = self.input_proj(x_seq)  # (B, L, H)
+        for blk in self.encoder_blocks:
+            h = blk(h)
+        pooled = h.mean(dim=1)
+        return self.fc_mu(pooled), self.fc_logvar(pooled)
+
+    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
+        std = torch.exp(0.5 * logvar)
+        return mu + torch.randn_like(std) * std
+
+    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
+        h = self.z_to_seq(z).view(z.size(0), self.seq_len, self.hidden_dim)
+        for blk in self.decoder_blocks:
+            h = blk(h)
+        logits = self.out_proj(h)  # (B, L, V)
+        return logits.reshape(z.size(0), self.seq_len * self.vocab_size)
+
+    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
+        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
+        return F.softmax(logits, dim=-1) if str(loss_type).lower() == "ce" else torch.sigmoid(logits)
+
+    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar
+
+
+# ---------------------------------------------------------------------------
+# AttentionPoolVAE – lightweight cross-attention with learned query tokens
+# ---------------------------------------------------------------------------
+
+class _CrossAttentionPool(nn.Module):  # type: ignore[misc]
+    """Cross-attention pooling with learned query tokens."""
+
+    def __init__(self, hidden_dim: int, nhead: int, num_queries: int, dropout: float):
+        super().__init__()
+        self.queries = nn.Parameter(torch.randn(1, num_queries, hidden_dim) * 0.02)
+        self.attn = nn.MultiheadAttention(hidden_dim, nhead, dropout=dropout, batch_first=True)
+        self.norm = nn.LayerNorm(hidden_dim)
+
+    def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+        # x: (B, L, H)
+        q = self.queries.expand(x.size(0), -1, -1)
+        out, _ = self.attn(q, x, x)
+        return self.norm(out).mean(dim=1)  # (B, H)
+
+
+class AttentionPoolVAE(nn.Module):  # type: ignore[misc]
+    """Cross-attention VAE with learned pooling queries.
+
+    Uses self-attention encoding followed by cross-attention pooling with
+    learned query tokens. More parameter-efficient than full Transformer
+    while retaining adaptive attention over variable-importance genomic
+    regions (promoters, coding regions, regulatory elements).
+    """
+
+    def __init__(
+        self,
+        seq_len: int,
+        vocab_size: int,
+        hidden_dim: int,
+        nhead: int,
+        num_layers: int,
+        num_queries: int,
+        dropout: float,
+    ):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for AttentionPoolVAE.")
+        super().__init__()
+        self.seq_len = int(seq_len)
+        self.vocab_size = int(vocab_size)
+        self.hidden_dim = int(hidden_dim)
+
+        self.input_proj = nn.Linear(self.vocab_size, self.hidden_dim)
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.seq_len, self.hidden_dim))
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model=self.hidden_dim, nhead=nhead,
+            dim_feedforward=self.hidden_dim * 4, dropout=dropout, batch_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=int(num_layers))
+        self.pool = _CrossAttentionPool(self.hidden_dim, nhead, num_queries, dropout)
+
+        self.fc_mu = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.fc_logvar = nn.Linear(self.hidden_dim, self.hidden_dim)
+
+        self.z_to_seq = nn.Linear(self.hidden_dim, self.seq_len * self.hidden_dim)
+        dec_layer = nn.TransformerEncoderLayer(
+            d_model=self.hidden_dim, nhead=nhead,
+            dim_feedforward=self.hidden_dim * 4, dropout=dropout, batch_first=True,
+        )
+        self.decoder = nn.TransformerEncoder(dec_layer, num_layers=int(num_layers))
+        self.out_proj = nn.Linear(self.hidden_dim, self.vocab_size)
+
+    def _ensure_seq(self, x: "torch.Tensor") -> "torch.Tensor":
+        if x.dim() == 2:
+            return x.view(x.size(0), self.seq_len, self.vocab_size)
+        return x
+
+    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+        x_seq = self._ensure_seq(x)
+        h = self.input_proj(x_seq) + self.pos_embed
+        h = self.encoder(h)
+        pooled = self.pool(h)  # (B, H)
+        return self.fc_mu(pooled), self.fc_logvar(pooled)
+
+    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
+        std = torch.exp(0.5 * logvar)
+        return mu + torch.randn_like(std) * std
+
+    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
+        h = self.z_to_seq(z).view(z.size(0), self.seq_len, self.hidden_dim)
+        h = self.decoder(h + self.pos_embed)
+        logits = self.out_proj(h)  # (B, L, V)
+        return logits.reshape(z.size(0), self.seq_len * self.vocab_size)
+
+    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
+        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
+        return F.softmax(logits, dim=-1) if str(loss_type).lower() == "ce" else torch.sigmoid(logits)
+
+    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar
+
+
+# ---------------------------------------------------------------------------
+# ByteNetVAE – masked dilated residual convolutions
+# ---------------------------------------------------------------------------
+
+class _ByteNetBlock(nn.Module):  # type: ignore[misc]
+    """Single ByteNet residual block with masked dilated convolution."""
+
+    def __init__(self, hidden_dim: int, inner_dim: int, kernel_size: int, dilation: int, dropout: float):
+        super().__init__()
+        pad = (kernel_size - 1) * dilation // 2  # symmetric padding
+        self.net = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, inner_dim),
+            nn.GELU(),
+            # Transpose handled outside
+        )
+        self.conv = nn.Conv1d(inner_dim, inner_dim, kernel_size, dilation=dilation, padding=pad)
+        self.out = nn.Sequential(
+            nn.GELU(),
+            nn.Linear(inner_dim, hidden_dim),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+        # x: (B, L, H)
+        h = self.net(x)  # (B, L, inner)
+        h = self.conv(h.transpose(1, 2)).transpose(1, 2)  # (B, L, inner)
+        h = self.out(h)
+        return x + h
+
+
+class ByteNetVAE(nn.Module):  # type: ignore[misc]
+    """ByteNet-style VAE with masked dilated residual convolutions.
+
+    Stacked dilated convolutions with bottleneck residual blocks provide
+    a large receptive field with linear complexity. The encoder-decoder
+    structure maps genomic sequences through a latent space using
+    progressively wider context at each layer.
+    """
+
+    def __init__(
+        self,
+        seq_len: int,
+        vocab_size: int,
+        hidden_dim: int,
+        num_layers: int,
+        kernel_size: int,
+        dropout: float,
+    ):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for ByteNetVAE.")
+        super().__init__()
+        self.seq_len = int(seq_len)
+        self.vocab_size = int(vocab_size)
+        self.hidden_dim = int(hidden_dim)
+        inner_dim = max(self.hidden_dim // 2, 1)
+
+        self.input_proj = nn.Linear(self.vocab_size, self.hidden_dim)
+        self.encoder_blocks = nn.ModuleList([
+            _ByteNetBlock(self.hidden_dim, inner_dim, int(kernel_size), dilation=2 ** (i % 5), dropout=dropout)
+            for i in range(int(num_layers))
+        ])
+        self.fc_mu = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.fc_logvar = nn.Linear(self.hidden_dim, self.hidden_dim)
+
+        self.z_to_seq = nn.Linear(self.hidden_dim, self.seq_len * self.hidden_dim)
+        self.decoder_blocks = nn.ModuleList([
+            _ByteNetBlock(self.hidden_dim, inner_dim, int(kernel_size), dilation=2 ** (i % 5), dropout=dropout)
+            for i in range(int(num_layers))
+        ])
+        self.out_proj = nn.Linear(self.hidden_dim, self.vocab_size)
+
+    def _ensure_seq(self, x: "torch.Tensor") -> "torch.Tensor":
+        if x.dim() == 2:
+            return x.view(x.size(0), self.seq_len, self.vocab_size)
+        return x
+
+    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+        x_seq = self._ensure_seq(x)
+        h = self.input_proj(x_seq)  # (B, L, H)
+        for blk in self.encoder_blocks:
+            h = blk(h)
+        pooled = h.mean(dim=1)
+        return self.fc_mu(pooled), self.fc_logvar(pooled)
+
+    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
+        std = torch.exp(0.5 * logvar)
+        return mu + torch.randn_like(std) * std
+
+    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
+        h = self.z_to_seq(z).view(z.size(0), self.seq_len, self.hidden_dim)
+        for blk in self.decoder_blocks:
+            h = blk(h)
+        logits = self.out_proj(h)  # (B, L, V)
+        return logits.reshape(z.size(0), self.seq_len * self.vocab_size)
+
+    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
+        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
+        return F.softmax(logits, dim=-1) if str(loss_type).lower() == "ce" else torch.sigmoid(logits)
+
+    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar
+
+
 class PlasmidVAE(nn.Module):  # type: ignore[misc]
     def __init__(self, input_dim: int, hidden_dim: int):
         if torch is None or nn is None:
@@ -583,6 +1235,61 @@ def load_or_init_model(
             dropout=transformer_dropout,
             ablation_mode=hierarchical_ablation_mode,
         ).to(device)
+    elif mt == "conv":
+        model = ConvResVAE(
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            num_layers=transformer_layers,
+            dropout=transformer_dropout,
+        ).to(device)
+    elif mt == "recurrent":
+        model = RecurrentVAE(
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            num_layers=transformer_layers,
+            dropout=transformer_dropout,
+            bidirectional=True,
+        ).to(device)
+    elif mt == "wavenet":
+        model = WaveNetVAE(
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            num_layers=transformer_layers,
+            kernel_size=3,
+            dropout=transformer_dropout,
+        ).to(device)
+    elif mt == "mamba":
+        model = MambaVAE(
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            num_layers=transformer_layers,
+            d_state=16,
+            d_conv=4,
+            dropout=transformer_dropout,
+        ).to(device)
+    elif mt == "attention_pool":
+        model = AttentionPoolVAE(
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            nhead=transformer_nhead,
+            num_layers=transformer_layers,
+            num_queries=8,
+            dropout=transformer_dropout,
+        ).to(device)
+    elif mt == "bytenet":
+        model = ByteNetVAE(
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            num_layers=transformer_layers,
+            kernel_size=3,
+            dropout=transformer_dropout,
+        ).to(device)
     else:
         model = PlasmidVAE(input_dim=input_dim, hidden_dim=hidden_dim).to(device)
     optimizer: optim.Optimizer = optim.Adam(model.parameters(), lr=learning_rate)
@@ -661,6 +1368,11 @@ def load_or_init_model(
                 raise ValueError(f"Checkpoint ssm_layers={ck_layers} but requested {transformer_layers}. Delete {ckpt_path} or match settings.")
             if abs(ck_dropout - float(transformer_dropout)) > 1e-8:
                 raise ValueError(f"Checkpoint ssm_dropout={ck_dropout} but requested {transformer_dropout}. Delete {ckpt_path} or match settings.")
+        if mt in {"conv", "recurrent", "wavenet", "mamba", "attention_pool", "bytenet"}:
+            if ck_layers != transformer_layers:
+                raise ValueError(f"Checkpoint layers={ck_layers} but requested {transformer_layers}. Delete {ckpt_path} or match settings.")
+            if abs(ck_dropout - float(transformer_dropout)) > 1e-8:
+                raise ValueError(f"Checkpoint dropout={ck_dropout} but requested {transformer_dropout}. Delete {ckpt_path} or match settings.")
         if mt in {"tree", "hybrid"}:
             if ck_ast_tree_layers != ast_tree_layers:
                 raise ValueError(

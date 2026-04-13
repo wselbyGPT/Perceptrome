@@ -1,8 +1,9 @@
 from pathlib import Path
+import re
 
 from fastapi import HTTPException
 
-from ..schemas import DatasetCatalogItemOut, DatasetDetailOut, DatasetPreviewOut, DatasetSplitOut
+from ..schemas import DatasetCatalogItemOut, DatasetCreateRequest, DatasetDetailOut, DatasetPreviewOut, DatasetSplitOut
 from .run_service import sha256_file
 
 
@@ -81,3 +82,17 @@ def dataset_preview(dataset_id: str, limit: int = 25) -> DatasetPreviewOut:
     path = find_dataset_manifest(dataset_id)
     preview, total_rows = dataset_preview_rows(path, limit=limit)
     return DatasetPreviewOut(dataset_id=dataset_id, source=dataset_id.split('_', 1)[0], preview=preview, total_rows=total_rows)
+
+
+def create_dataset_catalog(request: DatasetCreateRequest) -> DatasetDetailOut:
+    cfg_dir = dataset_config_dir()
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    target = (cfg_dir / f'{request.dataset_id}.txt').resolve()
+    cfg_root = cfg_dir.resolve()
+    if cfg_root not in target.parents:
+        raise HTTPException(status_code=400, detail='Invalid dataset id')
+    if target.exists():
+        raise HTTPException(status_code=409, detail=f'Dataset already exists: {request.dataset_id}')
+    target.write_text('\n'.join(request.accessions) + '\n', encoding='utf-8')
+    item = build_dataset_catalog_item(target)
+    return DatasetDetailOut(**item.model_dump(), manifest_path=str(target))
