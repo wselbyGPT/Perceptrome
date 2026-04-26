@@ -17,6 +17,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+analysis = [
+  "scikit-learn>=1.5,<2",
+  "umap-learn>=0.5,<1",
+]
 ml = [
   "tensorboard>=2.20,<3",
   "torch>=2.9,<3",

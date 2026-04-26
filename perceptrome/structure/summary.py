@@ -9,7 +9,15 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from perceptrome.encoding.parse import parse_fasta_sequence
 from perceptrome.structure.features import FoldFeatures, build_fold_features
-from perceptrome.structure.parsers import DiscoveredFoldArtifacts, read_json_if_exists, read_plddt_values
+from perceptrome.structure.parsers import (
+    DiscoveredFoldArtifacts,
+    read_alphafold3_plddt_values,
+    read_json_if_exists,
+    read_plddt_values,
+)
+
+
+ALPHAFOLD3_ENGINE = "alphafold3"
 
 
 @dataclass(frozen=True)
@@ -54,7 +62,7 @@ def _utc_now() -> str:
 
 def _ptm_from_json(result_json_path: Optional[str]) -> Optional[float]:
     payload = read_json_if_exists(result_json_path)
-    for key in ("ptm", "predicted_tm_score"):
+    for key in ("ptm", "predicted_tm_score", "ranking_score"):
         val = payload.get(key)
         try:
             if val is not None:
@@ -85,8 +93,12 @@ def build_fold_summary_record(
     completed_at: Optional[str] = None,
 ) -> FoldSummaryRecord:
     seq = parse_fasta_sequence(source_input_path)
-    plddt = read_plddt_values(artifacts.result_jsons[0]) if artifacts.result_jsons else []
-    ptm = _ptm_from_json(artifacts.result_jsons[0] if artifacts.result_jsons else None)
+    first_result_json = artifacts.result_jsons[0] if artifacts.result_jsons else None
+    if str(engine).lower() == ALPHAFOLD3_ENGINE:
+        plddt = read_alphafold3_plddt_values(first_result_json) if first_result_json else []
+    else:
+        plddt = read_plddt_values(first_result_json) if first_result_json else []
+    ptm = _ptm_from_json(first_result_json)
 
     feature: FoldFeatures = build_fold_features(
         aa_length=len(seq),

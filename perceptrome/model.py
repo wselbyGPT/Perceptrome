@@ -1100,6 +1100,110 @@ class ByteNetVAE(nn.Module):  # type: ignore[misc]
         return self.decode(z), mu, logvar
 
 
+# ---------------------------------------------------------------------------
+# CVAEWrapper — additive label conditioning for any Perceptrome VAE
+# ---------------------------------------------------------------------------
+
+def _infer_latent_dim(model: "nn.Module") -> int:
+    """Return the z-space dimension for a VAE model.
+
+    Reads fc_mu.out_features first (covers all models including hierarchical,
+    where latent_dim may differ from hidden_dim), then falls back to explicit
+    attributes.
+    """
+    fc = getattr(model, "fc_mu", None)
+    if fc is not None and hasattr(fc, "out_features"):
+        return int(fc.out_features)
+    for attr in ("hidden_dim", "d_model"):
+        v = getattr(model, attr, None)
+        if v is not None:
+            return int(v)
+    raise ValueError(f"Cannot infer latent dimension from {type(model).__name__}")
+
+
+class CVAEWrapper(nn.Module):  # type: ignore[misc]
+    """Additive class-conditioning wrapper for any Perceptrome VAE.
+
+    The conditioning embedding is injected at two points:
+      - Encoder side: mu and logvar are shifted by enc_proj(embed(c))
+      - Decoder side: z is shifted by dec_proj(embed(c)) before base.decode
+
+    Label 0 is the null/unconditional class (padding_idx=0 → embed(0) = 0),
+    which preserves backward-compatibility with unconditioned checkpoints.
+
+    All condition projections are zero-initialized so a fresh CVAEWrapper
+    behaves identically to the base model at the start of training.
+    """
+
+    def __init__(self, base_model: "nn.Module", num_classes: int, cond_dim: int):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for CVAEWrapper.")
+        super().__init__()
+        self.base = base_model
+        self.num_classes = int(num_classes)
+        self.cond_dim = int(cond_dim)
+        self.latent_dim = _infer_latent_dim(base_model)
+        # Index 0 = null (zero embedding); 1..num_classes = real classes.
+        self.embed = nn.Embedding(self.num_classes + 1, self.cond_dim, padding_idx=0)
+        self.enc_proj = nn.Linear(self.cond_dim, self.latent_dim, bias=False)
+        self.dec_proj = nn.Linear(self.cond_dim, self.latent_dim, bias=False)
+        nn.init.zeros_(self.enc_proj.weight)
+        nn.init.zeros_(self.dec_proj.weight)
+
+    def _cond_vec(self, c_ids: "torch.Tensor", proj: "nn.Linear") -> "torch.Tensor":
+        return proj(self.embed(c_ids))  # (B, latent_dim)
+
+    def encode(
+        self,
+        x: "torch.Tensor",
+        c_ids: Optional["torch.Tensor"] = None,
+    ) -> Tuple["torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.base.encode(x)
+        if c_ids is not None:
+            shift = self._cond_vec(c_ids, self.enc_proj)
+            mu = mu + shift
+            logvar = logvar + shift
+        return mu, logvar
+
+    def decode(
+        self,
+        z: "torch.Tensor",
+        c_ids: Optional["torch.Tensor"] = None,
+    ) -> "torch.Tensor":
+        if c_ids is not None:
+            z = z + self._cond_vec(c_ids, self.dec_proj)
+        return self.base.decode(z)
+
+    def decode_probs(
+        self,
+        z: "torch.Tensor",
+        seq_len: int,
+        vocab_size: int,
+        loss_type: str,
+        c_ids: Optional["torch.Tensor"] = None,
+    ) -> "torch.Tensor":
+        if c_ids is not None:
+            z = z + self._cond_vec(c_ids, self.dec_proj)
+        return self.base.decode_probs(z, seq_len, vocab_size, loss_type)
+
+    def reparameterize(
+        self,
+        mu: "torch.Tensor",
+        logvar: "torch.Tensor",
+    ) -> "torch.Tensor":
+        return self.base.reparameterize(mu, logvar)
+
+    def forward(
+        self,
+        x: "torch.Tensor",
+        c_ids: Optional["torch.Tensor"] = None,
+    ) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.encode(x, c_ids)
+        z = self.reparameterize(mu, logvar)
+        recon = self.decode(z, c_ids)
+        return recon, mu, logvar
+
+
 class PlasmidVAE(nn.Module):  # type: ignore[misc]
     def __init__(self, input_dim: int, hidden_dim: int):
         if torch is None or nn is None:
@@ -1174,6 +1278,8 @@ def load_or_init_model(
     hierarchical_latent_dim: Optional[int] = None,
     ast_node_type_vocab_size: int = 64,
     hierarchical_ablation_mode: str = "hierarchical",
+    num_classes: int = 0,
+    cond_dim: int = 64,
 ) -> Tuple[nn.Module, "optim.Optimizer", int, str]:
     """
     seq_len: number of positions (bp or codons)
@@ -1292,6 +1398,10 @@ def load_or_init_model(
         ).to(device)
     else:
         model = PlasmidVAE(input_dim=input_dim, hidden_dim=hidden_dim).to(device)
+
+    if num_classes > 0:
+        model = CVAEWrapper(model, num_classes=int(num_classes), cond_dim=int(cond_dim)).to(device)
+
     optimizer: optim.Optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     global_step = 0
 

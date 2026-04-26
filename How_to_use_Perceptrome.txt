@@ -1,0 +1,216 @@
+● Perceptrome WSL Ubuntu CLI Walkthrough
+
+  1. Prereqs (one-time)
+
+  sudo apt update
+  sudo apt install -y python3 python3-venv python3-pip build-essential
+  pkg-config git curl wget jq ca-certificates
+
+  Requires WSL2 + Ubuntu 22.04/24.04 and Python 3.10+ (3.11 recommended).
+
+  2. Setup the venv
+
+  From the repo root (~/Perceptrome):
+
+  python3 -m venv .venv
+  source .venv/bin/activate
+  python -m pip install --upgrade pip
+
+  Pick the install profile you need (these are split so you only pull what
+  you use):
+
+  ┌────────────┬──────────────────────────────────────────┐
+  │  Profile   │                 Command                  │
+  ├────────────┼──────────────────────────────────────────┤
+  │ CLI only   │ pip install -r requirements/core.txt     │
+  ├────────────┼──────────────────────────────────────────┤
+  │ Web server │ pip install -r requirements/web.txt      │
+  ├────────────┼──────────────────────────────────────────┤
+  │ Dev/test   │ pip install -r requirements/dev.txt      │
+  ├────────────┼──────────────────────────────────────────┤
+  │ GPU add-on │ pip install -r requirements/gpu-cu12.txt │
+  └────────────┴──────────────────────────────────────────┘
+
+  Or use make setup-core / make setup-web / make setup-dev / make setup-gpu.
+
+  Confirm install:
+
+  perceptrome --help
+
+  3. Initialize directories/state
+
+  perceptrome init --config config/stream_config.yaml
+
+  All commands default to config/stream_config.yaml — override with --config
+   <path>.
+
+  4. Two main lanes
+
+  Perceptrome has a DNA/plasmid lane and a protein (AA) lane. Both share the
+   same verbs: catalog → fetch → encode → train (stream) → generate →
+  validate/fold.
+
+  ---
+  Lane A — Plasmid (DNA)
+
+  Inspect a curated catalog:
+
+  perceptrome catalog-show config/plasmids_100.txt
+
+  Generate a catalog from a schema:
+
+  perceptrome catalog-generate --schema path/to/schema.json --output
+  state/catalog.txt
+
+  Train streaming VAE:
+
+  perceptrome stream --catalog config/plasmids_100.txt
+
+  Generate candidates (with ranking/round-trip scoring):
+
+  perceptrome generate-plasmid \
+    --length-bp 10000 \
+    --num-candidates 8 --top-k 3 \
+    --roundtrip-score --recon-weight 0.1 \
+    --output generated/novel_plasmid.fasta
+
+  Validate against references:
+
+  perceptrome validate-plasmid \
+    --generated-fasta generated/novel_plasmid.fasta \
+    --catalog config/plasmids_100.txt \
+    --top-n 5 --output-json generated/validation.json
+
+  ---
+  Lane B — Protein (AA)
+
+  Size a UniProt query (count-only):
+
+  perceptrome uniprot-count
+  perceptrome uniprot-count --query 'reviewed:true AND taxonomy_id:9606 AND
+  fragment:false' --json
+
+  Fetch shards + build a catalog:
+
+  perceptrome uniprot-fetch \
+    --query 'reviewed:true AND taxonomy_id:9606 AND fragment:false' \
+    --output-dir cache/fasta/uniprot/human_reviewed \
+    --prefix hsap_reviewed \
+    --records-per-shard 25000
+
+  Writes: *.part-00001.fasta, *.manifest.json, *.catalog.txt.
+
+  Split + train in AA mode:
+
+  perceptrome split-create \
+    --catalog cache/fasta/uniprot/human_reviewed/hsap_reviewed.catalog.txt \
+    --name uniprot_hsap
+
+  perceptrome stream \
+    --catalog cache/fasta/uniprot/human_reviewed/hsap_reviewed.catalog.txt \
+    --tokenizer aa --source fasta
+
+  Encode one accession (sanity check):
+
+  perceptrome encode-one P12345 --tokenizer aa --source fasta
+
+  Generate protein candidates:
+
+  perceptrome generate-protein \
+    --length-aa 600 --num-candidates 8 --top-k 3 \
+    --roundtrip-score --recon-weight 0.1 \
+    --output generated/novel_protein.faa
+
+  ---
+  5. Structure/folding
+
+  Two backends, same run layout: colabfold (default) and alphafold3.
+
+  ColabFold — resolves binary via --colabfold-bin, then
+  PERCEPTROME_COLABFOLD_BIN, then PATH. Verify:
+
+  which colabfold_batch || which colabfold_batch.sh
+
+  perceptrome fold-one proteins/my_target.fasta --num-recycle 3 --num-models
+   5
+  perceptrome fold-batch proteins/ --min-protein-aa 50 --max-protein-aa 1200
+   --keep-going
+
+  AlphaFold 3 — requires run_alphafold.py, model params dir, and DBs dir
+  (install per DeepMind):
+
+  perceptrome fold-one proteins/my_target.fasta \
+    --engine alphafold3 \
+    --alphafold3-bin /opt/alphafold3/run_alphafold.py \
+    --alphafold3-model-dir /opt/alphafold3/models \
+    --alphafold3-db-dir /opt/alphafold3/databases \
+    --num-seeds 1 --num-diffusion-samples 5
+
+  Env-var equivalents: PERCEPTROME_ALPHAFOLD3_{BIN,MODEL_DIR,DB_DIR}, or set
+   structure.alphafold3.* in the YAML config.
+
+  Inspect / export a run:
+
+  perceptrome fold-inspect <run_id>
+  perceptrome fold-export <run_id>
+
+  Run layout (same for both engines):
+
+  runs/<run_id>/
+    inputs/                    # copied FASTA inputs
+    artifacts/fold/...         # raw backend outputs
+    outputs/summary.{json,tsv}
+    outputs/batch_summary.{json,tsv}   # batch runs only
+    provenance/*.log
+
+  fold-batch supports --keep-going and a resume mode — re-running against
+  the same inputs reuses completed entries.
+
+  6. Observability
+
+  perceptrome tensorboard               # launches TensorBoard on training
+  logs
+  perceptrome scope-one <accession>     # single-sample scope inspector
+  perceptrome scope-stream              # streaming scope view
+
+  TUI app is under perceptrome/tui/app.py if you want an interactive view.
+
+  7. Config knobs worth knowing
+
+  config/stream_config.yaml sections:
+
+  - ncbi: set a real email and API key before hammering NCBI.
+  - uniprot: base_url, default_query, records_per_shard (default 50k),
+  include_isoforms, gzip_output.
+  - training: model_type (mlp, transformer, ssm, tree, hybrid,
+  hierarchical), tokenizer, windowing, loss, hierarchical staging
+  (stage_a_steps…stage_d_steps), critic_loss_weight.
+  - io: cache/model/log/state paths.
+  - structure.alphafold3.*: binary + weights + DB paths.
+
+  Most training knobs can be overridden on the CLI (e.g. --tokenizer aa,
+  --source fasta).
+
+  8. Tests
+
+  python -m unittest discover -s tests -v
+
+  9. Deeper references
+
+  - docs/protein_lane_wsl.md — command-by-command protein-lane runbook with
+  ColabFold discovery validation and resume/retry troubleshooting.
+  - perceptrome_web/README.md — the React + FastAPI companion (Postgres +
+  Alembic).
+  - infra/aws/README.md — EC2 + Nginx + Route53 deployment bundle.
+
+  Command cheat sheet
+
+  init                              catalog-show / catalog-generate
+  uniprot-count / uniprot-fetch     split-create / split-show
+  fetch-one / encode-one            train-one / stream
+  scope-one / scope-stream          tensorboard
+  generate-plasmid / validate-plasmid
+  generate-protein
+  fold-one / fold-batch / fold-inspect / fold-export
+
+  Every command takes --config and --help; start there when in doubt.

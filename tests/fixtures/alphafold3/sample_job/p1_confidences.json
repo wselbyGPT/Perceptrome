@@ -1,0 +1,5 @@
+{
+  "token_plddts": [80.0, 85.0, 90.0, 85.0, 82.5],
+  "token_chain_ids": ["A", "A", "A", "A", "A"],
+  "token_res_ids": [1, 2, 3, 4, 5]
+}

@@ -1,0 +1,3 @@
+data_p1_seed1_sample0
+# Minimal mock AlphaFold 3 mmCIF fixture (per-sample copy).
+_entry.id p1_seed1_sample0

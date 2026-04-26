@@ -266,6 +266,102 @@ def build_parser() -> argparse.ArgumentParser:
     add_model_args(s)
     s.set_defaults(func=_lazy_cmd("cmd_scope_stream"))
 
+    s = sub.add_parser(
+        "latent-cluster",
+        help=(
+            "Encode a catalog in bulk, collect per-accession mu vectors, "
+            "run k-means clustering and UMAP 2D projection, "
+            "and write cluster assignments + projections as JSON/TSV. "
+            "Requires: pip install 'perceptrome[analysis]'"
+        ),
+    )
+    s.add_argument("--catalog", required=True, help="Catalog of accessions to encode and cluster")
+    s.add_argument("--n-clusters", type=int, default=8, help="Number of k-means clusters (default: 8)")
+    s.add_argument("--umap-n-neighbors", type=int, default=15, help="UMAP n_neighbors (default: 15)")
+    s.add_argument("--umap-min-dist", type=float, default=0.1, help="UMAP min_dist (default: 0.1)")
+    s.add_argument("--run-id", default=None, help="Optional run id (default: auto-generated)")
+    s.add_argument("--window-size", type=int, default=None)
+    s.add_argument("--stride", type=int, default=None)
+    add_tok_args(s)
+    add_model_args(s)
+    s.set_defaults(func=_lazy_cmd("cmd_latent_cluster"))
+
+    s = sub.add_parser(
+        "latent-interpolate",
+        help=(
+            "Linearly interpolate between two accessions in VAE latent space, "
+            "decode each step to sequence tokens, and emit a multi-FASTA. "
+            "Step 0 = acc_a, step N-1 = acc_b."
+        ),
+    )
+    s.add_argument("acc_a", help="First accession (start of interpolation path)")
+    s.add_argument("acc_b", help="Second accession (end of interpolation path)")
+    s.add_argument("--steps", type=int, default=8, help="Number of interpolation steps including endpoints (default: 8)")
+    s.add_argument("--n-windows", type=int, default=1, help="Windows to tile per step; each window uses the same z (default: 1)")
+    s.add_argument("--temperature", type=float, default=0.0, help="Sampling temperature; 0 = greedy argmax (default: 0)")
+    s.add_argument("--output", default="latent_interp.fasta", help="Output FASTA filename (written into run outputs dir)")
+    s.add_argument("--run-id", default=None, help="Optional run id (default: auto-generated)")
+    s.add_argument("--window-size", type=int, default=None)
+    s.add_argument("--stride", type=int, default=None)
+    add_tok_args(s)
+    add_model_args(s)
+    s.set_defaults(func=_lazy_cmd("cmd_latent_interpolate"))
+
+    s = sub.add_parser(
+        "latent-seeds",
+        help=(
+            "From a latent-cluster run, pick the accession nearest to each cluster "
+            "centroid (archetype) and optionally the farthest (outlier), "
+            "and emit a selection catalog ready for latent-interpolate."
+        ),
+    )
+    s.add_argument("run_or_path", help="Run id or direct path to latent_cluster_summary.json")
+    s.add_argument(
+        "--outliers",
+        action="store_true",
+        help="Also include the farthest accession from each cluster centroid",
+    )
+    s.add_argument(
+        "--vectors",
+        default=None,
+        help="Explicit path to latent_vectors.npy (default: auto-derived from summary path)",
+    )
+    s.add_argument("--output-dir", default=None, help="Output directory (default: same run outputs dir)")
+    s.set_defaults(func=_lazy_cmd("cmd_latent_seeds"))
+
+    s = sub.add_parser(
+        "score-one",
+        help=(
+            "Score a single accession against the trained model. "
+            "Encodes the sequence, runs it through the VAE (z = mu, no noise), "
+            "and reports per-position reconstruction loss, KL divergence, and ELBO."
+        ),
+    )
+    s.add_argument("accession", help="Accession to score")
+    s.add_argument("--run-id", default=None, help="Optional run id (default: auto-generated)")
+    s.add_argument("--window-size", type=int, default=None)
+    s.add_argument("--stride", type=int, default=None)
+    add_tok_args(s)
+    add_model_args(s)
+    s.set_defaults(func=_lazy_cmd("cmd_score_one"))
+
+    s = sub.add_parser(
+        "score-batch",
+        help=(
+            "Score all accessions in a catalog against the trained model. "
+            "Writes per-accession ELBO, reconstruction loss, and KL as JSON + TSV. "
+            "Prints a ranked top/bottom summary for quick inspection."
+        ),
+    )
+    s.add_argument("--catalog", required=True, help="Catalog of accessions to score")
+    s.add_argument("--keep-going", action="store_true", help="Continue on per-accession errors")
+    s.add_argument("--run-id", default=None, help="Optional run id (default: auto-generated)")
+    s.add_argument("--window-size", type=int, default=None)
+    s.add_argument("--stride", type=int, default=None)
+    add_tok_args(s)
+    add_model_args(s)
+    s.set_defaults(func=_lazy_cmd("cmd_score_batch"))
+
     s = sub.add_parser("stream")
     s.add_argument("--catalog", required=True)
     s.add_argument("--max-epochs", type=int, default=None)
@@ -397,20 +493,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("fold-one")
     s.add_argument("fasta", help="Protein FASTA file to fold (monomer only)")
-    s.add_argument("--engine", choices=["colabfold"], default="colabfold")
+    s.add_argument("--engine", choices=["colabfold", "alphafold3"], default="colabfold")
     s.add_argument("--run-id", default=None, help="Optional run id (default: auto-generated)")
     s.add_argument("--num-recycle", type=int, default=3, help="ColabFold recycle count")
     s.add_argument("--num-models", type=int, default=5, help="ColabFold number of models")
     s.add_argument("--colabfold-bin", default=None, help="Path to colabfold_batch executable")
+    s.add_argument("--alphafold3-bin", default=None, help="Path to AlphaFold 3 run_alphafold.py entrypoint")
+    s.add_argument("--alphafold3-model-dir", default=None, help="Path to AlphaFold 3 model parameters directory")
+    s.add_argument("--alphafold3-db-dir", default=None, help="Path to AlphaFold 3 sequence databases directory")
+    s.add_argument("--num-seeds", type=int, default=1, help="AlphaFold 3 number of model seeds")
+    s.add_argument("--num-diffusion-samples", type=int, default=5, help="AlphaFold 3 diffusion samples per seed")
     s.set_defaults(func=_lazy_cmd("cmd_fold_one"))
 
     s = sub.add_parser("fold-batch")
     s.add_argument("input_dir", help="Directory containing protein FASTA files")
-    s.add_argument("--engine", choices=["colabfold"], default="colabfold")
+    s.add_argument("--engine", choices=["colabfold", "alphafold3"], default="colabfold")
     s.add_argument("--run-id", default=None, help="Optional run id (default: auto-generated)")
     s.add_argument("--num-recycle", type=int, default=3)
     s.add_argument("--num-models", type=int, default=5)
     s.add_argument("--colabfold-bin", default=None, help="Path to colabfold_batch executable")
+    s.add_argument("--alphafold3-bin", default=None, help="Path to AlphaFold 3 run_alphafold.py entrypoint")
+    s.add_argument("--alphafold3-model-dir", default=None, help="Path to AlphaFold 3 model parameters directory")
+    s.add_argument("--alphafold3-db-dir", default=None, help="Path to AlphaFold 3 sequence databases directory")
+    s.add_argument("--num-seeds", type=int, default=1, help="AlphaFold 3 number of model seeds")
+    s.add_argument("--num-diffusion-samples", type=int, default=5, help="AlphaFold 3 diffusion samples per seed")
     s.add_argument("--min-protein-aa", type=int, default=None, help="Skip proteins shorter than this")
     s.add_argument("--max-protein-aa", type=int, default=None, help="Skip proteins longer than this")
     s.add_argument("--resume", action="store_true", help="Reuse existing successful fold outputs under runs/<run_id>/artifacts/fold/<protein_id>")
@@ -425,6 +531,49 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("run_or_path", help="Run id or direct path to fold summary json")
     s.add_argument("--output-dir", default=None, help="Export directory (default: run outputs)")
     s.set_defaults(func=_lazy_cmd("cmd_fold_export"))
+
+    s = sub.add_parser(
+        "genome-annotate-batch",
+        help="Batch-annotate genomes (GenBank or FASTA) into manifest-tracked artifacts",
+    )
+    s.add_argument("input_dir", help="Directory containing GenBank or FASTA inputs")
+    s.add_argument("--run-id", default=None, help="Optional run id (default: auto-generated)")
+    s.add_argument("--min-seq-len", type=int, default=None, help="Skip inputs shorter than this many bases")
+    s.add_argument("--max-seq-len", type=int, default=None, help="Skip inputs longer than this many bases")
+    s.add_argument(
+        "--resume",
+        action="store_true",
+        help="Reuse existing annotation.json under runs/<run_id>/artifacts/genome/<accession>",
+    )
+    s.add_argument(
+        "--keep-going",
+        action="store_true",
+        help="Continue batch when an input fails to annotate",
+    )
+    s.set_defaults(func=_lazy_cmd("cmd_genome_annotate_batch"))
+
+    s = sub.add_parser(
+        "genome-annotate-one",
+        help="Annotate a single genome (GenBank or FASTA) into a manifest-tracked run",
+    )
+    s.add_argument("input", help="GenBank or FASTA input file to annotate")
+    s.add_argument("--run-id", default=None, help="Optional run id (default: auto-generated)")
+    s.set_defaults(func=_lazy_cmd("cmd_genome_annotate_one"))
+
+    s = sub.add_parser(
+        "genome-annotate-inspect",
+        help="Print a summary of a genome annotation run",
+    )
+    s.add_argument("run_or_path", help="Run id or direct path to genome summary JSON")
+    s.set_defaults(func=_lazy_cmd("cmd_genome_annotate_inspect"))
+
+    s = sub.add_parser(
+        "genome-annotate-export",
+        help="Export genome annotation records to flat JSON and TSV files",
+    )
+    s.add_argument("run_or_path", help="Run id or direct path to genome summary JSON")
+    s.add_argument("--output-dir", default=None, help="Export directory (default: run outputs)")
+    s.set_defaults(func=_lazy_cmd("cmd_genome_annotate_export"))
 
     s = sub.add_parser("design-loop")
     s.add_argument("--catalog", required=True, help="Catalog of reference accessions")
