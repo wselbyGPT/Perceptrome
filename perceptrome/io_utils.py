@@ -4,6 +4,8 @@ import os
 import random
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+import numpy as np
+
 from .config import IOConfig
 from .genome import DEFAULT_GENE_REGISTRY, Genome
 
@@ -209,3 +211,44 @@ def encoded_cache_path(
     import os
     fname = f"{accession}.{tag}.npy"
     return os.path.join(io_cfg.cache_encoded_dir, fname)
+
+
+def load_or_encode_accession(
+    accession: str,
+    io_cfg: IOConfig,
+    *,
+    tokenizer: str,
+    window_size: int,
+    stride: int,
+    frame_offset: int,
+    source: str,
+    cache_kw: Dict[str, Any],
+    protein_opts: Optional[Dict[str, Any]] = None,
+) -> np.ndarray:
+    """Load encoded windows for ``accession`` from the cache, encoding on miss.
+
+    Caller is responsible for ensuring the underlying record (FASTA/GenBank)
+    exists on disk first; this helper performs only cache lookup + encoding.
+    """
+    from .encoding_main import encode_accession
+
+    enc_path = encoded_cache_path(
+        io_cfg, accession, tokenizer, window_size, stride, frame_offset,
+        source=source, **cache_kw,
+    )
+    if os.path.exists(enc_path):
+        return np.load(enc_path)
+    return encode_accession(
+        accession, io_cfg, window_size, stride,
+        tokenizer=tokenizer,
+        frame_offset=frame_offset,
+        min_orf_aa=cache_kw.get("min_orf_aa"),
+        source=source,
+        max_windows_per_protein=cache_kw.get("max_windows_per_protein"),
+        protein_len_min=cache_kw.get("protein_len_min"),
+        protein_len_max=cache_kw.get("protein_len_max"),
+        translation_only=bool(cache_kw.get("translation_only", False)),
+        protein_opts=protein_opts or {},
+        save_to_disk=True,
+        out_path=enc_path,
+    )
