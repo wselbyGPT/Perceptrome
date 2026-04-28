@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
-from .bio_ast import (
+from perceptrome.bio_ast import (
     ast_from_flat_genes_payload,
     ast_to_flat_genes_payload,
     definition_map_from_registry_ast,

@@ -25,8 +25,18 @@ from perceptrome.genome.summary import (
     write_summary_tsv as write_genome_summary_tsv,
 )
 from perceptrome.genome.annotation_manifest import build_annotation_manifest_update
+from perceptrome.genome.registry import (
+    DEFAULT_GENE_REGISTRY,
+    GeneDefinition,
+    GeneRegistry,
+    Genome,
+)
 
 __all__ = [
+    "DEFAULT_GENE_REGISTRY",
+    "GeneDefinition",
+    "GeneRegistry",
+    "Genome",
     "GENBANK_EXTENSIONS",
     "FASTA_EXTENSIONS",
     "SUPPORTED_EXTENSIONS",
