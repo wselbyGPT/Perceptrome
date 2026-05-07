@@ -7,8 +7,10 @@ It provides a CLI-first workflow for:
 - fetching and encoding sequence records,
 - training VAE-style models in streaming mode,
 - inspecting reconstruction/error dynamics with scope tools,
-- and generating candidate plasmid/protein sequences from trained models.
-- and folding protein FASTA inputs via ColabFold into run-tracked structure artifacts.
+- generating candidate plasmid/protein sequences from trained models,
+- folding protein FASTA inputs via ColabFold/AlphaFold3 into run-tracked structure artifacts,
+- annotating genomes (GenBank/FASTA → Bio-AST → BRG regulatory features), and
+- exploring the learned latent space via clustering, interpolation, and seed selection.
 
 The repository also includes **Perceptrome Web**, a browser-based React/FastAPI application for authenticated administration, dataset/runs views, and websocket-backed run monitoring. See [`perceptrome_web/README.md`](perceptrome_web/README.md) for setup details covering the client, API server, PostgreSQL, Alembic migrations, bootstrap admin flow, SPA/API wiring, and WebSocket expectations.
 
@@ -20,7 +22,9 @@ The repository also includes **Perceptrome Web**, a browser-based React/FastAPI 
 - **NCBI-integrated data acquisition** with local caching for FASTA/GenBank/encoded artifacts.
 - **Training + observability utilities** including TensorBoard launcher and scope visualizers.
 - **Generation + validation commands** for plasmid and protein candidates.
-- **Structure lane (ColabFold)** with normalized fold summaries and manifest-indexed artifacts.
+- **Structure lane (ColabFold/AlphaFold3)** with normalized fold summaries and manifest-indexed artifacts.
+- **Genome annotation lane** that parses GenBank/FASTA input through Bio-AST and the BRG inference layer, emitting per-sequence feature counts (genes, CDS, promoters, operators, RBS, terminators) as run-tracked JSON/TSV artifacts.
+- **Latent space analysis tools** — `latent-cluster` (k-means + UMAP projections), `latent-interpolate` (walk the straight-line path between two encoded accessions), and `latent-seeds` (pick archetype/outlier accessions per cluster to seed the design loop).
 - **Web application companion** for authenticated API access, admin flows, and live run telemetry.
 
 ## Repository layout
@@ -48,6 +52,7 @@ Perceptrome now uses a split bootstrap layout so each workflow installs only wha
 | Web server | `python -m pip install -r requirements/web.txt` | FastAPI, SQLAlchemy, Alembic, auth/session deps |
 | Dev / test | `python -m pip install -r requirements/dev.txt` | Combined Python deps used across local development |
 | Optional GPU | `python -m pip install -r requirements/gpu-cu12.txt` | Torch + CUDA 12 runtime packages for accelerated workloads |
+| Latent analysis | `pip install 'perceptrome[analysis]'` | scikit-learn (k-means) and umap-learn (UMAP projections) for `latent-cluster`, `latent-seeds` |
 
 `requirements.txt` is kept as a compatibility shim and currently points at the CUDA-oriented GPU stack. New setups should prefer the split files above.
 
@@ -178,7 +183,16 @@ perceptrome validate-plasmid \
   --output-json generated/validation.json
 ```
 
-### 6) Fold proteins with ColabFold (monomer, local install)
+### 6) Fold proteins (monomer)
+
+Perceptrome supports two pluggable structure backends via `--engine`:
+
+- `colabfold` *(default)* — wraps ColabFold's AlphaFold2 inference pipeline.
+- `alphafold3` — direct DeepMind AlphaFold 3 `run_alphafold.py` invocation.
+
+Both backends write into the same run layout and share the same summary/manifest schema, so downstream tools (`fold-inspect`, `fold-export`) are engine-agnostic.
+
+#### ColabFold backend
 
 Perceptrome assumes ColabFold is installed separately and available either via:
 
@@ -198,6 +212,57 @@ Batch directory:
 perceptrome fold-batch proteins/ --min-protein-aa 50 --max-protein-aa 1200 --keep-going
 ```
 
+#### AlphaFold 3 backend
+
+AlphaFold 3 must be installed separately per DeepMind's instructions
+(<https://github.com/google-deepmind/alphafold3>). You will need three things
+on disk:
+
+1. The `run_alphafold.py` entrypoint.
+2. A model parameters directory (weights obtained via DeepMind's access
+   request process).
+3. A sequence databases directory populated by the AF3 `fetch_databases.sh`
+   helper (BFD, UniRef, MGnify, RNAcentral, etc.).
+
+These can be provided via CLI flags, environment variables, or
+`config/stream_config.yaml` (`structure.alphafold3.*`).
+
+| Setting | CLI flag | Environment variable |
+| --- | --- | --- |
+| Entrypoint | `--alphafold3-bin` | `PERCEPTROME_ALPHAFOLD3_BIN` |
+| Model parameters dir | `--alphafold3-model-dir` | `PERCEPTROME_ALPHAFOLD3_MODEL_DIR` |
+| Sequence databases dir | `--alphafold3-db-dir` | `PERCEPTROME_ALPHAFOLD3_DB_DIR` |
+
+Single protein:
+
+```bash
+perceptrome fold-one proteins/my_target.fasta \
+  --engine alphafold3 \
+  --alphafold3-bin /opt/alphafold3/run_alphafold.py \
+  --alphafold3-model-dir /opt/alphafold3/models \
+  --alphafold3-db-dir /opt/alphafold3/databases \
+  --num-seeds 1 --num-diffusion-samples 5
+```
+
+Batch directory (honors the same filtering/resume flags as the ColabFold path):
+
+```bash
+perceptrome fold-batch proteins/ \
+  --engine alphafold3 \
+  --min-protein-aa 50 --max-protein-aa 1200 \
+  --keep-going
+```
+
+Under the hood the AlphaFold 3 backend:
+
+- Converts each protein FASTA into an AF3 JSON input spec
+  (`{"dialect": "alphafold3", "sequences": [{"protein": {...}}]}`) written to
+  `runs/<run_id>/artifacts/fold/<protein_id>/<protein_id>.input.json`.
+- Runs `run_alphafold.py --json_path=... --output_dir=... --model_dir=... --db_dir=...`.
+- Parses `<protein_id>_summary_confidences.json` (pTM, ranking score) and
+  `<protein_id>_confidences.json` (token plDDT) into the normalized
+  `FoldSummaryRecord` schema alongside the rank-1 CIF structure.
+
 Inspect and export:
 
 ```bash
@@ -216,6 +281,198 @@ Outputs are written into the standard run layout:
 This milestone intentionally excludes: multimer orchestration, RFD3 integration, GUI molecular viewers, and direct training-loop coupling.
 
 For a WSL-first, command-by-command protein lane walkthrough (including ColabFold discovery checks, run layout contracts, and resume/retry troubleshooting), see [`docs/protein_lane_wsl.md`](docs/protein_lane_wsl.md).
+
+### 7) Annotate genomes
+
+Annotate a single GenBank or FASTA file:
+
+```bash
+perceptrome genome-annotate-one genomes/my_plasmid.gb
+```
+
+Batch-annotate a directory:
+
+```bash
+perceptrome genome-annotate-batch genomes/ --keep-going --resume
+```
+
+Inspect annotation counts from a run:
+
+```bash
+perceptrome genome-annotate-inspect <run_id>
+```
+
+Export results to JSON + TSV:
+
+```bash
+perceptrome genome-annotate-export <run_id> --output-dir results/annotations/
+```
+
+### 8) Latent space analysis
+
+**Cluster** an encoded catalog (requires `pip install 'perceptrome[analysis]'`):
+
+```bash
+perceptrome latent-cluster \
+  --catalog config/plasmids_100.txt \
+  --n-clusters 10 \
+  --tokenizer base
+```
+
+**Select seeds** (archetype + outlier per cluster) from the cluster run:
+
+```bash
+perceptrome latent-seeds <run_id> --outliers
+```
+
+**Interpolate** between two accessions along their latent-space path:
+
+```bash
+perceptrome latent-interpolate ACC_A ACC_B \
+  --steps 12 \
+  --output results/interp_A_to_B.fasta
+```
+
+## Genome annotation lane
+
+The genome annotation lane processes GenBank or FASTA inputs through Perceptrome's Bio-AST parser and the BRG regulatory inference layer, producing per-sequence feature counts indexed as run artifacts.
+
+### `genome-annotate-one`
+
+Annotate a single file and write results to `runs/<run_id>/`.
+
+```bash
+perceptrome genome-annotate-one genomes/my_plasmid.gb [--run-id RUN_ID]
+```
+
+Outputs written:
+- `runs/<run_id>/outputs/genome_summary.json` — structured record with accession, sequence length, CDS source, and all feature counts.
+- `runs/<run_id>/outputs/genome_summary.tsv` — flat tabular copy.
+- `runs/<run_id>/artifacts/genome/<accession>/annotation.json` — full Bio-AST annotation artifact.
+
+### `genome-annotate-batch`
+
+Annotate all GenBank/FASTA files in a directory.
+
+```bash
+perceptrome genome-annotate-batch genomes/ [--keep-going] [--resume]
+```
+
+| Flag | Effect |
+| --- | --- |
+| `--keep-going` | Continue on per-file errors rather than aborting. |
+| `--resume` | Skip accessions that already have an annotation artifact from a prior run. |
+
+### `genome-annotate-inspect`
+
+Print a human-readable summary of counts from a finished run.
+
+```bash
+perceptrome genome-annotate-inspect <run_id_or_path>
+```
+
+Accepts either a run ID (resolved relative to `runs/`) or a direct path to `genome_summary.json`.
+
+### `genome-annotate-export`
+
+Write the run's annotation records to a standalone JSON + TSV for downstream analysis.
+
+```bash
+perceptrome genome-annotate-export <run_id_or_path> [--output-dir DIR]
+```
+
+Default output directory is the current working directory.
+
+## Latent space analysis
+
+These three commands form a closed design loop: **cluster → seeds → interpolate**.
+
+### `latent-cluster`
+
+Encode a catalog in bulk, collect the per-accession `mu` vectors (mean-pooled across windows), run k-means, and optionally project to 2D via UMAP.
+
+```bash
+perceptrome latent-cluster \
+  --catalog config/plasmids_100.txt \
+  --n-clusters 8 \
+  --umap-n-neighbors 15 \
+  --umap-min-dist 0.1 \
+  --tokenizer base \
+  [--run-id RUN_ID]
+```
+
+Requires `pip install 'perceptrome[analysis]'` (scikit-learn + umap-learn). Both dependencies are soft-imported — if they are absent the command exits with a helpful install message.
+
+Outputs:
+- `runs/<run_id>/outputs/latent_cluster_summary.json` — per-accession cluster ID, UMAP x/y, mu norm/mean, and cluster centroids.
+- `runs/<run_id>/outputs/latent_cluster_summary.tsv` — flat tabular copy.
+- `runs/<run_id>/artifacts/latent_vectors.npy` — raw mu matrix (shape `[N, latent_dim]`), used by `latent-seeds`.
+
+### `latent-seeds`
+
+Given a `latent-cluster` run, rank accessions within each cluster by L2 distance to the centroid and emit a selection catalog.
+
+```bash
+perceptrome latent-seeds <run_id_or_path> [--outliers] [--vectors PATH] [--output-dir DIR]
+```
+
+| Flag | Effect |
+| --- | --- |
+| `--outliers` | Also include the farthest accession per cluster (the outlier). |
+| `--vectors PATH` | Override the auto-derived `latent_vectors.npy` path. |
+| `--output-dir DIR` | Write outputs here instead of the run's `outputs/` directory. |
+
+Outputs:
+- `latent_seeds.json` — catalog with one or two selected accessions per cluster, their roles (`archetype` / `outlier`), cluster ID, and distance to centroid.
+- `latent_seeds.catalog.txt` — plain accession list ready to pass to `latent-interpolate` or `stream`.
+
+### `latent-interpolate`
+
+Encode two accessions, interpolate `--steps` evenly-spaced points along the straight line between their `mu` vectors, decode each point back to sequence tokens, and emit a multi-FASTA.
+
+```bash
+perceptrome latent-interpolate ACC_A ACC_B \
+  --steps 10 \
+  --n-windows 1 \
+  --temperature 0.0 \
+  --output results/interp.fasta
+```
+
+| Flag | Default | Effect |
+| --- | --- | --- |
+| `--steps` | 8 | Number of interpolation steps including endpoints. |
+| `--n-windows` | 1 | Number of decode windows per step (for longer sequences). |
+| `--temperature` | 0.0 | 0 = greedy argmax decode; > 0 = temperature sampling. |
+| `--output` | `latent_interp.fasta` | Output FASTA path. |
+
+Each FASTA record header encodes the step index and interpolation parameter:
+
+```
+>interp_step3_of10|t=0.2222|a=ACC_A|b=ACC_B
+```
+
+A JSON summary (`latent_interp_summary.json` alongside the FASTA) records run metadata, window/tokenizer settings, and the per-step `(t, sequence)` table.
+
+### Full cluster → seeds → interpolate workflow
+
+```bash
+# 1. Cluster the training catalog
+perceptrome latent-cluster \
+  --catalog config/plasmids_100.txt \
+  --n-clusters 8 \
+  --tokenizer base
+
+# 2. Pick archetype + outlier accessions per cluster
+perceptrome latent-seeds <run_id> --outliers
+
+# 3. Inspect the seed catalog
+cat runs/<run_id>/outputs/latent_seeds.json
+
+# 4. Walk the latent path between two seeds from different clusters
+perceptrome latent-interpolate SEED_A SEED_B \
+  --steps 12 \
+  --output results/interp_SEED_A_to_SEED_B.fasta
+```
 
 ## UniProt ingestion
 
@@ -313,6 +570,8 @@ Primary commands:
 - `tensorboard`
 - `generate-plasmid`, `validate-plasmid`, `generate-protein`
 - `fold-one`, `fold-batch`, `fold-inspect`, `fold-export`
+- `genome-annotate-one`, `genome-annotate-batch`, `genome-annotate-inspect`, `genome-annotate-export`
+- `latent-cluster`, `latent-interpolate`, `latent-seeds`
 
 Most commands accept `--config` to point at a YAML config file.
 

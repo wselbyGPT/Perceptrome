@@ -411,6 +411,15 @@ class PerceptromeTUIApp(App[None]):
         ("escape",      "close_surface",   "Close"),
         ("[",           "prev_panel",      "Prev panel"),
         ("]",           "next_panel",      "Next panel"),
+        ("1",           "jump_panel(1)",   "Overview"),
+        ("2",           "jump_panel(2)",   "Config"),
+        ("3",           "jump_panel(3)",   "Catalogs"),
+        ("4",           "jump_panel(4)",   "Train"),
+        ("5",           "jump_panel(5)",   "Generate"),
+        ("6",           "jump_panel(6)",   "History"),
+        ("7",           "jump_panel(7)",   "Outputs"),
+        ("8",           "jump_panel(8)",   "Models"),
+        ("9",           "jump_panel(9)",   "Jobs"),
         ("q",           "quit",            "Quit"),
     ]
 
@@ -447,7 +456,7 @@ class PerceptromeTUIApp(App[None]):
             yield Container(id="detail-host")
 
         # Bottom event strip
-        yield Static("Ctrl+P launcher  •  [ / ] cycle panels  •  q quit", id="bottom-status")
+        yield Static("Ctrl+P launcher  •  1-9 jump  •  [ / ] cycle  •  q quit", id="bottom-status")
 
     def on_mount(self) -> None:
         diagnostics = capture_diagnostics()
@@ -511,6 +520,11 @@ class PerceptromeTUIApp(App[None]):
             idx = 0
         self._set_panel(self._panel_order[idx])
 
+    def action_jump_panel(self, position: int) -> None:
+        idx = position - 1
+        if 0 <= idx < len(self._panel_order):
+            self._set_panel(self._panel_order[idx])
+
     # ── Status / event strip ─────────────────────────────────────────────────
 
     def _set_event_strip(self, message: str) -> None:
@@ -539,7 +553,7 @@ class PerceptromeTUIApp(App[None]):
         host = self.query_one("#detail-host", Container)
         host.remove_class("-active")
         host.remove_children()
-        self._set_event_strip("Ctrl+P launcher  •  [ / ] cycle panels  •  q quit")
+        self._set_event_strip("Ctrl+P launcher  •  1-9 jump  •  [ / ] cycle  •  q quit")
 
     # ── Launcher ─────────────────────────────────────────────────────────────
 

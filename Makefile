@@ -13,7 +13,7 @@ ALEMBIC := $(VENV)/bin/python -m alembic -c $(WEB_SERVER_DIR)/alembic.ini
 
 .DEFAULT_GOAL := help
 
-.PHONY: help venv setup-core setup-web setup-web-interactive setup-dev setup-gpu init run web-migrate web-api web-client docker-dev docker-prod docker-build clean
+.PHONY: help venv setup-core setup-web setup-web-interactive setup-dev setup-gpu init run web-migrate web-api web-client docker-dev docker-prod docker-prod-local docker-build clean
 
 help:
 	@printf '%s\n' \
@@ -30,6 +30,7 @@ help:
 	  '  make web-client            - start the Vite dev server on :5173' \
 	  '  make docker-dev            - start local dev stack via Docker Compose' \
 	  '  make docker-prod           - build and start production stack' \
+	  '  make docker-prod-local     - prod stack + bundled postgres (local preview)' \
 	  '  make docker-build          - build production Docker image only' \
 	  '  make clean                 - remove $(VENV)'
 
@@ -75,6 +76,9 @@ docker-dev:
 
 docker-prod:
 	docker compose -f docker-compose.prod.yml up -d
+
+docker-prod-local:
+	docker compose -f docker-compose.prod.yml -f docker-compose.prod.local.yml up -d --build
 
 docker-build:
 	docker compose -f docker-compose.prod.yml build

@@ -86,6 +86,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "protein_len_max": None,
         "translation_only": False,
 
+        # CVAE class conditioning (0 = unconditional, backward compatible)
+        "cvae_num_classes": 0,
+        "cvae_cond_dim": 64,
+
         # (optional) curriculum (safe if unused)
         "curriculum_enabled": True,
         "curriculum_steps": [0, 2000, 8000],
@@ -208,6 +212,10 @@ class TrainingConfig:
     protein_len_min: Optional[int]
     protein_len_max: Optional[int]
     translation_only: bool
+
+    # CVAE class conditioning
+    cvae_num_classes: int
+    cvae_cond_dim: int
 
     # optional curriculum
     curriculum_enabled: bool
@@ -354,6 +362,9 @@ def extract_configs(cfg: Dict[str, Any]) -> Tuple[NCBIConfig, TrainingConfig, IO
         protein_len_min=_opt_int(t.get("protein_len_min", None)),
         protein_len_max=_opt_int(t.get("protein_len_max", None)),
         translation_only=bool(t.get("translation_only", False)),
+
+        cvae_num_classes=int(t.get("cvae_num_classes", 0)),
+        cvae_cond_dim=int(t.get("cvae_cond_dim", 64)),
 
         curriculum_enabled=bool(t.get("curriculum_enabled", True)),
         curriculum_steps=list(t.get("curriculum_steps", [0, 2000, 8000])),

@@ -94,7 +94,7 @@ function GraphPane({ bundle, state, store }: { bundle: BioASTVisualizationBundle
             y1={source.y}
             x2={target.x}
             y2={target.y}
-            stroke={active ? "var(--color-accent, #3b82f6)" : "currentColor"}
+            stroke={active ? "var(--color-accent, #d97706)" : "currentColor"}
             strokeWidth={active ? 2.5 : 1.2}
             onClick={() => store.selectEdge(edge.id)}
             onMouseEnter={() => store.hoverEdge(edge.id)}

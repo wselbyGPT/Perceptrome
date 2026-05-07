@@ -1,24 +1,24 @@
 :root {
   color-scheme: dark;
 
-  /* Neutral surfaces */
-  --surface-0: #090c11;
-  --surface-1: #0b0f14;
-  --surface-2: #0f141b;
-  --surface-3: #121922;
-  --surface-4: #1b2430;
-  --surface-5: #243041;
+  /* Neutral surfaces — warm dark amber-tinted blacks */
+  --surface-0: #07060a;
+  --surface-1: #0c0a08;
+  --surface-2: #14110d;
+  --surface-3: #1c1812;
+  --surface-4: #28221a;
+  --surface-5: #382e22;
 
-  /* Brand ramp */
-  --brand-1: #dbeafe;
-  --brand-2: #bfdbfe;
-  --brand-3: #93c5fd;
-  --brand-4: #60a5fa;
-  --brand-5: #3b82f6;
-  --brand-6: #2563eb;
-  --brand-7: #1d4ed8;
-  --brand-8: #1e40af;
-  --brand-9: #1e3a8a;
+  /* Brand ramp — amber, anchored on #f5a524 */
+  --brand-1: #fef3c7;
+  --brand-2: #fde68a;
+  --brand-3: #fbbf24;
+  --brand-4: #f5a524;
+  --brand-5: #f59e0b;
+  --brand-6: #d97706;
+  --brand-7: #b45309;
+  --brand-8: #92400e;
+  --brand-9: #78350f;
 
   /* Feedback ramps */
   --success-1: #dcfce7;
@@ -38,21 +38,21 @@
   --info-5: #0ea5e9;
   --info-7: #0369a1;
 
-  /* Text hierarchy */
-  --text-primary: #e6edf3;
-  --text-secondary: #c4d0de;
-  --text-tertiary: #aab7c8;
+  /* Text hierarchy — warm cream */
+  --text-primary: #ece4d2;
+  --text-secondary: #c8bfaa;
+  --text-tertiary: #a89e8a;
   --text-inverse: #ffffff;
 
   /* Color aliases for existing components */
   --color-bg-canvas: var(--surface-1);
   --color-bg-canvas-elevated: var(--surface-2);
-  --color-bg-surface: rgba(18, 25, 34, 0.95);
+  --color-bg-surface: rgba(28, 24, 18, 0.95);
   --color-bg-surface-subtle: var(--surface-2);
-  --color-bg-ink: #0a0f15;
-  --color-border-strong: #34465a;
-  --color-border-subtle: #3a4d63;
-  --color-border-input: #607893;
+  --color-bg-ink: #07060a;
+  --color-border-strong: #4a3a22;
+  --color-border-subtle: #3a2c1c;
+  --color-border-input: #6a523a;
   --color-text-primary: var(--text-primary);
   --color-text-muted: var(--text-secondary);
   --color-text-link: var(--brand-3);
@@ -68,14 +68,14 @@
   /* Interactive states */
   --interactive-hover-bg: color-mix(in srgb, var(--surface-5) 72%, var(--surface-4));
   --interactive-active-bg: color-mix(in srgb, var(--surface-5) 55%, var(--surface-3));
-  --interactive-focus-ring-color: #8bc4ff;
+  --interactive-focus-ring-color: #fbbf24;
   --interactive-focus-ring: color-mix(in srgb, var(--interactive-focus-ring-color) 55%, transparent);
   --interactive-focus-ring-offset: 2px;
   --interactive-focus-ring-size: 3px;
   --interactive-disabled-opacity: 1;
-  --interactive-disabled-fg: #afbed0;
-  --interactive-disabled-bg: #2a3748;
-  --interactive-disabled-border: #607893;
+  --interactive-disabled-fg: #b8a892;
+  --interactive-disabled-bg: #2e251a;
+  --interactive-disabled-border: #6a523a;
 
   --link-hover: var(--brand-2);
   --link-active: var(--brand-1);

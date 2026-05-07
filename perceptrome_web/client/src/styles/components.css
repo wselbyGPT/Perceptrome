@@ -412,10 +412,10 @@ textarea.input:disabled {
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
 .bio-ast-selected {
-  outline: 2px solid var(--color-accent, #3b82f6);
+  outline: 2px solid var(--color-accent, #d97706);
 }
 
 .bio-ast-segment-active {
-  fill: var(--color-accent, #3b82f6);
-  stroke: var(--color-accent, #3b82f6);
+  fill: var(--color-accent, #d97706);
+  stroke: var(--color-accent, #d97706);
 }

@@ -79,3 +79,26 @@ pretrain:
   enable_mlm: true
   enable_sme: true
   enable_contrastive: true
+
+structure:
+  # Default backend used by fold-one/fold-batch when --engine is omitted.
+  default_engine: colabfold
+
+  colabfold:
+    # Path to colabfold_batch; also honored via PERCEPTROME_COLABFOLD_BIN env var.
+    bin: null
+    num_recycle: 3
+    num_models: 5
+
+  alphafold3:
+    # Path to AlphaFold 3 run_alphafold.py entrypoint.
+    # Also honored via PERCEPTROME_ALPHAFOLD3_BIN env var.
+    bin: null
+    # Directory holding AlphaFold 3 model parameters.
+    # Also honored via PERCEPTROME_ALPHAFOLD3_MODEL_DIR env var.
+    model_dir: null
+    # Directory holding AlphaFold 3 sequence databases (BFD, UniRef, MGnify, etc.).
+    # Also honored via PERCEPTROME_ALPHAFOLD3_DB_DIR env var.
+    db_dir: null
+    num_seeds: 1
+    num_diffusion_samples: 5
