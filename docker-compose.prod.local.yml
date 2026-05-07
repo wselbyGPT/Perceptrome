@@ -1,0 +1,56 @@
+# Local prod-style preview overlay.
+#
+# Layers a bundled PostgreSQL on top of docker-compose.prod.yml so the prod
+# stack (built SPA + nginx + API) can run on a developer box without an
+# external database. Real production keeps using docker-compose.prod.yml on
+# its own with DATABASE_URL pointed at RDS.
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml -f docker-compose.prod.local.yml up -d --build
+#   docker compose -f docker-compose.prod.yml -f docker-compose.prod.local.yml down
+#
+# Or via Make: `make docker-prod-local`.
+#
+# Nginx is remapped to host ports 8080 / 8443 here so it doesn't collide with
+# anything already bound to :80 / :443 on the developer machine. Open
+# http://localhost:8080 to preview.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: perceptrome
+      POSTGRES_USER: perceptrome
+      POSTGRES_PASSWORD: perceptrome
+    volumes:
+      - pgdata_prod_local:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U perceptrome"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  migrate:
+    environment:
+      DATABASE_URL: postgresql+psycopg://perceptrome:perceptrome@postgres:5432/perceptrome
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    environment:
+      DATABASE_URL: postgresql+psycopg://perceptrome:perceptrome@postgres:5432/perceptrome
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  nginx:
+    ports: !override
+      - "8080:80"
+      - "8443:443"
+
+volumes:
+  pgdata_prod_local:
