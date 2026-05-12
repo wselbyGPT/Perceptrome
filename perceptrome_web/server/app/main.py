@@ -14,6 +14,7 @@ from .api.routes import all_routers
 from .auth_rate_limit import login_attempt_store
 from .core.config import settings
 from .core.db import SessionLocal
+from .core.security import hash_password
 from .models import User
 from .services import auth_service, audit_service
 
@@ -37,7 +38,6 @@ def _bootstrap_admin():
         existing = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
         if existing:
             return
-        from .core.security import hash_password
         admin = User(email=email, password_hash=hash_password(settings.bootstrap_admin_password), role='admin', is_active=True, must_change_password=True, email_verified_at=_utcnow())
         db.add(admin)
         try:

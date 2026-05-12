@@ -21,15 +21,28 @@ venv/
 *.swo
 .vscode/
 .idea/
+*:Zone.Identifier
 
 # Node / web build artifacts
 perceptrome_web/client/node_modules/
 perceptrome_web/client/dist/
+perceptrome_web/client/.tmp-tests/
 
 # Local environment files
 .env
 *.env
 perceptrome_web/server/.env
+
+# Local secrets and transfer artifacts
+/*.pass
+/*.pem
+/*.zip
+/*.tar.gz
+
+# Root-level generated sequence outputs
+/*.fasta
+/*.fa
+/*.faa
 
 # Perceptrome artifacts (tune as you like)
 cache/
