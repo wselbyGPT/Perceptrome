@@ -14,6 +14,15 @@ from .auth import (
 )
 from .datasets import DatasetCatalogItemOut, DatasetCreateRequest, DatasetDetailOut, DatasetPreviewOut, DatasetSplitOut
 from .invitations import UserInvitationActionOut, UserInvitationCreateRequest, UserInvitationListOut, UserInvitationOut
+from .model_registry import (
+    ModelArtifactOut,
+    ModelRegisterFromRunRequest,
+    ModelRegistrySummaryOut,
+    ModelUpdateRequest,
+    ModelVersionOut,
+    ModelVersionUpdateRequest,
+    RegisteredModelOut,
+)
 from .runs import (
     ConfigSnapshotOut,
     LineageEdgeOut,

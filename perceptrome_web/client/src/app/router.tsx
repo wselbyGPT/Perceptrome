@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { RedirectIfAuthenticated, RequireAdmin, RequireAuth } from "./route-guards";
 import { LoginPage, ForgotPasswordPage, ResetPasswordPage, VerifyEmailPage } from "../features/auth/pages";
 import { RunsPage } from "../features/runs/page";
+import { ModelsPage } from "../features/models/page";
 import { DatasetsPage } from "../features/datasets/page";
 import { AdminUsersPage } from "../features/admin-users/page";
 import { AuthenticatedLayout } from "../features/layout/authenticated-layout";
@@ -24,6 +25,7 @@ export function AppRouter() {
       <Route path="/" element={<RequireAuth><AuthenticatedLayout /></RequireAuth>}>
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="runs" element={<RunsPage />} />
+        <Route path="models" element={<ModelsPage />} />
         <Route path="datasets" element={<DatasetsPage />} />
         <Route path="profile" element={<ProfilePage />} />
         <Route path="security" element={<SecurityPage />} />

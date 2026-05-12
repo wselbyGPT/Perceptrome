@@ -6,6 +6,7 @@ import { StatusBadge } from "../components/ui/states";
 const primaryNav = [
   { to: '/dashboard', label: 'Dashboard' },
   { to: '/runs', label: 'Runs' },
+  { to: '/models', label: 'Models' },
   { to: '/datasets', label: 'Datasets' },
   { to: '/profile', label: 'Profile' },
   { to: '/security', label: 'Security' },
