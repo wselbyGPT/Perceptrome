@@ -74,7 +74,11 @@ REGULATORY_EDGE_KINDS = frozenset(
     }
 )
 STABLE_EDGE_KINDS = frozenset({CONTAINMENT_EDGE_KIND, *SEMANTIC_EDGE_KINDS})
-LEGACY_EDGE_KIND_ALIASES = {"parent_child": CONTAINMENT_EDGE_KIND, "depends_on": "regulates"}
+LEGACY_EDGE_KIND_ALIASES = {
+    "parent_child": CONTAINMENT_EDGE_KIND,
+    "depends_on": "regulates",
+    "supports": "encodes",
+}
 SECONDARY_TAG_VOCAB = frozenset({"H", "E", "C", "T", "G", "I"})
 MOTIF_FAMILY_VOCAB = frozenset({"STRUCTURAL", "REGULATORY", "CATALYTIC", "INTERACTION", "SIGNALING", "OTHER"})
 MOTIF_SUBTYPE_VOCAB = frozenset({"BINDING_LOOP", "ACTIVE_SITE", "LOW_COMPLEXITY", "TRANSMEMBRANE", "COILED_COIL", "OTHER"})
