@@ -21,6 +21,20 @@ type JobKind = "generate_plasmid" | "generate_protein" | "validate_plasmid" | "p
 const GENERATION_KINDS: JobKind[] = ["generate_plasmid", "generate_protein"];
 const TRAINING_KINDS: JobKind[] = ["train_one", "stream", "pretrain"];
 const CATALOG_KINDS: JobKind[] = ["stream", "validate_plasmid", "design_loop"];
+const DNA_MODEL_OPTIONS = [
+  ["mlp", "MLP VAE"],
+  ["transformer", "Transformer VAE"],
+  ["ssm", "State-space mixer"],
+  ["conv", "Multi-scale CNN"],
+  ["recurrent", "Bidirectional GRU"],
+  ["wavenet", "WaveNet dilated CNN"],
+  ["mamba", "Selective SSM"],
+  ["attention_pool", "Attention pooling"],
+  ["bytenet", "ByteNet"],
+  ["tree", "Tree encoder"],
+  ["hybrid", "CNN + tree hybrid"],
+  ["hierarchical", "Hierarchical DNA"],
+] as const;
 
 function KindSpecificFields({ kind, datasetOptions, selectedDataset }: { kind: JobKind; datasetOptions: string[]; selectedDataset: string }) {
   const showGeneration = GENERATION_KINDS.includes(kind);
@@ -31,6 +45,7 @@ function KindSpecificFields({ kind, datasetOptions, selectedDataset }: { kind: J
   const showDesignLoop = kind === "design_loop";
   const showPretrain = kind === "pretrain";
   const isProtein = kind === "generate_protein";
+  const showDnaModeling = kind === "generate_plasmid" || kind === "train_one" || kind === "stream";
 
   return (
     <>
@@ -114,6 +129,48 @@ function KindSpecificFields({ kind, datasetOptions, selectedDataset }: { kind: J
               <input id="output-name" className="input" defaultValue={isProtein ? "perceptrome_protein_1" : "perceptrome_plasmid_1"} />
             </label>
           </div>
+          {!isProtein && (
+            <>
+              <div className="row">
+                <label className="input-group"><span className="label">Token sampler</span>
+                  <select id="sampling-strategy" className="input" defaultValue="temperature">
+                    <option value="temperature">temperature</option>
+                    <option value="top_k">top_k</option>
+                    <option value="top_p">top_p</option>
+                    <option value="beam">beam</option>
+                    <option value="anneal">anneal</option>
+                  </select>
+                </label>
+                <label className="input-group"><span className="label">Top-k tokens</span>
+                  <input id="top-k-tokens" className="input" type="number" min="0" defaultValue="0" />
+                </label>
+                <label className="input-group"><span className="label">Top-p</span>
+                  <input id="top-p" className="input" type="number" min="0.01" max="1" step="0.01" defaultValue="1.0" />
+                </label>
+                <label className="input-group"><span className="label">Beam width</span>
+                  <input id="beam-width" className="input" type="number" min="1" defaultValue="1" />
+                </label>
+              </div>
+              <div className="row">
+                <label className="input-group"><span className="label">Latent strategy</span>
+                  <select id="latent-strategy" className="input" defaultValue="random">
+                    <option value="random">random</option>
+                    <option value="walk">walk</option>
+                    <option value="gradient">gradient</option>
+                  </select>
+                </label>
+                <label className="input-group"><span className="label">Walk dim</span>
+                  <input id="walk-dim" className="input" type="number" min="0" defaultValue="0" />
+                </label>
+                <label className="input-group"><span className="label">Walk steps</span>
+                  <input id="walk-steps" className="input" type="number" min="2" defaultValue="10" />
+                </label>
+                <label className="input-group"><span className="label">GC target</span>
+                  <input id="optimize-target" className="input" type="number" min="0" max="1" step="0.05" defaultValue="0.5" />
+                </label>
+              </div>
+            </>
+          )}
         </>
       )}
 
@@ -190,17 +247,41 @@ function KindSpecificFields({ kind, datasetOptions, selectedDataset }: { kind: J
         </>
       )}
 
-      {/* ── Model family (for generation and training) ── */}
-      {(showGeneration || kind === "train_one" || kind === "stream") && (
-        <div className="row">
-          <label className="input-group"><span className="label">Model family</span>
-            <select id="model-family" className="input" defaultValue="baseline">
-              <option value="baseline">baseline</option>
-              <option value="vae">vae</option>
-              <option value="transformer">transformer</option>
-            </select>
-          </label>
-        </div>
+      {/* ── Genomic DNA model architecture ── */}
+      {showDnaModeling && (
+        <>
+          <div className="row">
+            <label className="input-group"><span className="label">DNA architecture</span>
+              <select id="model-type" className="input" defaultValue="">
+                <option value="">config default</option>
+                {DNA_MODEL_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </label>
+            <label className="input-group"><span className="label">Hidden dim</span>
+              <input id="hidden-dim" className="input" type="number" min="16" step="16" placeholder="config" />
+            </label>
+            <label className="input-group"><span className="label">Layers</span>
+              <input id="transformer-layers" className="input" type="number" min="1" placeholder="config" />
+            </label>
+            <label className="input-group"><span className="label">Dropout</span>
+              <input id="transformer-dropout" className="input" type="number" min="0" max="0.9" step="0.05" placeholder="config" />
+            </label>
+          </div>
+          <div className="row">
+            <label className="input-group"><span className="label">Attention dim</span>
+              <input id="transformer-d-model" className="input" type="number" min="16" step="16" placeholder="config" />
+            </label>
+            <label className="input-group"><span className="label">Heads</span>
+              <input id="transformer-nhead" className="input" type="number" min="1" placeholder="config" />
+            </label>
+            <label className="input-group"><span className="label">Tree layers</span>
+              <input id="ast-tree-layers" className="input" type="number" min="1" placeholder="config" />
+            </label>
+            <label className="input-group"><span className="label">Latent dim</span>
+              <input id="hierarchical-latent-dim" className="input" type="number" min="16" step="16" placeholder="config" />
+            </label>
+          </div>
+        </>
       )}
     </>
   );

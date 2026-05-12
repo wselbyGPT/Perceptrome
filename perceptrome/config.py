@@ -35,7 +35,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_stream_epochs": 100,
         "shuffle_catalog": True,
         "hidden_dim": 512,
-        "model_type": "mlp",  # "mlp" | "transformer" | "ssm" | "tree" | "hybrid" | "hierarchical" | "conv" | "recurrent" | "wavenet" | "mamba" | "attention_pool" | "bytenet"
+        "model_type": "mlp",  # see perceptrome.model_catalog.DNA_GENERATIVE_MODEL_TYPES
         "transformer_d_model": 256,
         "transformer_nhead": 8,
         "transformer_layers": 4,

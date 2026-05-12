@@ -3,6 +3,8 @@ import argparse
 import importlib
 from typing import Any
 
+from perceptrome.model_catalog import DNA_MODEL_TYPE_CHOICES
+
 
 def _lazy_cmd(func_name: str):
     def _run(args):
@@ -210,9 +212,9 @@ def build_parser() -> argparse.ArgumentParser:
     def add_model_args(sp):
         sp.add_argument(
             "--model-type",
-            choices=["mlp", "transformer", "ssm"],
+            choices=list(DNA_MODEL_TYPE_CHOICES),
             default=None,
-            help="Override model architecture for this command (default from config).",
+            help="Override generative sequence model architecture for this command (default from config).",
         )
 
     s = sub.add_parser("encode-one")
