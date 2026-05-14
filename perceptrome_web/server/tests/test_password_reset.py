@@ -9,7 +9,7 @@ from app.deps import get_db
 from app.main import app
 from tests.db_utils import apply_migrations
 from app.models import AuthToken, User, UserSession
-from app.security import hash_password
+from app.security import hash_password, hash_session_token
 
 
 def setup_client(monkeypatch, tmp_path):
@@ -107,7 +107,7 @@ def test_password_reset_token_expiration(monkeypatch, tmp_path):
     token = issued_tokens[-1]
 
     with db_factory() as db:
-        token_hash = main_module.hash_session_token(token)
+        token_hash = hash_session_token(token)
         auth_token = db.execute(select(AuthToken).where(AuthToken.token_hash == token_hash)).scalar_one()
         auth_token.expires_at = datetime.utcnow() - timedelta(minutes=1)
         db.commit()
