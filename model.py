@@ -1,0 +1,1564 @@
+import logging, os
+from dataclasses import dataclass
+from typing import Dict, Optional, Tuple
+
+try:
+    import torch
+    from torch import nn, optim
+    import torch.nn.functional as F
+except ImportError:
+    torch = None  # type: ignore
+    nn = None     # type: ignore
+    optim = None  # type: ignore
+    F = None      # type: ignore
+
+from .config import IOConfig
+from .genome_schema import CURRENT_GENOME_SCHEMA_VERSION, migrate_genome_payload
+from .models.factory import build_hierarchical_model
+from .models.ast_nodes import ASTNodeEncoder
+from .models.ast_rvnn import TreeRvnnEncoder
+from .models.fusion import PooledASTFusion
+
+
+@dataclass(frozen=True)
+class BioASTEmbeddingOutput:
+    """Embedding bundle for sequence + Bio-AST inputs.
+
+    fixed: global embedding per sample (B, H)
+    token: token-level sequence embeddings (B, L, H)
+    node: node-level AST embeddings (B, N, H)
+    """
+
+    fixed: "torch.Tensor"
+    token: "torch.Tensor"
+    node: "torch.Tensor"
+
+
+class BioASTEmbeddingAPI(nn.Module):  # type: ignore[misc]
+    """Explicit embedding API for sequence inputs with an optional Bio-AST branch."""
+
+    def __init__(
+        self,
+        seq_vocab_size: int,
+        hidden_dim: int,
+        ast_tree_layers: int = 4,
+        motif_kernel_size: int = 7,
+        motif_channels: int = 64,
+        dropout: float = 0.1,
+        node_type_vocab_size: int = 32,
+        fusion_strategy: str = "pooled_fusion",
+    ):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for BioASTEmbeddingAPI.")
+        super().__init__()
+        self.hidden_dim = int(hidden_dim)
+        self.ast_tree_layers = max(1, int(ast_tree_layers))
+        self.motif_kernel_size = int(motif_kernel_size)
+        self.motif_channels = int(motif_channels)
+        self.fusion_strategy = str(fusion_strategy)
+
+        self.seq_token_proj = nn.Linear(int(seq_vocab_size), self.hidden_dim)
+        pad = self.motif_kernel_size // 2
+        self.seq_motif = nn.Sequential(
+            nn.Conv1d(int(seq_vocab_size), self.motif_channels, kernel_size=self.motif_kernel_size, padding=pad),
+            nn.GELU(),
+            nn.Conv1d(self.motif_channels, self.hidden_dim, kernel_size=1),
+            nn.GELU(),
+        )
+
+        self.ast_node_encoder = ASTNodeEncoder(hidden_dim=self.hidden_dim, node_type_vocab_size=int(node_type_vocab_size), dropout=float(dropout))
+        self.ast_tree_encoder = TreeRvnnEncoder(hidden_dim=self.hidden_dim, layers=self.ast_tree_layers, dropout=float(dropout))
+        self.pooled_fusion = PooledASTFusion(hidden_dim=self.hidden_dim, dropout=float(dropout))
+
+    def forward(
+        self,
+        sequence_tokens: "torch.Tensor",
+        ast_node_type_ids: Optional["torch.Tensor"] = None,
+        ast_coords: Optional["torch.Tensor"] = None,
+        ast_strand: Optional["torch.Tensor"] = None,
+        ast_frame: Optional["torch.Tensor"] = None,
+        ast_edge_index: Optional["torch.Tensor"] = None,
+        ast_node_mask: Optional["torch.Tensor"] = None,
+    ) -> BioASTEmbeddingOutput:
+        if sequence_tokens.dim() != 3:
+            raise ValueError("sequence_tokens must be shaped (batch, seq_len, vocab_size)")
+
+        token_embed = self.seq_token_proj(sequence_tokens)
+        seq_motif = self.seq_motif(sequence_tokens.transpose(1, 2)).transpose(1, 2)
+        token_embed = token_embed + seq_motif
+        fixed_seq = token_embed.mean(dim=1)
+
+        if ast_node_type_ids is None:
+            empty_nodes = token_embed.new_zeros((sequence_tokens.size(0), 0, self.hidden_dim))
+            return BioASTEmbeddingOutput(fixed=fixed_seq, token=token_embed, node=empty_nodes)
+
+        if ast_node_type_ids.dim() != 2:
+            raise ValueError("ast_node_type_ids must be shaped (batch, node_count)")
+        node_embed = self.ast_node_encoder(ast_node_type_ids, coords=ast_coords, strand=ast_strand, frame=ast_frame)
+        node_embed, ast_root = self.ast_tree_encoder(node_embed, tree={"edge_index": ast_edge_index, "node_mask": ast_node_mask})
+        _, fixed = self.pooled_fusion(token_embed, fixed_seq, node_embed, ast_root, node_mask=ast_node_mask)
+        return BioASTEmbeddingOutput(fixed=fixed, token=token_embed, node=node_embed)
+
+
+def _normalize_model_type(model_type: str) -> str:
+    mt = str(model_type).lower()
+    return {
+        "rnn": "recurrent",
+        "gru": "recurrent",
+        "lstm": "recurrent",
+        "bigru": "recurrent",
+        "bilstm": "recurrent",
+        "cnn": "conv",
+        "resnet": "conv",
+        "residual_conv": "conv",
+        "moe": "mlp",
+        "gnn": "mlp",
+        "tcn": "wavenet",
+        "dilated": "wavenet",
+        "causal_conv": "wavenet",
+        "ssm_mamba": "mamba",
+        "selective_ssm": "mamba",
+        "s4": "mamba",
+        "attn_pool": "attention_pool",
+        "perceiver": "attention_pool",
+        "cross_attn": "attention_pool",
+        "hier": "hierarchical",
+    }.get(mt, mt)
+
+
+class TreeEncoder(nn.Module):  # type: ignore[misc]
+    """Bottom-up binary tree encoder used for Bio-AST message passing."""
+
+    def __init__(self, seq_len: int, vocab_size: int, hidden_dim: int, tree_layers: int, dropout: float):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for TreeEncoder.")
+        super().__init__()
+        self.seq_len = int(seq_len)
+        self.vocab_size = int(vocab_size)
+        self.hidden_dim = int(hidden_dim)
+        self.tree_layers = max(1, int(tree_layers))
+
+        self.leaf_proj = nn.Linear(self.vocab_size, self.hidden_dim)
+        self.msg_layers = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(self.hidden_dim * 2, self.hidden_dim),
+                    nn.GELU(),
+                    nn.Dropout(float(dropout)),
+                )
+                for _ in range(self.tree_layers)
+            ]
+        )
+        self.readout = nn.Linear(self.hidden_dim, self.hidden_dim)
+
+    def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+        leaves = x.view(x.size(0), self.seq_len, self.vocab_size)
+        nodes = self.leaf_proj(leaves)
+        for layer in self.msg_layers:
+            if nodes.size(1) > 1:
+                even = nodes[:, 0::2, :]
+                odd = nodes[:, 1::2, :]
+                if even.size(1) > odd.size(1):
+                    odd = torch.cat([odd, even[:, -1:, :]], dim=1)
+                nodes = layer(torch.cat([even, odd], dim=-1))
+            else:
+                nodes = layer(torch.cat([nodes, nodes], dim=-1))
+        root = nodes.mean(dim=1)
+        return self.readout(root)
+
+
+class TreeVAE(nn.Module):  # type: ignore[misc]
+    def __init__(self, seq_len: int, vocab_size: int, hidden_dim: int, tree_layers: int, dropout: float):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for TreeVAE.")
+        super().__init__()
+        input_dim = int(seq_len) * int(vocab_size)
+        self.encoder_tree = TreeEncoder(seq_len, vocab_size, hidden_dim, tree_layers, dropout)
+        self.fc_mu = nn.Linear(hidden_dim, hidden_dim)
+        self.fc_logvar = nn.Linear(hidden_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc_out = nn.Linear(hidden_dim, input_dim)
+        self.act = nn.GELU()
+
+    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+        h = self.encoder_tree(x)
+        return self.fc_mu(h), self.fc_logvar(h)
+
+    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
+        return self.fc_out(self.act(self.fc2(z)))
+
+    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
+        if torch is None or F is None:
+            raise RuntimeError("PyTorch is required.")
+        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
+        return F.softmax(logits, dim=-1) if str(loss_type).lower() == "ce" else torch.sigmoid(logits)
+
+    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar
+
+
+class HybridVAE(nn.Module):  # type: ignore[misc]
+    """Fuses raw sequence, local motif (CNN), and Bio-AST tree branches."""
+
+    def __init__(
+        self,
+        seq_len: int,
+        vocab_size: int,
+        hidden_dim: int,
+        tree_layers: int,
+        motif_kernel_size: int,
+        motif_channels: int,
+        dropout: float,
+    ):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for HybridVAE.")
+        super().__init__()
+        self.seq_len = int(seq_len)
+        self.vocab_size = int(vocab_size)
+        input_dim = self.seq_len * self.vocab_size
+
+        self.raw_fc = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+        )
+
+        pad = int(motif_kernel_size) // 2
+        self.motif_conv = nn.Sequential(
+            nn.Conv1d(self.vocab_size, int(motif_channels), kernel_size=int(motif_kernel_size), padding=pad),
+            nn.GELU(),
+            nn.Conv1d(int(motif_channels), int(motif_channels), kernel_size=1),
+            nn.GELU(),
+        )
+        self.motif_fc = nn.Linear(int(motif_channels), hidden_dim)
+
+        self.tree_encoder = TreeEncoder(seq_len, vocab_size, hidden_dim, tree_layers, dropout)
+
+        self.fuse = nn.Sequential(
+            nn.Linear(hidden_dim * 3, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+        )
+        self.fc_mu = nn.Linear(hidden_dim, hidden_dim)
+        self.fc_logvar = nn.Linear(hidden_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc_out = nn.Linear(hidden_dim, input_dim)
+
+    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+        x_flat = x.view(x.size(0), -1)
+        x_seq = x.view(x.size(0), self.seq_len, self.vocab_size)
+
+        raw_h = self.raw_fc(x_flat)
+
+        motif_in = x_seq.transpose(1, 2)
+        motif_h = self.motif_conv(motif_in).mean(dim=2)
+        motif_h = self.motif_fc(motif_h)
+
+        tree_h = self.tree_encoder(x_flat)
+        h = self.fuse(torch.cat([raw_h, motif_h, tree_h], dim=-1))
+        return self.fc_mu(h), self.fc_logvar(h)
+
+    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
+        return self.fc_out(F.gelu(self.fc2(z)))
+
+    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
+        if torch is None or F is None:
+            raise RuntimeError("PyTorch is required.")
+        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
+        return F.softmax(logits, dim=-1) if str(loss_type).lower() == "ce" else torch.sigmoid(logits)
+
+    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar
+
+class TransformerVAE(nn.Module):  # type: ignore[misc]
+    def __init__(
+        self,
+        seq_len: int,
+        vocab_size: int,
+        d_model: int,
+        nhead: int,
+        num_layers: int,
+        dropout: float,
+    ):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for TransformerVAE.")
+        super().__init__()
+        self.seq_len = int(seq_len)
+        self.vocab_size = int(vocab_size)
+        self.d_model = int(d_model)
+
+        self.input_proj = nn.Linear(self.vocab_size, self.d_model)
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.seq_len, self.d_model))
+
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model=self.d_model,
+            nhead=int(nhead),
+            dim_feedforward=int(self.d_model * 4),
+            dropout=float(dropout),
+            batch_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=int(num_layers))
+
+        self.fc_mu = nn.Linear(self.d_model, self.d_model)
+        self.fc_logvar = nn.Linear(self.d_model, self.d_model)
+
+        self.z_to_seq = nn.Linear(self.d_model, self.seq_len * self.d_model)
+        dec_layer = nn.TransformerEncoderLayer(
+            d_model=self.d_model,
+            nhead=int(nhead),
+            dim_feedforward=int(self.d_model * 4),
+            dropout=float(dropout),
+            batch_first=True,
+        )
+        self.decoder = nn.TransformerEncoder(dec_layer, num_layers=int(num_layers))
+        self.out_proj = nn.Linear(self.d_model, self.vocab_size)
+
+    def _ensure_seq(self, x: "torch.Tensor") -> "torch.Tensor":
+        if x.dim() == 2:
+            return x.view(x.size(0), self.seq_len, self.vocab_size)
+        return x
+
+    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+        x_seq = self._ensure_seq(x)
+        h = self.input_proj(x_seq) + self.pos_embed
+        h = self.encoder(h)
+        pooled = h.mean(dim=1)
+        return self.fc_mu(pooled), self.fc_logvar(pooled)
+
+    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
+        h = self.z_to_seq(z).view(z.size(0), self.seq_len, self.d_model)
+        h = self.decoder(h + self.pos_embed)
+        logits = self.out_proj(h)
+        return logits.view(z.size(0), self.seq_len * self.vocab_size)
+
+    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
+        if torch is None or F is None:
+            raise RuntimeError("PyTorch is required.")
+        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
+        lt = str(loss_type).lower()
+        if lt == "ce":
+            return F.softmax(logits, dim=-1)
+        return torch.sigmoid(logits)
+
+    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        recon_logits = self.decode(z)
+        return recon_logits, mu, logvar
+
+
+class StateSpaceVAE(nn.Module):  # type: ignore[misc]
+    """Sequence VAE using lightweight state-space style mixing blocks.
+
+    This keeps the same encode/decode contract used by the other VAE variants,
+    while replacing attention with depthwise temporal convolutions.
+    """
+
+    def __init__(
+        self,
+        seq_len: int,
+        vocab_size: int,
+        hidden_dim: int,
+        num_layers: int,
+        kernel_size: int,
+        dropout: float,
+    ):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for StateSpaceVAE.")
+        super().__init__()
+        self.seq_len = int(seq_len)
+        self.vocab_size = int(vocab_size)
+        self.hidden_dim = int(hidden_dim)
+
+        self.input_proj = nn.Linear(self.vocab_size, self.hidden_dim)
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.seq_len, self.hidden_dim))
+
+        pad = int(kernel_size) // 2
+        self.encoder_blocks = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv1d(self.hidden_dim, self.hidden_dim, kernel_size=int(kernel_size), padding=pad, groups=self.hidden_dim),
+                nn.Conv1d(self.hidden_dim, self.hidden_dim, kernel_size=1),
+                nn.GELU(),
+                nn.Dropout(float(dropout)),
+            )
+            for _ in range(int(num_layers))
+        ])
+
+        self.fc_mu = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.fc_logvar = nn.Linear(self.hidden_dim, self.hidden_dim)
+
+        self.z_to_seq = nn.Linear(self.hidden_dim, self.seq_len * self.hidden_dim)
+        self.decoder_blocks = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv1d(self.hidden_dim, self.hidden_dim, kernel_size=int(kernel_size), padding=pad, groups=self.hidden_dim),
+                nn.Conv1d(self.hidden_dim, self.hidden_dim, kernel_size=1),
+                nn.GELU(),
+                nn.Dropout(float(dropout)),
+            )
+            for _ in range(int(num_layers))
+        ])
+        self.out_proj = nn.Linear(self.hidden_dim, self.vocab_size)
+
+    def _ensure_seq(self, x: "torch.Tensor") -> "torch.Tensor":
+        if x.dim() == 2:
+            return x.view(x.size(0), self.seq_len, self.vocab_size)
+        return x
+
+    def _run_blocks(self, h: "torch.Tensor", blocks: "nn.ModuleList") -> "torch.Tensor":
+        # (B, L, H) -> (B, H, L)
+        y = h.transpose(1, 2)
+        for blk in blocks:
+            y = y + blk(y)
+        return y.transpose(1, 2)
+
+    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+        x_seq = self._ensure_seq(x)
+        h = self.input_proj(x_seq) + self.pos_embed
+        h = self._run_blocks(h, self.encoder_blocks)
+        pooled = h.mean(dim=1)
+        return self.fc_mu(pooled), self.fc_logvar(pooled)
+
+    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
+        h = self.z_to_seq(z).view(z.size(0), self.seq_len, self.hidden_dim)
+        h = self._run_blocks(h + self.pos_embed, self.decoder_blocks)
+        logits = self.out_proj(h)
+        return logits.view(z.size(0), self.seq_len * self.vocab_size)
+
+    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
+        if torch is None or F is None:
+            raise RuntimeError("PyTorch is required.")
+        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
+        lt = str(loss_type).lower()
+        if lt == "ce":
+            return F.softmax(logits, dim=-1)
+        return torch.sigmoid(logits)
+
+    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        recon_logits = self.decode(z)
+        return recon_logits, mu, logvar
+
+
+# ---------------------------------------------------------------------------
+# ConvResVAE – multi-scale residual CNN for local motif detection
+# ---------------------------------------------------------------------------
+
+class _ResConvBlock(nn.Module):  # type: ignore[misc]
+    """Residual 1-D convolution block with multi-kernel fusion."""
+
+    def __init__(self, channels: int, kernels: Tuple[int, ...], dropout: float):
+        super().__init__()
+        branches = []
+        for k in kernels:
+            branches.append(nn.Sequential(
+                nn.Conv1d(channels, channels, kernel_size=k, padding=k // 2, groups=1),
+                nn.GELU(),
+            ))
+        self.branches = nn.ModuleList(branches)
+        self.mix = nn.Conv1d(channels * len(kernels), channels, kernel_size=1)
+        self.norm = nn.LayerNorm(channels)
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+        # x: (B, C, L)
+        parts = [branch(x) for branch in self.branches]
+        cat = torch.cat(parts, dim=1)  # (B, C*K, L)
+        out = self.mix(cat)  # (B, C, L)
+        out = out + x  # residual
+        # LayerNorm over channel dim
+        out = self.norm(out.transpose(1, 2)).transpose(1, 2)
+        return self.drop(out)
+
+
+class ConvResVAE(nn.Module):  # type: ignore[misc]
+    """Multi-scale residual CNN VAE.
+
+    Uses parallel convolution branches with different kernel sizes (3, 7, 15)
+    to capture genomic motifs at codon, motif, and domain scales simultaneously.
+    """
+
+    def __init__(
+        self,
+        seq_len: int,
+        vocab_size: int,
+        hidden_dim: int,
+        num_layers: int,
+        dropout: float,
+        kernels: Tuple[int, ...] = (3, 7, 15),
+    ):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for ConvResVAE.")
+        super().__init__()
+        self.seq_len = int(seq_len)
+        self.vocab_size = int(vocab_size)
+        self.hidden_dim = int(hidden_dim)
+
+        self.input_proj = nn.Linear(self.vocab_size, self.hidden_dim)
+        self.encoder_blocks = nn.ModuleList([
+            _ResConvBlock(self.hidden_dim, kernels, dropout)
+            for _ in range(int(num_layers))
+        ])
+        self.fc_mu = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.fc_logvar = nn.Linear(self.hidden_dim, self.hidden_dim)
+
+        self.z_to_seq = nn.Linear(self.hidden_dim, self.seq_len * self.hidden_dim)
+        self.decoder_blocks = nn.ModuleList([
+            _ResConvBlock(self.hidden_dim, kernels, dropout)
+            for _ in range(int(num_layers))
+        ])
+        self.out_proj = nn.Linear(self.hidden_dim, self.vocab_size)
+
+    def _ensure_seq(self, x: "torch.Tensor") -> "torch.Tensor":
+        if x.dim() == 2:
+            return x.view(x.size(0), self.seq_len, self.vocab_size)
+        return x
+
+    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+        x_seq = self._ensure_seq(x)
+        h = self.input_proj(x_seq).transpose(1, 2)  # (B, H, L)
+        for blk in self.encoder_blocks:
+            h = blk(h)
+        pooled = h.mean(dim=2)  # (B, H)
+        return self.fc_mu(pooled), self.fc_logvar(pooled)
+
+    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
+        std = torch.exp(0.5 * logvar)
+        return mu + torch.randn_like(std) * std
+
+    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
+        h = self.z_to_seq(z).view(z.size(0), self.hidden_dim, self.seq_len)
+        for blk in self.decoder_blocks:
+            h = blk(h)
+        logits = self.out_proj(h.transpose(1, 2))  # (B, L, V)
+        return logits.reshape(z.size(0), self.seq_len * self.vocab_size)
+
+    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
+        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
+        return F.softmax(logits, dim=-1) if str(loss_type).lower() == "ce" else torch.sigmoid(logits)
+
+    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar
+
+
+# ---------------------------------------------------------------------------
+# RecurrentVAE – bidirectional GRU for sequential dependencies
+# ---------------------------------------------------------------------------
+
+class RecurrentVAE(nn.Module):  # type: ignore[misc]
+    """Bidirectional GRU VAE.
+
+    GRUs capture long-range sequential dependencies in genomic sequences,
+    naturally modeling reading-frame continuity and ORF boundaries.
+    """
+
+    def __init__(
+        self,
+        seq_len: int,
+        vocab_size: int,
+        hidden_dim: int,
+        num_layers: int,
+        dropout: float,
+        bidirectional: bool = True,
+    ):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for RecurrentVAE.")
+        super().__init__()
+        self.seq_len = int(seq_len)
+        self.vocab_size = int(vocab_size)
+        self.hidden_dim = int(hidden_dim)
+        self.bidirectional = bool(bidirectional)
+        self.num_directions = 2 if self.bidirectional else 1
+
+        self.input_proj = nn.Linear(self.vocab_size, self.hidden_dim)
+        self.encoder_gru = nn.GRU(
+            input_size=self.hidden_dim,
+            hidden_size=self.hidden_dim,
+            num_layers=int(num_layers),
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+            bidirectional=self.bidirectional,
+        )
+        enc_out_dim = self.hidden_dim * self.num_directions
+        self.fc_mu = nn.Linear(enc_out_dim, self.hidden_dim)
+        self.fc_logvar = nn.Linear(enc_out_dim, self.hidden_dim)
+
+        self.z_proj = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.decoder_gru = nn.GRU(
+            input_size=self.hidden_dim,
+            hidden_size=self.hidden_dim,
+            num_layers=int(num_layers),
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+            bidirectional=False,
+        )
+        self.out_proj = nn.Linear(self.hidden_dim, self.vocab_size)
+        self.drop = nn.Dropout(dropout)
+
+    def _ensure_seq(self, x: "torch.Tensor") -> "torch.Tensor":
+        if x.dim() == 2:
+            return x.view(x.size(0), self.seq_len, self.vocab_size)
+        return x
+
+    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+        x_seq = self._ensure_seq(x)
+        h = self.drop(self.input_proj(x_seq))
+        output, _ = self.encoder_gru(h)  # (B, L, H*dirs)
+        pooled = output.mean(dim=1)  # (B, H*dirs)
+        return self.fc_mu(pooled), self.fc_logvar(pooled)
+
+    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
+        std = torch.exp(0.5 * logvar)
+        return mu + torch.randn_like(std) * std
+
+    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
+        h = F.gelu(self.z_proj(z))  # (B, H)
+        h = h.unsqueeze(1).expand(-1, self.seq_len, -1)  # (B, L, H)
+        output, _ = self.decoder_gru(h)  # (B, L, H)
+        logits = self.out_proj(output)  # (B, L, V)
+        return logits.reshape(z.size(0), self.seq_len * self.vocab_size)
+
+    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
+        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
+        return F.softmax(logits, dim=-1) if str(loss_type).lower() == "ce" else torch.sigmoid(logits)
+
+    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar
+
+
+# ---------------------------------------------------------------------------
+# WaveNetVAE – dilated causal convolutions for long-range dependencies
+# ---------------------------------------------------------------------------
+
+class _DilatedResBlock(nn.Module):  # type: ignore[misc]
+    """Single dilated residual block with gated activation (WaveNet-style)."""
+
+    def __init__(self, channels: int, kernel_size: int, dilation: int, dropout: float):
+        super().__init__()
+        pad = (kernel_size - 1) * dilation  # causal padding
+        self.conv_filter = nn.Conv1d(channels, channels, kernel_size, dilation=dilation, padding=pad)
+        self.conv_gate = nn.Conv1d(channels, channels, kernel_size, dilation=dilation, padding=pad)
+        self.mix = nn.Conv1d(channels, channels, kernel_size=1)
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+        # x: (B, C, L)
+        L = x.size(2)
+        f = torch.tanh(self.conv_filter(x)[:, :, :L])
+        g = torch.sigmoid(self.conv_gate(x)[:, :, :L])
+        out = self.drop(self.mix(f * g))
+        return out + x
+
+
+class WaveNetVAE(nn.Module):  # type: ignore[misc]
+    """WaveNet-style VAE with exponentially dilated causal convolutions.
+
+    Exponentially growing dilations (1, 2, 4, 8, ...) give a receptive field
+    that covers the entire genome window, ideal for capturing regulatory
+    elements and long-distance codon correlations.
+    """
+
+    def __init__(
+        self,
+        seq_len: int,
+        vocab_size: int,
+        hidden_dim: int,
+        num_layers: int,
+        kernel_size: int,
+        dropout: float,
+    ):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for WaveNetVAE.")
+        super().__init__()
+        self.seq_len = int(seq_len)
+        self.vocab_size = int(vocab_size)
+        self.hidden_dim = int(hidden_dim)
+
+        self.input_proj = nn.Conv1d(self.vocab_size, self.hidden_dim, kernel_size=1)
+        self.encoder_blocks = nn.ModuleList([
+            _DilatedResBlock(self.hidden_dim, int(kernel_size), dilation=2 ** (i % 8), dropout=dropout)
+            for i in range(int(num_layers))
+        ])
+        self.fc_mu = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.fc_logvar = nn.Linear(self.hidden_dim, self.hidden_dim)
+
+        self.z_to_seq = nn.Linear(self.hidden_dim, self.seq_len * self.hidden_dim)
+        self.decoder_blocks = nn.ModuleList([
+            _DilatedResBlock(self.hidden_dim, int(kernel_size), dilation=2 ** (i % 8), dropout=dropout)
+            for i in range(int(num_layers))
+        ])
+        self.out_proj = nn.Conv1d(self.hidden_dim, self.vocab_size, kernel_size=1)
+
+    def _ensure_seq(self, x: "torch.Tensor") -> "torch.Tensor":
+        if x.dim() == 2:
+            return x.view(x.size(0), self.seq_len, self.vocab_size)
+        return x
+
+    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+        x_seq = self._ensure_seq(x)
+        h = self.input_proj(x_seq.transpose(1, 2))  # (B, H, L)
+        for blk in self.encoder_blocks:
+            h = blk(h)
+        pooled = h.mean(dim=2)
+        return self.fc_mu(pooled), self.fc_logvar(pooled)
+
+    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
+        std = torch.exp(0.5 * logvar)
+        return mu + torch.randn_like(std) * std
+
+    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
+        h = self.z_to_seq(z).view(z.size(0), self.hidden_dim, self.seq_len)
+        for blk in self.decoder_blocks:
+            h = blk(h)
+        logits = self.out_proj(h).transpose(1, 2)  # (B, L, V)
+        return logits.reshape(z.size(0), self.seq_len * self.vocab_size)
+
+    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
+        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
+        return F.softmax(logits, dim=-1) if str(loss_type).lower() == "ce" else torch.sigmoid(logits)
+
+    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar
+
+
+# ---------------------------------------------------------------------------
+# MambaVAE – selective state space model
+# ---------------------------------------------------------------------------
+
+class _SelectiveSSMBlock(nn.Module):  # type: ignore[misc]
+    """Simplified selective state-space block (Mamba-style).
+
+    Implements input-dependent gating over a structured state transition,
+    using a short local convolution for causal context and a learned
+    selection mechanism that controls information flow.
+    """
+
+    def __init__(self, hidden_dim: int, d_state: int, d_conv: int, dropout: float):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.d_state = d_state
+
+        # Input projection doubles channels for gate split
+        self.in_proj = nn.Linear(hidden_dim, hidden_dim * 2)
+        # Short causal convolution
+        self.conv = nn.Conv1d(hidden_dim, hidden_dim, kernel_size=d_conv, padding=d_conv - 1, groups=hidden_dim)
+        # Selection parameters: input-dependent B, C, delta
+        self.x_proj = nn.Linear(hidden_dim, d_state * 2 + 1)  # B, C, delta
+        # Structured state matrix A (log-space for stability)
+        self.A_log = nn.Parameter(torch.log(torch.arange(1, d_state + 1, dtype=torch.float32).unsqueeze(0).expand(hidden_dim, -1)))
+        self.D = nn.Parameter(torch.ones(hidden_dim))
+        self.out_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.norm = nn.LayerNorm(hidden_dim)
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+        # x: (B, L, H)
+        B, L, H = x.shape
+        residual = x
+
+        xz = self.in_proj(x)  # (B, L, 2H)
+        x_branch, z = xz.chunk(2, dim=-1)  # each (B, L, H)
+
+        # Causal convolution
+        x_conv = self.conv(x_branch.transpose(1, 2))[:, :, :L].transpose(1, 2)
+        x_conv = F.silu(x_conv)
+
+        # Selection mechanism
+        sel = self.x_proj(x_conv)  # (B, L, 2*d_state + 1)
+        B_sel = sel[:, :, :self.d_state]  # (B, L, N)
+        C_sel = sel[:, :, self.d_state:2 * self.d_state]  # (B, L, N)
+        delta = F.softplus(sel[:, :, -1])  # (B, L)
+
+        # Discretize: A_bar = exp(delta * A)
+        A = -torch.exp(self.A_log)  # (H, N)
+        # Selective scan (simplified parallel version)
+        delta_A = torch.exp(delta.unsqueeze(-1).unsqueeze(-1) * A.unsqueeze(0).unsqueeze(0))  # (B, L, H, N)
+        delta_B_x = delta.unsqueeze(-1).unsqueeze(-1) * B_sel.unsqueeze(2) * x_conv.unsqueeze(-1)  # (B, L, H, N)
+
+        # Sequential scan
+        h_state = torch.zeros(B, H, self.d_state, device=x.device, dtype=x.dtype)
+        outputs = []
+        for t in range(L):
+            h_state = delta_A[:, t] * h_state + delta_B_x[:, t]
+            y_t = (h_state * C_sel[:, t].unsqueeze(1)).sum(dim=-1)  # (B, H)
+            outputs.append(y_t)
+        y = torch.stack(outputs, dim=1)  # (B, L, H)
+
+        y = y + x_conv * self.D.unsqueeze(0).unsqueeze(0)
+        y = y * F.silu(z)  # gated
+        y = self.out_proj(y)
+        y = self.drop(self.norm(y + residual))
+        return y
+
+
+class MambaVAE(nn.Module):  # type: ignore[misc]
+    """Selective State-Space VAE (Mamba-style).
+
+    Input-dependent gating and structured state transitions give
+    linear-time sequence processing with strong long-range modeling.
+    Particularly effective for long genomic windows where attention
+    becomes expensive.
+    """
+
+    def __init__(
+        self,
+        seq_len: int,
+        vocab_size: int,
+        hidden_dim: int,
+        num_layers: int,
+        d_state: int,
+        d_conv: int,
+        dropout: float,
+    ):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for MambaVAE.")
+        super().__init__()
+        self.seq_len = int(seq_len)
+        self.vocab_size = int(vocab_size)
+        self.hidden_dim = int(hidden_dim)
+
+        self.input_proj = nn.Linear(self.vocab_size, self.hidden_dim)
+        self.encoder_blocks = nn.ModuleList([
+            _SelectiveSSMBlock(self.hidden_dim, d_state, d_conv, dropout)
+            for _ in range(int(num_layers))
+        ])
+        self.fc_mu = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.fc_logvar = nn.Linear(self.hidden_dim, self.hidden_dim)
+
+        self.z_to_seq = nn.Linear(self.hidden_dim, self.seq_len * self.hidden_dim)
+        self.decoder_blocks = nn.ModuleList([
+            _SelectiveSSMBlock(self.hidden_dim, d_state, d_conv, dropout)
+            for _ in range(int(num_layers))
+        ])
+        self.out_proj = nn.Linear(self.hidden_dim, self.vocab_size)
+
+    def _ensure_seq(self, x: "torch.Tensor") -> "torch.Tensor":
+        if x.dim() == 2:
+            return x.view(x.size(0), self.seq_len, self.vocab_size)
+        return x
+
+    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+        x_seq = self._ensure_seq(x)
+        h = self.input_proj(x_seq)  # (B, L, H)
+        for blk in self.encoder_blocks:
+            h = blk(h)
+        pooled = h.mean(dim=1)
+        return self.fc_mu(pooled), self.fc_logvar(pooled)
+
+    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
+        std = torch.exp(0.5 * logvar)
+        return mu + torch.randn_like(std) * std
+
+    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
+        h = self.z_to_seq(z).view(z.size(0), self.seq_len, self.hidden_dim)
+        for blk in self.decoder_blocks:
+            h = blk(h)
+        logits = self.out_proj(h)  # (B, L, V)
+        return logits.reshape(z.size(0), self.seq_len * self.vocab_size)
+
+    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
+        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
+        return F.softmax(logits, dim=-1) if str(loss_type).lower() == "ce" else torch.sigmoid(logits)
+
+    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar
+
+
+# ---------------------------------------------------------------------------
+# AttentionPoolVAE – lightweight cross-attention with learned query tokens
+# ---------------------------------------------------------------------------
+
+class _CrossAttentionPool(nn.Module):  # type: ignore[misc]
+    """Cross-attention pooling with learned query tokens."""
+
+    def __init__(self, hidden_dim: int, nhead: int, num_queries: int, dropout: float):
+        super().__init__()
+        self.queries = nn.Parameter(torch.randn(1, num_queries, hidden_dim) * 0.02)
+        self.attn = nn.MultiheadAttention(hidden_dim, nhead, dropout=dropout, batch_first=True)
+        self.norm = nn.LayerNorm(hidden_dim)
+
+    def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+        # x: (B, L, H)
+        q = self.queries.expand(x.size(0), -1, -1)
+        out, _ = self.attn(q, x, x)
+        return self.norm(out).mean(dim=1)  # (B, H)
+
+
+class AttentionPoolVAE(nn.Module):  # type: ignore[misc]
+    """Cross-attention VAE with learned pooling queries.
+
+    Uses self-attention encoding followed by cross-attention pooling with
+    learned query tokens. More parameter-efficient than full Transformer
+    while retaining adaptive attention over variable-importance genomic
+    regions (promoters, coding regions, regulatory elements).
+    """
+
+    def __init__(
+        self,
+        seq_len: int,
+        vocab_size: int,
+        hidden_dim: int,
+        nhead: int,
+        num_layers: int,
+        num_queries: int,
+        dropout: float,
+    ):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for AttentionPoolVAE.")
+        super().__init__()
+        self.seq_len = int(seq_len)
+        self.vocab_size = int(vocab_size)
+        self.hidden_dim = int(hidden_dim)
+
+        self.input_proj = nn.Linear(self.vocab_size, self.hidden_dim)
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.seq_len, self.hidden_dim))
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model=self.hidden_dim, nhead=nhead,
+            dim_feedforward=self.hidden_dim * 4, dropout=dropout, batch_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=int(num_layers))
+        self.pool = _CrossAttentionPool(self.hidden_dim, nhead, num_queries, dropout)
+
+        self.fc_mu = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.fc_logvar = nn.Linear(self.hidden_dim, self.hidden_dim)
+
+        self.z_to_seq = nn.Linear(self.hidden_dim, self.seq_len * self.hidden_dim)
+        dec_layer = nn.TransformerEncoderLayer(
+            d_model=self.hidden_dim, nhead=nhead,
+            dim_feedforward=self.hidden_dim * 4, dropout=dropout, batch_first=True,
+        )
+        self.decoder = nn.TransformerEncoder(dec_layer, num_layers=int(num_layers))
+        self.out_proj = nn.Linear(self.hidden_dim, self.vocab_size)
+
+    def _ensure_seq(self, x: "torch.Tensor") -> "torch.Tensor":
+        if x.dim() == 2:
+            return x.view(x.size(0), self.seq_len, self.vocab_size)
+        return x
+
+    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+        x_seq = self._ensure_seq(x)
+        h = self.input_proj(x_seq) + self.pos_embed
+        h = self.encoder(h)
+        pooled = self.pool(h)  # (B, H)
+        return self.fc_mu(pooled), self.fc_logvar(pooled)
+
+    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
+        std = torch.exp(0.5 * logvar)
+        return mu + torch.randn_like(std) * std
+
+    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
+        h = self.z_to_seq(z).view(z.size(0), self.seq_len, self.hidden_dim)
+        h = self.decoder(h + self.pos_embed)
+        logits = self.out_proj(h)  # (B, L, V)
+        return logits.reshape(z.size(0), self.seq_len * self.vocab_size)
+
+    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
+        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
+        return F.softmax(logits, dim=-1) if str(loss_type).lower() == "ce" else torch.sigmoid(logits)
+
+    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar
+
+
+# ---------------------------------------------------------------------------
+# ByteNetVAE – masked dilated residual convolutions
+# ---------------------------------------------------------------------------
+
+class _ByteNetBlock(nn.Module):  # type: ignore[misc]
+    """Single ByteNet residual block with masked dilated convolution."""
+
+    def __init__(self, hidden_dim: int, inner_dim: int, kernel_size: int, dilation: int, dropout: float):
+        super().__init__()
+        pad = (kernel_size - 1) * dilation // 2  # symmetric padding
+        self.net = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, inner_dim),
+            nn.GELU(),
+            # Transpose handled outside
+        )
+        self.conv = nn.Conv1d(inner_dim, inner_dim, kernel_size, dilation=dilation, padding=pad)
+        self.out = nn.Sequential(
+            nn.GELU(),
+            nn.Linear(inner_dim, hidden_dim),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+        # x: (B, L, H)
+        h = self.net(x)  # (B, L, inner)
+        h = self.conv(h.transpose(1, 2)).transpose(1, 2)  # (B, L, inner)
+        h = self.out(h)
+        return x + h
+
+
+class ByteNetVAE(nn.Module):  # type: ignore[misc]
+    """ByteNet-style VAE with masked dilated residual convolutions.
+
+    Stacked dilated convolutions with bottleneck residual blocks provide
+    a large receptive field with linear complexity. The encoder-decoder
+    structure maps genomic sequences through a latent space using
+    progressively wider context at each layer.
+    """
+
+    def __init__(
+        self,
+        seq_len: int,
+        vocab_size: int,
+        hidden_dim: int,
+        num_layers: int,
+        kernel_size: int,
+        dropout: float,
+    ):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for ByteNetVAE.")
+        super().__init__()
+        self.seq_len = int(seq_len)
+        self.vocab_size = int(vocab_size)
+        self.hidden_dim = int(hidden_dim)
+        inner_dim = max(self.hidden_dim // 2, 1)
+
+        self.input_proj = nn.Linear(self.vocab_size, self.hidden_dim)
+        self.encoder_blocks = nn.ModuleList([
+            _ByteNetBlock(self.hidden_dim, inner_dim, int(kernel_size), dilation=2 ** (i % 5), dropout=dropout)
+            for i in range(int(num_layers))
+        ])
+        self.fc_mu = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.fc_logvar = nn.Linear(self.hidden_dim, self.hidden_dim)
+
+        self.z_to_seq = nn.Linear(self.hidden_dim, self.seq_len * self.hidden_dim)
+        self.decoder_blocks = nn.ModuleList([
+            _ByteNetBlock(self.hidden_dim, inner_dim, int(kernel_size), dilation=2 ** (i % 5), dropout=dropout)
+            for i in range(int(num_layers))
+        ])
+        self.out_proj = nn.Linear(self.hidden_dim, self.vocab_size)
+
+    def _ensure_seq(self, x: "torch.Tensor") -> "torch.Tensor":
+        if x.dim() == 2:
+            return x.view(x.size(0), self.seq_len, self.vocab_size)
+        return x
+
+    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+        x_seq = self._ensure_seq(x)
+        h = self.input_proj(x_seq)  # (B, L, H)
+        for blk in self.encoder_blocks:
+            h = blk(h)
+        pooled = h.mean(dim=1)
+        return self.fc_mu(pooled), self.fc_logvar(pooled)
+
+    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
+        std = torch.exp(0.5 * logvar)
+        return mu + torch.randn_like(std) * std
+
+    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
+        h = self.z_to_seq(z).view(z.size(0), self.seq_len, self.hidden_dim)
+        for blk in self.decoder_blocks:
+            h = blk(h)
+        logits = self.out_proj(h)  # (B, L, V)
+        return logits.reshape(z.size(0), self.seq_len * self.vocab_size)
+
+    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
+        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
+        return F.softmax(logits, dim=-1) if str(loss_type).lower() == "ce" else torch.sigmoid(logits)
+
+    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar
+
+
+class PlasmidVAE(nn.Module):  # type: ignore[misc]
+    def __init__(self, input_dim: int, hidden_dim: int):
+        if torch is None or nn is None:
+            raise RuntimeError("PyTorch is required for PlasmidVAE.")
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.fc_mu = nn.Linear(hidden_dim, hidden_dim)
+        self.fc_logvar = nn.Linear(hidden_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc_out = nn.Linear(hidden_dim, input_dim)
+        self.act = nn.ReLU()
+
+    def encode(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor"]:
+        h = self.act(self.fc1(x))
+        return self.fc_mu(h), self.fc_logvar(h)
+
+    def reparameterize(self, mu: "torch.Tensor", logvar: "torch.Tensor") -> "torch.Tensor":
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def decode(self, z: "torch.Tensor") -> "torch.Tensor":
+        """Return *logits* (not probabilities).
+
+        - For MSE-based training, we apply sigmoid to these logits in the loss.
+        - For categorical training (CE), these logits are fed directly to softmax/CE.
+        """
+        h = self.act(self.fc2(z))
+        return self.fc_out(h)
+
+    def decode_probs(self, z: "torch.Tensor", seq_len: int, vocab_size: int, loss_type: str) -> "torch.Tensor":
+        """Return probabilities shaped (B, seq_len, vocab_size)."""
+        if torch is None or F is None:
+            raise RuntimeError("PyTorch is required.")
+        logits = self.decode(z).view(z.size(0), int(seq_len), int(vocab_size))
+        lt = str(loss_type).lower()
+        if lt == "ce":
+            return F.softmax(logits, dim=-1)
+        # mse (legacy): independent sigmoid weights
+        return torch.sigmoid(logits)
+
+    def forward(self, x: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        recon_logits = self.decode(z)
+        return recon_logits, mu, logvar
+
+def get_device() -> "torch.device":
+    if torch is None:
+        raise RuntimeError("PyTorch not installed.")
+    return torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
+def load_or_init_model(
+    io_cfg: IOConfig,
+    seq_len: int,
+    vocab_size: int,
+    hidden_dim: int,
+    learning_rate: float,
+    device: "torch.device",
+    tokenizer: str,
+    loss_type: str,
+    model_type: str,
+    transformer_d_model: int,
+    transformer_nhead: int,
+    transformer_layers: int,
+    transformer_dropout: float,
+    ast_tree_layers: int = 4,
+    ast_motif_kernel_size: int = 7,
+    ast_motif_channels: int = 64,
+    beta_kl: float = 1e-3,
+    hierarchical_latent_dim: Optional[int] = None,
+    ast_node_type_vocab_size: int = 64,
+    hierarchical_ablation_mode: str = "hierarchical",
+) -> Tuple[nn.Module, "optim.Optimizer", int, str]:
+    """
+    seq_len: number of positions (bp or codons)
+    vocab_size: 4 for base, 65 for codon
+    """
+    if torch is None or nn is None or optim is None:
+        raise RuntimeError("PyTorch is required.")
+
+    os.makedirs(io_cfg.model_dir, exist_ok=True)
+    os.makedirs(io_cfg.checkpoints_dir, exist_ok=True)
+    ckpt_path = os.path.join(io_cfg.checkpoints_dir, "latest.pt")
+
+    mt = _normalize_model_type(model_type)
+    input_dim = int(seq_len) * int(vocab_size)
+    if mt == "transformer":
+        model = TransformerVAE(
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            d_model=transformer_d_model,
+            nhead=transformer_nhead,
+            num_layers=transformer_layers,
+            dropout=transformer_dropout,
+        ).to(device)
+    elif mt == "ssm":
+        model = StateSpaceVAE(
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            num_layers=transformer_layers,
+            kernel_size=5,
+            dropout=transformer_dropout,
+        ).to(device)
+    elif mt == "tree":
+        model = TreeVAE(
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            tree_layers=ast_tree_layers,
+            dropout=transformer_dropout,
+        ).to(device)
+    elif mt == "hybrid":
+        model = HybridVAE(
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            tree_layers=ast_tree_layers,
+            motif_kernel_size=ast_motif_kernel_size,
+            motif_channels=ast_motif_channels,
+            dropout=transformer_dropout,
+        ).to(device)
+    elif mt == "hierarchical":
+        model = build_hierarchical_model(
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            latent_dim=int(hierarchical_latent_dim or hidden_dim),
+            ast_tree_layers=ast_tree_layers,
+            ast_node_type_vocab_size=ast_node_type_vocab_size,
+            dropout=transformer_dropout,
+            ablation_mode=hierarchical_ablation_mode,
+        ).to(device)
+    elif mt == "conv":
+        model = ConvResVAE(
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            num_layers=transformer_layers,
+            dropout=transformer_dropout,
+        ).to(device)
+    elif mt == "recurrent":
+        model = RecurrentVAE(
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            num_layers=transformer_layers,
+            dropout=transformer_dropout,
+            bidirectional=True,
+        ).to(device)
+    elif mt == "wavenet":
+        model = WaveNetVAE(
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            num_layers=transformer_layers,
+            kernel_size=3,
+            dropout=transformer_dropout,
+        ).to(device)
+    elif mt == "mamba":
+        model = MambaVAE(
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            num_layers=transformer_layers,
+            d_state=16,
+            d_conv=4,
+            dropout=transformer_dropout,
+        ).to(device)
+    elif mt == "attention_pool":
+        model = AttentionPoolVAE(
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            nhead=transformer_nhead,
+            num_layers=transformer_layers,
+            num_queries=8,
+            dropout=transformer_dropout,
+        ).to(device)
+    elif mt == "bytenet":
+        model = ByteNetVAE(
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            num_layers=transformer_layers,
+            kernel_size=3,
+            dropout=transformer_dropout,
+        ).to(device)
+    else:
+        model = PlasmidVAE(input_dim=input_dim, hidden_dim=hidden_dim).to(device)
+    optimizer: optim.Optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    global_step = 0
+
+    if os.path.exists(ckpt_path):
+        data = torch.load(ckpt_path, map_location=device)
+        meta: Dict[str, object] = data.get("meta", {})
+        genome_payload = migrate_genome_payload(
+            meta.get("genome", meta),
+            tokenizer=tokenizer,
+            seq_len=seq_len,
+            vocab_size=vocab_size,
+            hidden_dim=hidden_dim,
+            loss_type=loss_type,
+            model_type=mt,
+            transformer_d_model=transformer_d_model,
+            transformer_nhead=transformer_nhead,
+            transformer_layers=transformer_layers,
+            transformer_dropout=transformer_dropout,
+            learning_rate=learning_rate,
+            beta_kl=beta_kl,
+            hierarchical_latent_dim=int(hierarchical_latent_dim or hidden_dim),
+            ast_node_type_vocab_size=int(ast_node_type_vocab_size),
+            hierarchical_ablation_mode=str(hierarchical_ablation_mode),
+        )
+        migrated_genes: Dict[str, object] = genome_payload["genes"]
+        meta["genome"] = genome_payload
+
+        ck_tok = str(migrated_genes.get("tokenizer", "base")).lower()
+        ck_seq = int(migrated_genes.get("seq_len", seq_len))
+        ck_vocab = int(migrated_genes.get("vocab_size", vocab_size))
+        ck_hidden = int(migrated_genes.get("hidden_dim", hidden_dim))
+        ck_loss = str(migrated_genes.get("loss_type", "mse")).lower()
+        ck_model_type = _normalize_model_type(str(migrated_genes.get("model_type", "mlp")))
+        ck_d_model = int(migrated_genes.get("transformer_d_model", transformer_d_model))
+        ck_nhead = int(migrated_genes.get("transformer_nhead", transformer_nhead))
+        ck_layers = int(migrated_genes.get("transformer_layers", transformer_layers))
+        ck_dropout = float(migrated_genes.get("transformer_dropout", transformer_dropout))
+        ck_ast_tree_layers = int(migrated_genes.get("ast_tree_layers", ast_tree_layers))
+        ck_ast_motif_kernel_size = int(migrated_genes.get("ast_motif_kernel_size", ast_motif_kernel_size))
+        ck_ast_motif_channels = int(migrated_genes.get("ast_motif_channels", ast_motif_channels))
+        ck_hier_latent = int(migrated_genes.get("hierarchical_latent_dim", int(hierarchical_latent_dim or hidden_dim)))
+        ck_ast_vocab = int(migrated_genes.get("ast_node_type_vocab_size", ast_node_type_vocab_size))
+        ck_hier_ablation = str(migrated_genes.get("hierarchical_ablation_mode", hierarchical_ablation_mode)).lower()
+        
+        if ck_tok != tokenizer.lower():
+            raise ValueError(f"Checkpoint tokenizer={ck_tok} but requested tokenizer={tokenizer}. Delete {ckpt_path} or match settings.")
+        if ck_seq != seq_len:
+            raise ValueError(f"Checkpoint seq_len={ck_seq} but requested seq_len={seq_len}. Delete {ckpt_path} or match settings.")
+        if ck_vocab != vocab_size:
+            raise ValueError(f"Checkpoint vocab_size={ck_vocab} but requested vocab_size={vocab_size}. Delete {ckpt_path} or match settings.")
+        if ck_hidden != hidden_dim and mt != "transformer":
+            raise ValueError(f"Checkpoint hidden_dim={ck_hidden} but requested hidden_dim={hidden_dim}. Delete {ckpt_path} or match settings.")
+        if ck_loss != str(loss_type).lower():
+            raise ValueError(
+                f"Checkpoint loss_type={ck_loss} but requested loss_type={loss_type}. "
+                f"Delete {ckpt_path} or match settings."
+            )
+        if ck_model_type != mt:
+            raise ValueError(
+                f"Checkpoint model_type={ck_model_type} but requested model_type={mt}. "
+                f"Delete {ckpt_path} or match settings."
+            )
+        if mt == "transformer":
+            if ck_d_model != transformer_d_model:
+                raise ValueError(f"Checkpoint transformer_d_model={ck_d_model} but requested {transformer_d_model}. Delete {ckpt_path} or match settings.")
+            if ck_nhead != transformer_nhead:
+                raise ValueError(f"Checkpoint transformer_nhead={ck_nhead} but requested {transformer_nhead}. Delete {ckpt_path} or match settings.")
+            if ck_layers != transformer_layers:
+                raise ValueError(f"Checkpoint transformer_layers={ck_layers} but requested {transformer_layers}. Delete {ckpt_path} or match settings.")
+            if abs(ck_dropout - float(transformer_dropout)) > 1e-8:
+                raise ValueError(f"Checkpoint transformer_dropout={ck_dropout} but requested {transformer_dropout}. Delete {ckpt_path} or match settings.")
+        if mt == "ssm":
+            if ck_layers != transformer_layers:
+                raise ValueError(f"Checkpoint ssm_layers={ck_layers} but requested {transformer_layers}. Delete {ckpt_path} or match settings.")
+            if abs(ck_dropout - float(transformer_dropout)) > 1e-8:
+                raise ValueError(f"Checkpoint ssm_dropout={ck_dropout} but requested {transformer_dropout}. Delete {ckpt_path} or match settings.")
+        if mt in {"conv", "recurrent", "wavenet", "mamba", "attention_pool", "bytenet"}:
+            if ck_layers != transformer_layers:
+                raise ValueError(f"Checkpoint layers={ck_layers} but requested {transformer_layers}. Delete {ckpt_path} or match settings.")
+            if abs(ck_dropout - float(transformer_dropout)) > 1e-8:
+                raise ValueError(f"Checkpoint dropout={ck_dropout} but requested {transformer_dropout}. Delete {ckpt_path} or match settings.")
+        if mt in {"tree", "hybrid"}:
+            if ck_ast_tree_layers != ast_tree_layers:
+                raise ValueError(
+                    f"Checkpoint ast_tree_layers={ck_ast_tree_layers} but requested {ast_tree_layers}. "
+                    f"Delete {ckpt_path} or match settings."
+                )
+        if mt == "hybrid":
+            if ck_ast_motif_kernel_size != ast_motif_kernel_size:
+                raise ValueError(
+                    f"Checkpoint ast_motif_kernel_size={ck_ast_motif_kernel_size} but requested {ast_motif_kernel_size}. "
+                    f"Delete {ckpt_path} or match settings."
+                )
+            if ck_ast_motif_channels != ast_motif_channels:
+                raise ValueError(
+                    f"Checkpoint ast_motif_channels={ck_ast_motif_channels} but requested {ast_motif_channels}. "
+                    f"Delete {ckpt_path} or match settings."
+                )
+        if mt == "hierarchical":
+            if ck_hier_latent != int(hierarchical_latent_dim or hidden_dim):
+                raise ValueError(
+                    f"Checkpoint hierarchical_latent_dim={ck_hier_latent} but requested {int(hierarchical_latent_dim or hidden_dim)}. "
+                    f"Delete {ckpt_path} or match settings."
+                )
+            if ck_ast_vocab != int(ast_node_type_vocab_size):
+                raise ValueError(
+                    f"Checkpoint ast_node_type_vocab_size={ck_ast_vocab} but requested {int(ast_node_type_vocab_size)}. "
+                    f"Delete {ckpt_path} or match settings."
+                )
+            if ck_hier_ablation != str(hierarchical_ablation_mode).lower():
+                raise ValueError(
+                    f"Checkpoint hierarchical_ablation_mode={ck_hier_ablation} but requested {str(hierarchical_ablation_mode).lower()}. "
+                    f"Delete {ckpt_path} or match settings."
+                )
+
+        model.load_state_dict(data["model"])
+        optimizer.load_state_dict(data["optim"])
+        global_step = int(meta.get("global_step", 0))
+
+        logging.info(
+            "Loaded checkpoint %s (tokenizer=%s, seq_len=%s, vocab=%s, hidden=%s, model=%s, step=%s)",
+            ckpt_path, ck_tok, ck_seq, ck_vocab, ck_hidden, ck_model_type, global_step
+        )
+        logging.info("Migrated genome schema to v%s during load", CURRENT_GENOME_SCHEMA_VERSION)
+        logging.info(
+            "Initializing new VAE (tokenizer=%s, loss_type=%s, model=%s, "
+            "seq_len=%s, vocab=%s, input_dim=%s, hidden=%s, d_model=%s, nhead=%s, layers=%s, dropout=%s, lr=%s)",
+            tokenizer,
+            loss_type,
+            mt,
+            seq_len,
+            vocab_size,
+            input_dim,
+            hidden_dim,
+            transformer_d_model,
+            transformer_nhead,
+            transformer_layers,
+            transformer_dropout,
+            learning_rate,
+        )
+
+    return model, optimizer, global_step, ckpt_path
+
+def save_checkpoint(
+    ckpt_path: str,
+    model: nn.Module,
+    optimizer: "optim.Optimizer",
+    global_step: int,
+    tokenizer: str,
+    seq_len: int,
+    vocab_size: int,
+    hidden_dim: int,
+    loss_type: str,
+    model_type: str,
+    transformer_d_model: int,
+    transformer_nhead: int,
+    transformer_layers: int,
+    transformer_dropout: float,
+    learning_rate: float,
+    beta_kl: float,
+    ast_tree_layers: int = 4,
+    ast_motif_kernel_size: int = 7,
+    ast_motif_channels: int = 64,
+    hierarchical_latent_dim: Optional[int] = None,
+    ast_node_type_vocab_size: int = 64,
+    hierarchical_ablation_mode: str = "hierarchical",
+) -> None:
+    if torch is None:
+        return
+    payload = {
+        "model": model.state_dict(),
+        "optim": optimizer.state_dict(),
+        "meta": {
+            "global_step": int(global_step),
+            "tokenizer": str(tokenizer).lower(),
+            "seq_len": int(seq_len),
+            "vocab_size": int(vocab_size),
+            "hidden_dim": int(hidden_dim),
+            "loss_type": str(loss_type).lower(),
+            "model_type": _normalize_model_type(model_type),
+            "transformer_d_model": int(transformer_d_model),
+            "transformer_nhead": int(transformer_nhead),
+            "transformer_layers": int(transformer_layers),
+            "transformer_dropout": float(transformer_dropout),
+            "ast_tree_layers": int(ast_tree_layers),
+            "ast_motif_kernel_size": int(ast_motif_kernel_size),
+            "ast_motif_channels": int(ast_motif_channels),
+            "hierarchical_latent_dim": int(hierarchical_latent_dim or hidden_dim),
+            "ast_node_type_vocab_size": int(ast_node_type_vocab_size),
+            "hierarchical_ablation_mode": str(hierarchical_ablation_mode).lower(),
+            "genome": migrate_genome_payload(
+                {
+                    "schema_version": CURRENT_GENOME_SCHEMA_VERSION,
+                    "genes": {
+                        "tokenizer": str(tokenizer).lower(),
+                        "seq_len": int(seq_len),
+                        "vocab_size": int(vocab_size),
+                        "hidden_dim": int(hidden_dim),
+                        "loss_type": str(loss_type).lower(),
+                        "model_type": _normalize_model_type(model_type),
+                        "transformer_d_model": int(transformer_d_model),
+                        "transformer_nhead": int(transformer_nhead),
+                        "transformer_layers": int(transformer_layers),
+                        "transformer_dropout": float(transformer_dropout),
+                        "ast_tree_layers": int(ast_tree_layers),
+                        "ast_motif_kernel_size": int(ast_motif_kernel_size),
+                        "ast_motif_channels": int(ast_motif_channels),
+                        "hierarchical_latent_dim": int(hierarchical_latent_dim or hidden_dim),
+                        "ast_node_type_vocab_size": int(ast_node_type_vocab_size),
+                        "hierarchical_ablation_mode": str(hierarchical_ablation_mode).lower(),
+                        "learning_rate": float(learning_rate),
+                        "beta_kl": float(beta_kl),
+                    },
+                },
+                tokenizer=tokenizer,
+                seq_len=seq_len,
+                vocab_size=vocab_size,
+                hidden_dim=hidden_dim,
+                loss_type=loss_type,
+                model_type=_normalize_model_type(model_type),
+                transformer_d_model=transformer_d_model,
+                transformer_nhead=transformer_nhead,
+                transformer_layers=transformer_layers,
+                transformer_dropout=transformer_dropout,
+                learning_rate=learning_rate,
+                beta_kl=beta_kl,
+                hierarchical_latent_dim=int(hierarchical_latent_dim or hidden_dim),
+                ast_node_type_vocab_size=int(ast_node_type_vocab_size),
+                hierarchical_ablation_mode=str(hierarchical_ablation_mode).lower(),
+            ),
+        },
+    }
+    ckpt_dir = os.path.dirname(ckpt_path) or "."
+    os.makedirs(ckpt_dir, exist_ok=True)
+    tmp = ckpt_path + ".tmp"
+    torch.save(payload, tmp)
+    os.replace(tmp, ckpt_path)
+    logging.info(f"Saved checkpoint step={global_step} -> {ckpt_path}")
+
+def vae_loss(
+    recon_logits: "torch.Tensor",
+    x: "torch.Tensor",
+    mu: "torch.Tensor",
+    logvar: "torch.Tensor",
+    beta_kl: float,
+    loss_type: str,
+    seq_len: int,
+    vocab_size: int,
+) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+    if torch is None or nn is None:
+        raise RuntimeError("PyTorch required.")
+
+    lt = str(loss_type).lower()
+    if lt == "ce":
+        if F is None:
+            raise RuntimeError("PyTorch required.")
+        # logits: (B, L*V) -> (B, L, V)
+        logits = recon_logits.view(recon_logits.size(0), int(seq_len), int(vocab_size))
+        targets = x.view(x.size(0), int(seq_len), int(vocab_size)).argmax(dim=2)  # (B, L)
+        # per-position CE, mean over positions and batch
+        ce = F.cross_entropy(logits.view(-1, int(vocab_size)), targets.view(-1), reduction="mean")
+        recon_term = ce
+    else:
+        # legacy: regression on one-hot using sigmoid weights
+        recon = torch.sigmoid(recon_logits)
+        recon_term = nn.MSELoss(reduction="mean")(recon, x)
+
+    kl = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+    total = recon_term + float(beta_kl) * kl
+    return total, recon_term, kl
