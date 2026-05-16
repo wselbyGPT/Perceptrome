@@ -1,13 +1,17 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { setupPerceptromeViz } from "../../perceptrome_viz";
 import { ActionFeedback, QueryBoundary } from "../../lib/query-helpers";
 import { WorkspacePage } from "../../components/layout/workspace-page";
 import { useDatasetCountQuery } from "../datasets/hooks";
+import type { RegisteredModel } from "../models/api";
+import { useModelsQuery, useRegisterModelFromRunMutation } from "../models/hooks";
 import { useRunsLiveUpdates } from "./live-updates";
 import { StatusBadge } from "../../components/ui/states";
 import { BioAstExplorer } from "../bio-ast/explorer";
 import { useRunsListQuery } from "./hooks";
+import type { RunRecord } from "./api";
+import { buildRegisterModelPayload, isRegisterableTrainingRun, sourceRunModelMap } from "./model-registration";
 
 function useVizMount(socket: WebSocket | null, rootRef: RefObject<HTMLDivElement | null>) {
   useEffect(() => {
@@ -21,6 +25,20 @@ type JobKind = "generate_plasmid" | "generate_protein" | "validate_plasmid" | "p
 const GENERATION_KINDS: JobKind[] = ["generate_plasmid", "generate_protein"];
 const TRAINING_KINDS: JobKind[] = ["train_one", "stream", "pretrain"];
 const CATALOG_KINDS: JobKind[] = ["stream", "validate_plasmid", "design_loop"];
+const DNA_MODEL_OPTIONS = [
+  ["mlp", "MLP VAE"],
+  ["transformer", "Transformer VAE"],
+  ["ssm", "State-space mixer"],
+  ["conv", "Multi-scale CNN"],
+  ["recurrent", "Bidirectional GRU"],
+  ["wavenet", "WaveNet dilated CNN"],
+  ["mamba", "Selective SSM"],
+  ["attention_pool", "Attention pooling"],
+  ["bytenet", "ByteNet"],
+  ["tree", "Tree encoder"],
+  ["hybrid", "CNN + tree hybrid"],
+  ["hierarchical", "Hierarchical DNA"],
+] as const;
 
 function KindSpecificFields({ kind, datasetOptions, selectedDataset }: { kind: JobKind; datasetOptions: string[]; selectedDataset: string }) {
   const showGeneration = GENERATION_KINDS.includes(kind);
@@ -31,6 +49,7 @@ function KindSpecificFields({ kind, datasetOptions, selectedDataset }: { kind: J
   const showDesignLoop = kind === "design_loop";
   const showPretrain = kind === "pretrain";
   const isProtein = kind === "generate_protein";
+  const showDnaModeling = kind === "generate_plasmid" || kind === "train_one" || kind === "stream";
 
   return (
     <>
@@ -114,6 +133,48 @@ function KindSpecificFields({ kind, datasetOptions, selectedDataset }: { kind: J
               <input id="output-name" className="input" defaultValue={isProtein ? "perceptrome_protein_1" : "perceptrome_plasmid_1"} />
             </label>
           </div>
+          {!isProtein && (
+            <>
+              <div className="row">
+                <label className="input-group"><span className="label">Token sampler</span>
+                  <select id="sampling-strategy" className="input" defaultValue="temperature">
+                    <option value="temperature">temperature</option>
+                    <option value="top_k">top_k</option>
+                    <option value="top_p">top_p</option>
+                    <option value="beam">beam</option>
+                    <option value="anneal">anneal</option>
+                  </select>
+                </label>
+                <label className="input-group"><span className="label">Top-k tokens</span>
+                  <input id="top-k-tokens" className="input" type="number" min="0" defaultValue="0" />
+                </label>
+                <label className="input-group"><span className="label">Top-p</span>
+                  <input id="top-p" className="input" type="number" min="0.01" max="1" step="0.01" defaultValue="1.0" />
+                </label>
+                <label className="input-group"><span className="label">Beam width</span>
+                  <input id="beam-width" className="input" type="number" min="1" defaultValue="1" />
+                </label>
+              </div>
+              <div className="row">
+                <label className="input-group"><span className="label">Latent strategy</span>
+                  <select id="latent-strategy" className="input" defaultValue="random">
+                    <option value="random">random</option>
+                    <option value="walk">walk</option>
+                    <option value="gradient">gradient</option>
+                  </select>
+                </label>
+                <label className="input-group"><span className="label">Walk dim</span>
+                  <input id="walk-dim" className="input" type="number" min="0" defaultValue="0" />
+                </label>
+                <label className="input-group"><span className="label">Walk steps</span>
+                  <input id="walk-steps" className="input" type="number" min="2" defaultValue="10" />
+                </label>
+                <label className="input-group"><span className="label">GC target</span>
+                  <input id="optimize-target" className="input" type="number" min="0" max="1" step="0.05" defaultValue="0.5" />
+                </label>
+              </div>
+            </>
+          )}
         </>
       )}
 
@@ -190,19 +251,112 @@ function KindSpecificFields({ kind, datasetOptions, selectedDataset }: { kind: J
         </>
       )}
 
-      {/* ── Model family (for generation and training) ── */}
-      {(showGeneration || kind === "train_one" || kind === "stream") && (
-        <div className="row">
-          <label className="input-group"><span className="label">Model family</span>
-            <select id="model-family" className="input" defaultValue="baseline">
-              <option value="baseline">baseline</option>
-              <option value="vae">vae</option>
-              <option value="transformer">transformer</option>
-            </select>
-          </label>
-        </div>
+      {/* ── Genomic DNA model architecture ── */}
+      {showDnaModeling && (
+        <>
+          <div className="row">
+            <label className="input-group"><span className="label">DNA architecture</span>
+              <select id="model-type" className="input" defaultValue="">
+                <option value="">config default</option>
+                {DNA_MODEL_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </label>
+            <label className="input-group"><span className="label">Hidden dim</span>
+              <input id="hidden-dim" className="input" type="number" min="16" step="16" placeholder="config" />
+            </label>
+            <label className="input-group"><span className="label">Layers</span>
+              <input id="transformer-layers" className="input" type="number" min="1" placeholder="config" />
+            </label>
+            <label className="input-group"><span className="label">Dropout</span>
+              <input id="transformer-dropout" className="input" type="number" min="0" max="0.9" step="0.05" placeholder="config" />
+            </label>
+          </div>
+          <div className="row">
+            <label className="input-group"><span className="label">Attention dim</span>
+              <input id="transformer-d-model" className="input" type="number" min="16" step="16" placeholder="config" />
+            </label>
+            <label className="input-group"><span className="label">Heads</span>
+              <input id="transformer-nhead" className="input" type="number" min="1" placeholder="config" />
+            </label>
+            <label className="input-group"><span className="label">Tree layers</span>
+              <input id="ast-tree-layers" className="input" type="number" min="1" placeholder="config" />
+            </label>
+            <label className="input-group"><span className="label">Latent dim</span>
+              <input id="hierarchical-latent-dim" className="input" type="number" min="16" step="16" placeholder="config" />
+            </label>
+          </div>
+        </>
       )}
     </>
+  );
+}
+
+function RegisterCompletedRunsPanel({ runs, models }: { runs: RunRecord[]; models: RegisteredModel[] }) {
+  const registerMutation = useRegisterModelFromRunMutation();
+  const [registeringRunId, setRegisteringRunId] = useState<string | null>(null);
+  const [registeredMessage, setRegisteredMessage] = useState<string | null>(null);
+  const completedTrainingRuns = useMemo(() => runs.filter(isRegisterableTrainingRun), [runs]);
+  const registeredByRunId = useMemo(() => sourceRunModelMap(models), [models]);
+
+  const registerRun = async (run: RunRecord) => {
+    setRegisteringRunId(run.run_id);
+    setRegisteredMessage(null);
+    try {
+      const model = await registerMutation.mutateAsync(buildRegisterModelPayload(run));
+      setRegisteredMessage(`${run.run_id} registered as ${model.name}.`);
+    } finally {
+      setRegisteringRunId(null);
+    }
+  };
+
+  return (
+    <section className="panel">
+      <div className="panel-header">
+        <div>
+          <h2 className="panel-title">Register Completed Training Runs</h2>
+          <p className="panel-subtitle">Promote completed training outputs into the versioned model registry.</p>
+        </div>
+        <Link className="btn btn--secondary btn--sm" to="/models">Open Models</Link>
+      </div>
+      {!completedTrainingRuns.length ? (
+        <p className="muted">No completed training runs are available yet.</p>
+      ) : (
+        <div className="stack">
+          {completedTrainingRuns.slice(0, 8).map((run) => {
+            const registeredModel = registeredByRunId.get(run.run_id);
+            const isRegistered = Boolean(registeredModel);
+            const isRegistering = registeringRunId === run.run_id && registerMutation.isPending;
+            return (
+              <article key={run.run_id} className="quick-link-card quick-link-card--static">
+                <div className="cluster">
+                  <strong>{run.run_id}</strong>
+                  <StatusBadge label={run.kind} tone="neutral" />
+                  <StatusBadge label={isRegistered ? "registered" : "ready"} tone={isRegistered ? "success" : "info"} />
+                </div>
+                <p className="muted">{run.message || "Completed training run"}</p>
+                <div className="cluster">
+                  {isRegistered ? (
+                    <span className="muted">Source for {registeredModel?.name}</span>
+                  ) : (
+                    <button
+                      className="btn btn--primary btn--sm"
+                      type="button"
+                      disabled={registerMutation.isPending}
+                      onClick={() => void registerRun(run)}
+                    >
+                      {isRegistering ? "Registering..." : "Register Model"}
+                    </button>
+                  )}
+                  <Link className="btn btn--secondary btn--sm" to={`/runs?bio_ast_run=${encodeURIComponent(run.run_id)}`}>Inspect Run</Link>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+      {registerMutation.error ? <ActionFeedback title="Registration failed" message={registerMutation.error instanceof Error ? registerMutation.error.message : "Could not register model."} tone="error" /> : null}
+      {registeredMessage ? <ActionFeedback title="Registered" message={registeredMessage} tone="success" /> : null}
+    </section>
   );
 }
 
@@ -211,6 +365,7 @@ export function RunsPage() {
   const { socket, connectionState } = useRunsLiveUpdates();
   const datasetsQuery = useDatasetCountQuery();
   const runsQuery = useRunsListQuery(30);
+  const modelsQuery = useModelsQuery({});
   const [params] = useSearchParams();
   useVizMount(socket, rootRef);
 
@@ -242,12 +397,12 @@ export function RunsPage() {
       actions={<StatusBadge label={connectionState} tone={connectionState === 'connected' ? 'connected' : connectionState === 'connecting' ? 'pending' : 'disconnected'} />}
     >
       <QueryBoundary
-        isLoading={datasetsQuery.isLoading || runsQuery.isLoading}
-        error={datasetsQuery.error || runsQuery.error}
+        isLoading={datasetsQuery.isLoading || runsQuery.isLoading || modelsQuery.isLoading}
+        error={datasetsQuery.error || runsQuery.error || modelsQuery.error}
         loadingTitle="Loading runs workspace"
         loadingMessage="Preparing dataset options and live run controls."
         errorMessage="Failed to load run form data."
-        onRetry={() => void datasetsQuery.refetch()}
+        onRetry={() => { void datasetsQuery.refetch(); void runsQuery.refetch(); void modelsQuery.refetch(); }}
       >
         <div className="stack-lg">
           <ActionFeedback title="Live runs visualization" message="The websocket-backed run console remains intact, but connection ownership now lives in a dedicated provider so the runs route can subscribe cleanly." tone="info" />
@@ -286,6 +441,7 @@ export function RunsPage() {
                   </div>
                 </form>
               </section>
+              <RegisterCompletedRunsPanel runs={runsQuery.data ?? []} models={modelsQuery.data ?? []} />
               <section id="run-drilldown" className="panel" aria-labelledby="lineage-panel-title"><div className="panel-header"><div><h2 className="panel-title" id="lineage-panel-title">Run Drill-down (Lineage + History)</h2><p className="panel-subtitle">Lineage, history, and artifact inspection remain intact.</p></div></div><h3 className="panel-title">Run history</h3><div id="run-history" className="results-wrap"></div><div className="row3 mt-2"><label className="input-group"><span className="label">Depth</span><input id="lineage-depth" className="input" type="number" min="0" max="6" defaultValue="2" /></label><label className="input-group"><span className="label">Artifact type</span><input id="lineage-artifact-type" className="input" placeholder="json, npy, ..." /></label><button id="refresh-lineage-btn" className="btn btn--secondary" type="button">Refresh Lineage</button></div><label className="input-group mt-2"><span className="label">Run states</span><select id="lineage-run-state" className="input" multiple><option value="queued">queued</option><option value="running">running</option><option value="completed">completed</option><option value="failed">failed</option><option value="canceled">canceled</option></select></label><div className="lineage-wrap mt-2"><svg id="lineage-graph" className="lineage-graph" viewBox="0 0 720 280" role="img" aria-label="Lineage graph"></svg></div><pre id="lineage-details" className="results-wrap mt-2">Select a run to view lineage.</pre></section>
             </section>
             <section className="column"><section className="panel" aria-labelledby="timeline-title"><div className="panel-header"><div><h2 className="panel-title" id="timeline-title">Active Run Timeline</h2><p className="panel-subtitle">Latest phases and events for the currently active run</p></div></div><div id="active-run-timeline" className="results-wrap"></div></section><section className="panel" aria-labelledby="logs-panel-title"><div className="panel-header"><div><h2 className="panel-title" id="logs-panel-title">Live Logs</h2><p className="panel-subtitle">Server messages and streaming job output</p></div><div className="run-actions"><button id="clear-logs-btn" className="btn btn--secondary btn--sm" type="button">Clear</button></div></div><div id="logs" className="terminal" aria-live="polite"></div></section><section className="panel"><div className="panel-header"><div><h2 className="panel-title">Metrics Panel</h2><p className="panel-subtitle">Streaming metrics</p></div></div><pre id="metrics" className="results-wrap"></pre></section><section className="panel"><div className="panel-header"><div><h2 className="panel-title">Artifact Summary</h2><p className="panel-subtitle">Current run outputs and downloadable artifacts</p></div></div><div id="results" className="results-wrap" aria-live="polite"></div><h3 className="panel-title mt-2">Generated Sequences</h3><pre id="generated-sequences" className="results-wrap"></pre><h3 className="panel-title mt-2">Validation</h3><pre id="validation-results" className="results-wrap"></pre><pre id="checkpoints" className="results-wrap"></pre></section></section>

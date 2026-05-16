@@ -510,7 +510,12 @@ def _artifact_path_for_id(run: Run, artifact_id: int) -> str | None:
 
 def _candidate_bio_ast_base_dirs(*, run: Run, selected_path: str | None, accession: str | None, manifest: dict[str, Any], manifest_path: str | None) -> list[Path]:
     filenames = export_filenames()
-    expected_names = set(filenames.values())
+    expected_names = {
+        filenames['canonical_ast'],
+        filenames['tree_json'],
+        filenames['graph_json'],
+        filenames['storage_map'],
+    }
     candidates: list[Path] = []
     seen: set[Path] = set()
 

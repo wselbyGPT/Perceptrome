@@ -38,6 +38,7 @@ export interface RunConfig {
   stage?: string;
   model?: string;
   model_family?: string;
+  model_type?: string;
   task?: string;
 
   // Data inputs

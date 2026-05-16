@@ -38,6 +38,7 @@ from perceptrome.generate import (
     parse_ast_conditioning_config,
     parse_ast_template_validation_config,
 )
+from perceptrome.model_catalog import apply_training_model_overrides
 from perceptrome.sampling import SamplingConfig
 from perceptrome.latent_strategies import LatentConfig
 from perceptrome.jobs.artifact_index import build_artifact_entry
@@ -84,6 +85,16 @@ class JobEngine:
             anneal_start=float(p.get("anneal_start", 1.2)),
             anneal_end=float(p.get("anneal_end", 0.5)),
         )
+
+    @staticmethod
+    def _apply_training_param_overrides(cfg: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply web/API model knobs to the loaded training config.
+
+        The CLI has its own argparse override path; web runs arrive as a
+        JobSpec params bag, so model selection has to be folded into
+        ``training`` before ``extract_configs`` builds the TrainingConfig.
+        """
+        return apply_training_model_overrides(cfg, params)
 
     @staticmethod
     def _build_latent_config(p: Dict[str, Any]) -> Optional[LatentConfig]:
@@ -407,11 +418,12 @@ class JobEngine:
 
     def _run_train_one(self, spec: JobSpec) -> Dict[str, Any]:
         cfg = load_full_config(spec.config_path)
+        params = dict(spec.params)
+        cfg = self._apply_training_param_overrides(cfg, params)
         ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
         ensure_dirs(io_cfg)
         setup_logging(io_cfg.logs_dir)
         state = load_state(io_cfg.state_file)
-        params = dict(spec.params)
 
         args = type("A", (), params)
         tok = _get_tok(args, train_cfg)
@@ -505,11 +517,12 @@ class JobEngine:
 
     def _run_stream(self, spec: JobSpec) -> Dict[str, Any]:
         cfg = load_full_config(spec.config_path)
+        params = dict(spec.params)
+        cfg = self._apply_training_param_overrides(cfg, params)
         ncbi_cfg, train_cfg, io_cfg = extract_configs(cfg)
         ensure_dirs(io_cfg)
         setup_logging(io_cfg.logs_dir)
         state = load_state(io_cfg.state_file)
-        params = dict(spec.params)
         layout, config_snapshot, config_snapshot_artifact = self._write_resolved_config_snapshot(spec=spec, cfg=cfg, params=params)
         accessions = read_catalog(str(params["catalog"]))
 
@@ -586,10 +599,11 @@ class JobEngine:
 
     def _run_generate_plasmid(self, spec: JobSpec) -> Dict[str, Any]:
         cfg = load_full_config(spec.config_path)
+        p = dict(spec.params)
+        cfg = self._apply_training_param_overrides(cfg, p)
         _, train_cfg, io_cfg = extract_configs(cfg)
         ensure_dirs(io_cfg)
         setup_logging(io_cfg.logs_dir)
-        p = dict(spec.params)
         tokenizer = str(p.get("tokenizer") or getattr(train_cfg, "tokenizer", "base"))
         scorecard_format = str(p.get("scorecard_format") or "json").lower()
         if scorecard_format != "json":
@@ -706,10 +720,11 @@ class JobEngine:
 
     def _run_generate_protein(self, spec: JobSpec) -> Dict[str, Any]:
         cfg = load_full_config(spec.config_path)
+        p = dict(spec.params)
+        cfg = self._apply_training_param_overrides(cfg, p)
         _, train_cfg, io_cfg = extract_configs(cfg)
         ensure_dirs(io_cfg)
         setup_logging(io_cfg.logs_dir)
-        p = dict(spec.params)
         scorecard_format = str(p.get("scorecard_format") or "json").lower()
         if scorecard_format != "json":
             raise ValueError(f"Unsupported scorecard format: {scorecard_format}")

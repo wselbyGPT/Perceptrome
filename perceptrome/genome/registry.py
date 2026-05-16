@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
+from perceptrome.model_catalog import DNA_GENERATIVE_MODEL_TYPES
 from perceptrome.bio_ast import (
     ast_from_flat_genes_payload,
     ast_to_flat_genes_payload,
@@ -160,7 +161,7 @@ DEFAULT_GENE_REGISTRY = GeneRegistry(
         GeneDefinition(
             id="model_type",
             dtype="choice",
-            choices=["mlp", "transformer"],
+            choices=list(DNA_GENERATIVE_MODEL_TYPES),
             mutation_rate=0.03,
             novelty_weight=1.2,
             default="mlp",

@@ -12,6 +12,9 @@ training:
   max_stream_epochs: 10
   shuffle_catalog: true
   hidden_dim: 512
+  # DNA generative architecture:
+  # mlp | transformer | ssm | conv | recurrent | wavenet | mamba | attention_pool | bytenet | tree | hybrid | hierarchical
+  model_type: mlp
   learning_rate: 1.0e-3
   beta_kl: 1.0e-3
   kl_warmup_steps: 5000

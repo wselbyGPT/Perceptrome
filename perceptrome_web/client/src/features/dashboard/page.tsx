@@ -34,6 +34,7 @@ export function DashboardPage() {
         </div>
         <div className="hero-actions">
           <Link to="/runs" className="btn btn--primary">Open Runs</Link>
+          <Link to="/models" className="btn btn--secondary">Manage Models</Link>
           <Link to="/datasets" className="btn btn--secondary">Browse Datasets</Link>
         </div>
       </section>
@@ -71,6 +72,7 @@ export function DashboardPage() {
           </div>
           <div className="quick-links">
             <Link to="/runs" className="quick-link-card"><strong>Runs</strong><span>Start, monitor, and inspect websocket-driven jobs.</span></Link>
+            <Link to="/models" className="quick-link-card"><strong>Models</strong><span>Register completed runs as versioned, reusable model assets.</span></Link>
             <Link to="/datasets" className="quick-link-card"><strong>Datasets</strong><span>Filter, preview, and launch runs with a selected dataset.</span></Link>
             <Link to="/profile" className="quick-link-card"><strong>Profile</strong><span>Review identity and account metadata.</span></Link>
             <Link to="/security" className="quick-link-card"><strong>Security</strong><span>Update your password and inspect access status.</span></Link>

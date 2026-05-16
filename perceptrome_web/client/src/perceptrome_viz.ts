@@ -288,16 +288,32 @@ export function setupPerceptromeViz(root: HTMLDivElement, ws: WebSocket) {
     if (!configPath) throw new Error("Config path is required");
 
     const dataset = readOptionalString("dataset");
-    const modelFamily = readOptionalString("model-family");
+    const modelType = readOptionalString("model-type");
+    const legacyModelFamily = readOptionalString("model-family");
     const params: Record<string, unknown> = {};
+    const setOptionalNumberParam = (key: string, id: string) => {
+      const value = readOptionalNumeric(id);
+      if (value !== undefined) params[key] = value;
+    };
 
     // Catalog / dataset (for stream, validate_plasmid, design_loop)
     if (dataset) {
       params.catalog = `config/${dataset}.txt`;
     }
 
-    // Model family
-    if (modelFamily) params.model_family = modelFamily;
+    // DNA model architecture
+    if (modelType) {
+      params.model_type = modelType;
+      setOptionalNumberParam("hidden_dim", "hidden-dim");
+      setOptionalNumberParam("transformer_d_model", "transformer-d-model");
+      setOptionalNumberParam("transformer_nhead", "transformer-nhead");
+      setOptionalNumberParam("transformer_layers", "transformer-layers");
+      setOptionalNumberParam("transformer_dropout", "transformer-dropout");
+      setOptionalNumberParam("ast_tree_layers", "ast-tree-layers");
+      setOptionalNumberParam("hierarchical_latent_dim", "hierarchical-latent-dim");
+    } else if (legacyModelFamily) {
+      params.model_family = legacyModelFamily;
+    }
 
     // Per-kind parameters
     switch (kind) {
@@ -307,6 +323,15 @@ export function setupPerceptromeViz(root: HTMLDivElement, ws: WebSocket) {
         params.latent_scale = readNumericInput("latent-scale", 1.0);
         params.target_gc = readOptionalNumeric("target-gc") ?? 0.5;
         params.gc_bias = readOptionalNumeric("gc-bias") ?? 1.0;
+        params.sampling_strategy = readOptionalString("sampling-strategy") ?? "temperature";
+        params.top_k_tokens = readOptionalNumeric("top-k-tokens") ?? 0;
+        params.top_p = readOptionalNumeric("top-p") ?? 1.0;
+        params.beam_width = readOptionalNumeric("beam-width") ?? 1;
+        params.latent_strategy = readOptionalString("latent-strategy") ?? "random";
+        params.walk_dim = readOptionalNumeric("walk-dim") ?? 0;
+        params.walk_steps = readOptionalNumeric("walk-steps") ?? 10;
+        params.optimize_property = "gc";
+        params.optimize_target = readOptionalNumeric("optimize-target") ?? params.target_gc;
         const seed = readOptionalNumeric("seed");
         if (seed !== undefined) params.seed = seed;
         const numCandidates = readOptionalNumeric("num-candidates");

@@ -14,6 +14,7 @@ except ImportError:
 
 from .config import IOConfig
 from .genome_schema import CURRENT_GENOME_SCHEMA_VERSION, migrate_genome_payload
+from .model_catalog import normalize_model_type
 from .models.factory import build_hierarchical_model
 from .models.ast_nodes import ASTNodeEncoder
 from .models.ast_rvnn import TreeRvnnEncoder
@@ -101,29 +102,7 @@ class BioASTEmbeddingAPI(nn.Module):  # type: ignore[misc]
 
 
 def _normalize_model_type(model_type: str) -> str:
-    mt = str(model_type).lower()
-    return {
-        "rnn": "recurrent",
-        "gru": "recurrent",
-        "lstm": "recurrent",
-        "bigru": "recurrent",
-        "bilstm": "recurrent",
-        "cnn": "conv",
-        "resnet": "conv",
-        "residual_conv": "conv",
-        "moe": "mlp",
-        "gnn": "mlp",
-        "tcn": "wavenet",
-        "dilated": "wavenet",
-        "causal_conv": "wavenet",
-        "ssm_mamba": "mamba",
-        "selective_ssm": "mamba",
-        "s4": "mamba",
-        "attn_pool": "attention_pool",
-        "perceiver": "attention_pool",
-        "cross_attn": "attention_pool",
-        "hier": "hierarchical",
-    }.get(mt, mt)
+    return normalize_model_type(model_type)
 
 
 class TreeEncoder(nn.Module):  # type: ignore[misc]

@@ -13,7 +13,7 @@ ALEMBIC := $(VENV)/bin/python -m alembic -c $(WEB_SERVER_DIR)/alembic.ini
 
 .DEFAULT_GOAL := help
 
-.PHONY: help venv setup-core setup-web setup-web-interactive setup-dev setup-gpu init run web-migrate web-api web-client docker-dev docker-prod docker-prod-local docker-build clean
+.PHONY: help venv setup-core setup-web setup-web-interactive setup-dev setup-gpu init run web-migrate web-api web-client web-test web-test-server web-test-client docker-dev docker-prod docker-prod-local docker-build clean
 
 help:
 	@printf '%s\n' \
@@ -28,6 +28,9 @@ help:
 	  '  make web-migrate           - apply Alembic migrations for the web server' \
 	  '  make web-api               - start the FastAPI dev server on :8000' \
 	  '  make web-client            - start the Vite dev server on :5173' \
+	  '  make web-test              - run web server and client tests' \
+	  '  make web-test-server       - run FastAPI/Alembic tests with bootstrap disabled' \
+	  '  make web-test-client       - run Vite client typecheck/tests' \
 	  '  make docker-dev            - start local dev stack via Docker Compose' \
 	  '  make docker-prod           - build and start production stack' \
 	  '  make docker-prod-local     - prod stack + bundled postgres (local preview)' \
@@ -67,6 +70,14 @@ web-api:
 
 web-client:
 	npm run dev --prefix $(WEB_CLIENT_DIR)
+
+web-test: web-test-server web-test-client
+
+web-test-server:
+	BOOTSTRAP_ADMIN_EMAIL= BOOTSTRAP_ADMIN_PASSWORD= $(PYTEST) $(WEB_SERVER_DIR)/tests -q
+
+web-test-client:
+	npm --prefix $(WEB_CLIENT_DIR) run test
 
 setup-web-interactive:
 	$(PYTHON) setup_web.py

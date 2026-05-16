@@ -12,6 +12,7 @@
   "include": [
     "src/features/bio-ast/schemas.ts",
     "src/features/bio-ast/selection-store.ts",
+    "src/features/runs/model-registration.ts",
     "tests/**/*.ts"
   ]
 }

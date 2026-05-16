@@ -146,6 +146,17 @@ python -m alembic -c perceptrome_web/server/alembic.ini downgrade -1
 
 Because production is Postgres-first, schema changes should always be captured as Alembic revisions and applied before the API is deployed. Migrations are mandatory, not optional housekeeping.
 
+## Test workflow
+
+Run the web server and client checks from the repository root:
+
+```bash
+make web-test-server
+make web-test-client
+```
+
+`make web-test-server` clears bootstrap admin credentials for the test process so startup cannot touch a developer or production database while each test creates its own temporary SQLite database. Run the server tests from a normal shell; FastAPI's `TestClient` uses Starlette/AnyIO cross-thread event-loop wakeups, and heavily restricted sandboxes can block those wakeups and appear to hang.
+
 ## Environment variables
 
 The server reads `.env` from `perceptrome_web/server/.env`. The most important settings are:

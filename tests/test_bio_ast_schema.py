@@ -84,6 +84,8 @@ class BioASTSchemaTests(unittest.TestCase):
         legacy = RelationshipEdge.from_dict({"source_gene_id": "g1", "target_gene_id": "g2", "relation": "depends_on"})
         self.assertEqual(legacy.kind, "regulates")
         self.assertEqual(legacy.source_gene_id, "g1")
+        support_alias = RelationshipEdge(source_id="cds1", target_id="protein1", kind="supports")
+        self.assertEqual(support_alias.kind, "encodes")
         with self.assertRaises(ValueError):
             RelationshipEdge(source_id="g1", target_id="g2", kind="unsupported")
 
