@@ -395,7 +395,8 @@ def register_from_run(
     for artifact in run.artifacts:
         _add_artifact_if_file(version=version, role=artifact.phase or "run_artifact", path=artifact.path, label=artifact.label or "Run artifact", seen=seen)
 
-    model.current_version_id = version.id
+    if model.current_version_id is None or version_status_value == "stable":
+        model.current_version_id = version.id
     model.updated_at = now
     db.commit()
     db.refresh(model)

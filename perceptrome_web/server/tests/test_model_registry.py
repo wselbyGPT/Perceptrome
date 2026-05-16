@@ -91,6 +91,18 @@ def test_register_completed_run_as_model_version(tmp_path):
         db.add(run)
         db.flush()
         db.add(RunArtifact(run_id=run.id, path=str(manifest_path), phase="manifest", label="Run manifest"))
+        next_run = Run(
+            run_id="train_run_2",
+            user_id=user.id,
+            kind="stream",
+            state="completed",
+            config_json=json.dumps({"params": {"model_type": "mamba", "tokenizer": "base"}}),
+            result_json=json.dumps({"manifest_path": str(manifest_path), "config_snapshot": {"path": str(config_snapshot_path)}}),
+            message="ok",
+        )
+        db.add(next_run)
+        db.flush()
+        db.add(RunArtifact(run_id=next_run.id, path=str(manifest_path), phase="manifest", label="Run manifest"))
         db.commit()
 
     with db_factory() as db:
@@ -125,6 +137,36 @@ def test_register_completed_run_as_model_version(tmp_path):
         promoted = model_registry_service.update_version(db, user, model.id, version.id, {"promote_current": True})
         assert promoted.current_version_id == version.id
         assert promoted.versions[0].status == "stable"
+
+        appended = model_registry_service.register_from_run(
+            db,
+            user,
+            run_id="train_run_2",
+            model_id=model.id,
+            name=None,
+            description=None,
+            visibility=None,
+            tags=None,
+            version_label="v2",
+            version_status="candidate",
+        )
+        assert appended.current_version_id == version.id
+        assert appended.current_version is not None
+        assert appended.current_version.id == version.id
+        appended_version = next(item for item in appended.versions if item.version_label == "v2")
+        assert appended_version.status == "candidate"
+
+        promoted_second = model_registry_service.update_version(
+            db,
+            user,
+            model.id,
+            appended_version.id,
+            {"promote_current": True},
+        )
+        assert promoted_second.current_version_id == appended_version.id
+        assert promoted_second.current_version is not None
+        assert promoted_second.current_version.id == appended_version.id
+        assert next(item for item in promoted_second.versions if item.id == appended_version.id).status == "stable"
 
         checkpoint_artifact = next(item for item in version.artifacts if item.role == "checkpoint")
         downloaded = model_registry_service.download_model_artifact(db, user, model.id, version.id, checkpoint_artifact.id)
